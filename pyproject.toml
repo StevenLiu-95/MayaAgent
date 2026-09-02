@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maya-agent"
+version = "1.0.0"
+description = "AI-powered Maya Agent for game development workflows"
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "MIT" }
+authors = [{ name = "MayaAgent Team" }]
+keywords = ["maya", "ai", "agent", "game-dev", "3d"]
+dependencies = [
+    "requests>=2.28.0",
+    "PyYAML>=6.0",
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+anthropic = ["anthropic>=0.18.0"]
+google = ["google-generativeai>=0.3.0"]
+all = [
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
+    "google-generativeai>=0.3.0",
+]
+
+[project.scripts]
+maya-agent-install = "scripts.install:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["maya_agent*"]
+
+[tool.setuptools.package-data]
+maya_agent = ["ui/styles/*.qss", "../resources/**/*", "../config/*.yaml"]

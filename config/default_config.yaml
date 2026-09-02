@@ -1,0 +1,177 @@
+# Maya Agent 默认配置
+app:
+  name: Maya Agent
+  version: "1.0.0"
+  language: zh-CN
+  theme: dark
+
+# 默认 LLM（可在 UI 中切换）
+llm:
+  active_provider: deepseek
+  temperature: 0.3
+  max_tokens: 4096
+  timeout: 120
+  system_prompt_file: prompts/system_zh.md
+
+providers:
+  openai:
+    enabled: true
+    label: OpenAI
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+      - gpt-4-turbo
+      - o1-mini
+    default_model: gpt-4o
+
+  azure_openai:
+    enabled: true
+    label: Azure OpenAI
+    base_url: ""  # 例如 https://YOUR.openai.azure.com
+    api_key_env: AZURE_OPENAI_API_KEY
+    api_version: "2024-06-01"
+    models:
+      - gpt-4o
+      - gpt-4
+    default_model: gpt-4o
+
+  anthropic:
+    enabled: true
+    label: Anthropic Claude
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    models:
+      - claude-sonnet-4-20250514
+      - claude-3-5-sonnet-20241022
+      - claude-3-5-haiku-20241022
+    default_model: claude-sonnet-4-20250514
+
+  google:
+    enabled: true
+    label: Google Gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    api_key_env: GOOGLE_API_KEY
+    models:
+      - gemini-2.0-flash
+      - gemini-1.5-pro
+      - gemini-1.5-flash
+    default_model: gemini-2.0-flash
+
+  deepseek:
+    enabled: true
+    label: DeepSeek
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    models:
+      - deepseek-chat
+      - deepseek-reasoner
+    default_model: deepseek-chat
+
+  qwen:
+    enabled: true
+    label: 通义千问 (DashScope)
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    models:
+      - qwen-max
+      - qwen-plus
+      - qwen-turbo
+      - qwen-coder-plus
+    default_model: qwen-max
+
+  zhipu:
+    enabled: true
+    label: 智谱 GLM
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+    models:
+      - glm-4-plus
+      - glm-4-flash
+      - glm-4-air
+    default_model: glm-4-plus
+
+  moonshot:
+    enabled: true
+    label: Moonshot / Kimi
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+    models:
+      - moonshot-v1-128k
+      - moonshot-v1-32k
+      - moonshot-v1-8k
+    default_model: moonshot-v1-32k
+
+  doubao:
+    enabled: true
+    label: 豆包 (火山方舟)
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    models:
+      - doubao-pro-32k
+      - doubao-lite-32k
+    default_model: doubao-pro-32k
+
+  baichuan:
+    enabled: true
+    label: 百川
+    base_url: https://api.baichuan-ai.com/v1
+    api_key_env: BAICHUAN_API_KEY
+    models:
+      - Baichuan4
+      - Baichuan3-Turbo
+    default_model: Baichuan4
+
+  siliconflow:
+    enabled: true
+    label: SiliconFlow (硅基流动)
+    base_url: https://api.siliconflow.cn/v1
+    api_key_env: SILICONFLOW_API_KEY
+    models:
+      - deepseek-ai/DeepSeek-V3
+      - Qwen/Qwen2.5-72B-Instruct
+      - Pro/THUDM/glm-4-9b-chat
+    default_model: deepseek-ai/DeepSeek-V3
+
+  ollama:
+    enabled: true
+    label: Ollama (本地)
+    base_url: http://127.0.0.1:11434/v1
+    api_key_env: OLLAMA_API_KEY
+    models:
+      - llama3.1
+      - qwen2.5-coder
+      - deepseek-r1
+    default_model: qwen2.5-coder
+
+  custom:
+    enabled: true
+    label: 自定义 OpenAI 兼容接口
+    base_url: http://127.0.0.1:8000/v1
+    api_key_env: CUSTOM_API_KEY
+    models:
+      - custom-model
+    default_model: custom-model
+
+maya:
+  # 支持的 Maya 版本（安装脚本与兼容层）
+  supported_versions: [2020, 2022, 2023, 2024, 2025, 2026]
+  auto_undo: true
+  confirm_destructive: true
+  max_tool_rounds: 12
+
+agent:
+  history_limit: 40
+  stream: true
+  show_tool_calls: true
+  auto_select_tools: true
+  auto_save_sessions: true
+  max_sessions_per_project: 50
+
+ui:
+  dock_area: right
+  window_width: 420
+  window_height: 720
+  font_family: "Microsoft YaHei UI"
+  font_size: 13

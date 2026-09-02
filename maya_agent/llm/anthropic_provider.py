@@ -1,0 +1,190 @@
+"""Anthropic Messages API provider."""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Generator, List, Optional, Union
+
+import httpx
+
+from maya_agent.llm.base import (
+    BaseProvider,
+    ChatMessage,
+    ChatResponse,
+    ToolCall,
+    ToolSpec,
+)
+
+
+class AnthropicProvider(BaseProvider):
+    name = "anthropic"
+    supports_tools = True
+
+    def chat(
+        self,
+        messages: List[ChatMessage],
+        tools: Optional[List[ToolSpec]] = None,
+        stream: bool = False,
+    ) -> Union[ChatResponse, Generator[str, None, ChatResponse]]:
+        system, converted = self._convert_messages(messages)
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens or 4096,
+            "temperature": self.temperature,
+            "messages": converted,
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                }
+                for t in tools
+            ]
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        url = f"{self.base_url}/v1/messages"
+        if stream:
+            return self._stream(url, headers, payload)
+        with httpx.Client(timeout=self.timeout) as client:
+            r = client.post(url, headers=headers, json=payload)
+            if r.status_code >= 400:
+                raise RuntimeError(f"Anthropic HTTP {r.status_code}: {r.text[:500]}")
+            return self._parse(r.json())
+
+    def _stream(self, url, headers, payload) -> Generator[str, None, ChatResponse]:
+        payload = dict(payload)
+        payload["stream"] = True
+        content_parts: List[str] = []
+        tool_calls: List[ToolCall] = []
+        current_tool: Optional[Dict[str, Any]] = None
+        finish_reason = ""
+
+        with httpx.Client(timeout=self.timeout) as client:
+            with client.stream("POST", url, headers=headers, json=payload) as r:
+                if r.status_code >= 400:
+                    body = r.read().decode("utf-8", errors="replace")
+                    raise RuntimeError(f"Anthropic HTTP {r.status_code}: {body[:500]}")
+                for line in r.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    et = event.get("type")
+                    if et == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            current_tool = {
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "arguments": "",
+                            }
+                    elif et == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            piece = delta.get("text") or ""
+                            content_parts.append(piece)
+                            yield piece
+                        elif delta.get("type") == "input_json_delta" and current_tool:
+                            current_tool["arguments"] += delta.get("partial_json") or ""
+                    elif et == "content_block_stop":
+                        if current_tool:
+                            tool_calls.append(
+                                ToolCall(
+                                    id=current_tool["id"],
+                                    name=current_tool["name"],
+                                    arguments=current_tool["arguments"] or "{}",
+                                )
+                            )
+                            current_tool = None
+                    elif et == "message_delta":
+                        finish_reason = (event.get("delta") or {}).get("stop_reason") or ""
+
+        return ChatResponse(
+            content="".join(content_parts),
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+        )
+
+    @staticmethod
+    def _convert_messages(messages: List[ChatMessage]):
+        system_parts = []
+        out = []
+        for m in messages:
+            if m.role == "system":
+                system_parts.append(m.content)
+                continue
+            if m.role == "tool":
+                out.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": m.tool_call_id or "",
+                                "content": m.content or "",
+                            }
+                        ],
+                    }
+                )
+                continue
+            if m.role == "assistant" and m.tool_calls:
+                content: List[Dict[str, Any]] = []
+                if m.content:
+                    content.append({"type": "text", "text": m.content})
+                for tc in m.tool_calls:
+                    fn = tc.get("function") or {}
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id") or "",
+                            "name": fn.get("name") or "",
+                            "input": args,
+                        }
+                    )
+                out.append({"role": "assistant", "content": content})
+                continue
+            out.append({"role": m.role, "content": m.content or ""})
+        return "\n\n".join(system_parts), out
+
+    @staticmethod
+    def _parse(data: Dict[str, Any]) -> ChatResponse:
+        text_parts = []
+        tool_calls = []
+        for block in data.get("content") or []:
+            if block.get("type") == "text":
+                text_parts.append(block.get("text") or "")
+            elif block.get("type") == "tool_use":
+                tool_calls.append(
+                    ToolCall(
+                        id=block.get("id") or "",
+                        name=block.get("name") or "",
+                        arguments=json.dumps(block.get("input") or {}, ensure_ascii=False),
+                    )
+                )
+        usage = data.get("usage") or {}
+        return ChatResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            raw=data,
+            finish_reason=data.get("stop_reason") or "",
+            usage={
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+            },
+        )
