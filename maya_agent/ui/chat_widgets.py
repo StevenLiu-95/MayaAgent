@@ -317,12 +317,111 @@ def create_chat_panel(parent=None):
                     break
                 parent = parent.parentWidget()
 
+    class ChoiceBar(QtWidgets.QWidget):
+        """Clickable confirmation options under an assistant bubble."""
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName("choiceBar")
+            self._buttons: List[Any] = []
+            self._on_pick = None
+            self._lay = QtWidgets.QVBoxLayout(self)
+            self._lay.setContentsMargins(0, 4, 0, 0)
+            self._lay.setSpacing(6)
+            hint = QtWidgets.QLabel("请选择：")
+            hint.setObjectName("choiceHint")
+            hint.setStyleSheet(
+                "QLabel#choiceHint { color:#8a8a93; font-size:11px; "
+                "background:transparent; border:none; }"
+            )
+            self._lay.addWidget(hint)
+            self._btn_col = QtWidgets.QVBoxLayout()
+            self._btn_col.setContentsMargins(0, 0, 0, 0)
+            self._btn_col.setSpacing(6)
+            self._lay.addLayout(self._btn_col)
+            self.hide()
+
+        def set_handler(self, fn) -> None:
+            self._on_pick = fn
+
+        def set_choices(self, choices: List[Dict[str, str]], *, enabled: bool = True) -> None:
+            while self._btn_col.count():
+                item = self._btn_col.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+            self._buttons.clear()
+            if not choices:
+                self.hide()
+                return
+            for idx, ch in enumerate(choices, start=1):
+                label = (ch.get("label") or "").strip()
+                reply = (ch.get("reply") or label).strip()
+                if not label:
+                    continue
+                # Numbered short label for long option text
+                shown = label if len(label) <= 42 else (label[:40] + "…")
+                btn = QtWidgets.QPushButton(f"{idx}.  {shown}")
+                btn.setObjectName("choiceBtn")
+                btn.setCursor(QtCore.Qt.PointingHandCursor)
+                btn.setEnabled(enabled)
+                btn.setToolTip(reply)
+                btn.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+                )
+                btn.setStyleSheet(
+                    """
+                    QPushButton#choiceBtn {
+                        background-color: #2a3340;
+                        border: 1px solid #4a6a8a;
+                        border-radius: 8px;
+                        color: #c8daf0;
+                        font-size: 12px;
+                        padding: 8px 12px;
+                        min-height: 28px;
+                        text-align: left;
+                    }
+                    QPushButton#choiceBtn:hover:enabled {
+                        background-color: #334556;
+                        border-color: #5b8fc7;
+                        color: #e8f0fa;
+                    }
+                    QPushButton#choiceBtn:pressed:enabled {
+                        background-color: #2c4054;
+                    }
+                    QPushButton#choiceBtn:disabled {
+                        background-color: #25262c;
+                        border-color: #3a3b44;
+                        color: #6a6a72;
+                    }
+                    """
+                )
+                btn.clicked.connect(
+                    lambda _checked=False, r=reply: self._emit(r)
+                )
+                self._btn_col.addWidget(btn)
+                self._buttons.append(btn)
+            self.show()
+
+        def set_enabled(self, enabled: bool) -> None:
+            for btn in self._buttons:
+                btn.setEnabled(enabled)
+
+        def clear(self) -> None:
+            self.set_choices([])
+
+        def _emit(self, reply: str) -> None:
+            self.set_enabled(False)
+            if self._on_pick:
+                self._on_pick(reply)
+
     class MessageBlock(QtWidgets.QWidget):
         def __init__(self, role: str, parent=None):
             super().__init__(parent)
             self.role = role
             self._tools: List[ToolRow] = []
             self._body_view: Optional[BodyView] = None
+            self._choice_bar = None
 
             root = QtWidgets.QHBoxLayout(self)
             root.setContentsMargins(4, 6, 4, 6)
@@ -354,6 +453,8 @@ def create_chat_panel(parent=None):
                 root.addWidget(Avatar("AI", "#2f7d5b"), 0, QtCore.Qt.AlignTop)
                 root.addWidget(self.bubble, 7)
                 root.addStretch(1)
+                self._choice_bar = ChoiceBar(self.bubble)
+                bubble_lay.addWidget(self._choice_bar)
 
             self.bubble.setSizePolicy(
                 QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
@@ -382,6 +483,27 @@ def create_chat_panel(parent=None):
             view.set_html(chat_format.markdown_to_html(text))
             view.show()
             self._set_typing(False)
+
+        def set_choices(
+            self,
+            choices: List[Dict[str, str]],
+            *,
+            enabled: bool = True,
+            on_pick=None,
+        ) -> None:
+            if self._choice_bar is None:
+                return
+            if on_pick is not None:
+                self._choice_bar.set_handler(on_pick)
+            self._choice_bar.set_choices(choices or [], enabled=enabled)
+
+        def disable_choices(self) -> None:
+            if self._choice_bar is not None:
+                self._choice_bar.set_enabled(False)
+
+        def clear_choices(self) -> None:
+            if self._choice_bar is not None:
+                self._choice_bar.clear()
 
         def set_streaming_text(self, text: str):
             view = self._ensure_body()
@@ -468,6 +590,8 @@ def create_chat_panel(parent=None):
             self._current: Optional[MessageBlock] = None
             self._stream_text = ""
             self._pending_separator = False
+            self._on_choice_reply = None
+            self._active_choice_block = None
 
             self.setStyleSheet(
                 """
@@ -483,6 +607,7 @@ def create_chat_panel(parent=None):
             )
 
         def clear(self):
+            self.disable_active_choices()
             while self.v.count():
                 item = self.v.takeAt(0)
                 w = item.widget()
@@ -494,6 +619,19 @@ def create_chat_panel(parent=None):
             self._current = None
             self._stream_text = ""
             self._pending_separator = False
+            self._active_choice_block = None
+
+        def set_choice_handler(self, fn) -> None:
+            """fn(reply_text) called when user clicks a confirmation button."""
+            self._on_choice_reply = fn
+
+        def disable_active_choices(self) -> None:
+            if self._active_choice_block is not None:
+                try:
+                    self._active_choice_block.disable_choices()
+                except Exception:
+                    pass
+                self._active_choice_block = None
 
         def _insert_before_stretch(self, widget: QtWidgets.QWidget):
             idx = max(0, self.v.count() - 1)
@@ -505,6 +643,7 @@ def create_chat_panel(parent=None):
             QtCore.QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
 
         def add_user(self, text: str):
+            self.disable_active_choices()
             if self._pending_separator:
                 self._insert_before_stretch(TurnSeparator())
             self._pending_separator = True
@@ -531,7 +670,9 @@ def create_chat_panel(parent=None):
             if self._current is None:
                 self.begin_assistant()
             self._stream_text += piece
-            self._current.set_streaming_text(self._stream_text)
+            # Hide choice markers while streaming; buttons appear on finish
+            display, _ = chat_format.extract_user_choices(self._stream_text)
+            self._current.set_streaming_text(display or self._stream_text)
             if self._blocks and self._blocks[-1].get("type") == "assistant":
                 self._blocks[-1]["text"] = (
                     self._blocks[-1].get("text") or ""
@@ -570,17 +711,37 @@ def create_chat_panel(parent=None):
             text = self._stream_text
             if final_text and not text:
                 text = final_text
+            choices: List[Dict[str, str]] = []
+            display = text
             if text:
-                self._current.set_markdown(text)
+                display, choices = chat_format.extract_user_choices(text)
+                self._current.set_markdown(display or text)
+                if choices:
+                    self._current.set_choices(
+                        choices,
+                        enabled=True,
+                        on_pick=self._handle_choice,
+                    )
+                    self._active_choice_block = self._current
             else:
                 self._current._set_typing(False)
                 if self._current._body_view is not None and not self._current._body_view.toPlainText():
                     self._current._body_view.hide()
             if self._blocks and self._blocks[-1].get("type") == "assistant":
                 self._blocks[-1]["done"] = True
+                if text:
+                    # Persist original text (incl. markers) for session fidelity
+                    self._blocks[-1]["text"] = text
+                if choices:
+                    self._blocks[-1]["choices"] = choices
             self._current = None
             self._stream_text = ""
             self._scroll_to_bottom()
+
+        def _handle_choice(self, reply: str) -> None:
+            self.disable_active_choices()
+            if self._on_choice_reply:
+                self._on_choice_reply(reply)
 
         def add_error(self, text: str):
             block = MessageBlock("error")
@@ -628,7 +789,12 @@ def create_chat_panel(parent=None):
                             mb.finish_last_tool(name, tool.get("result") or "")
                     text = block.get("text") or ""
                     if text:
-                        mb.set_markdown(text)
+                        display, _parsed = chat_format.extract_user_choices(text)
+                        mb.set_markdown(display or text)
+                        choices = block.get("choices") or _parsed
+                        if choices:
+                            # Historical choices are shown but not clickable
+                            mb.set_choices(choices, enabled=False)
                     else:
                         mb._set_typing(False)
                     self._insert_before_stretch(mb)

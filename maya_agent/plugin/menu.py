@@ -33,9 +33,76 @@ def _main_window_name():
     return None
 
 
+def _unregister_menu_from_sets(name: str) -> None:
+    """Remove a menu from all Maya menu sets (safe if missing)."""
+    import maya.cmds as cmds
+
+    try:
+        for ms in cmds.menuSet(query=True, allMenuSets=True) or []:
+            try:
+                arr = cmds.menuSet(ms, query=True, menuArray=True) or []
+                if name in arr:
+                    cmds.menuSet(ms, edit=True, removeMenu=name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _register_menu_in_sets(name: str) -> None:
+    """
+    Register custom menu into Maya menu sets so it actually appears.
+
+    Maya 2016+ only shows menus that belong to the active menu set
+    (建模 / 绑定 / 动画 …). Menus in commonMenuSet are always visible
+    alongside File / Edit / Window — required for custom tools.
+    """
+    import maya.cmds as cmds
+
+    registered = False
+    try:
+        arr = cmds.menuSet("commonMenuSet", query=True, menuArray=True) or []
+        if name not in arr:
+            # Maya expects a plain string for addMenu (not a Python list)
+            cmds.menuSet("commonMenuSet", edit=True, addMenu=name)
+        registered = True
+    except Exception as e:
+        log.warning("commonMenuSet register failed: %s", e)
+
+    if not registered:
+        try:
+            for ms in cmds.menuSet(query=True, allMenuSets=True) or []:
+                arr = cmds.menuSet(ms, query=True, menuArray=True) or []
+                if name not in arr:
+                    cmds.menuSet(ms, edit=True, addMenu=name)
+            registered = True
+        except Exception as e:
+            log.warning("menuSet fallback register failed: %s", e)
+
+    if not registered:
+        raise RuntimeError(f"failed to register menu {name} into any menu set")
+
+    # Match Autodesk plugins (MASH / Bullet): force visible + place after common menus
+    try:
+        g_main = _main_window_name()
+        common = cmds.menuSet("commonMenuSet", query=True, menuArray=True) or []
+        pos = len(common)
+        if g_main and pos > 0:
+            try:
+                cmds.window(g_main, edit=True, menuIndex=(name, pos))
+            except Exception:
+                pass
+        cmds.menu(name, edit=True, visible=True)
+    except Exception as e:
+        log.debug("menu visibility/index tweak failed: %s", e)
+
+    print(f"[Maya Agent] menuSet OK: {name} -> commonMenuSet")
+
+
 def _delete_menu_if_exists(name: str) -> None:
     import maya.cmds as cmds
 
+    _unregister_menu_from_sets(name)
     try:
         if cmds.menu(name, exists=True):
             cmds.deleteUI(name, menu=True)
@@ -44,6 +111,14 @@ def _delete_menu_if_exists(name: str) -> None:
             cmds.deleteUI(name)
         except Exception:
             pass
+
+
+def _menu_item_cmd(dotted: str) -> str:
+    """Stable Python command string for menuItem (survives reload better than callables)."""
+    return (
+        "import maya_agent\n"
+        f"maya_agent.plugin.menu.{dotted}()\n"
+    )
 
 
 def install_menu() -> None:
@@ -59,6 +134,7 @@ def install_menu() -> None:
     # Clean both new and legacy menu names
     _delete_menu_if_exists(MENU_NAME)
     _delete_menu_if_exists("MayaAgent")  # legacy name that collided with shelf
+    _delete_menu_if_exists("MayaAgentMainMenu")
 
     try:
         cmds.menu(
@@ -68,6 +144,7 @@ def install_menu() -> None:
             tearOff=True,
             allowOptionBoxes=False,
         )
+        menu_parent = MENU_NAME
     except Exception as e:
         # Name may still be occupied by a non-menu control; pick a unique fallback
         log.warning("menu create failed (%s), trying fallback name", e)
@@ -80,13 +157,29 @@ def install_menu() -> None:
             tearOff=True,
         )
         menu_parent = fallback
-    else:
-        menu_parent = MENU_NAME
 
-    cmds.menuItem(label="打开面板", parent=menu_parent, command=open_ui)
-    cmds.menuItem(label="重新加载", parent=menu_parent, command=reload_plugin)
+    cmds.menuItem(
+        label="打开面板",
+        parent=menu_parent,
+        command=_menu_item_cmd("open_ui"),
+        sourceType="python",
+    )
+    cmds.menuItem(
+        label="重新加载",
+        parent=menu_parent,
+        command=_menu_item_cmd("reload_plugin"),
+        sourceType="python",
+    )
     cmds.menuItem(divider=True, parent=menu_parent)
-    cmds.menuItem(label="关于 Maya Agent", parent=menu_parent, command=show_about)
+    cmds.menuItem(
+        label="关于 Maya Agent",
+        parent=menu_parent,
+        command=_menu_item_cmd("show_about"),
+        sourceType="python",
+    )
+
+    # Critical: without menuSet registration the menu exists but is invisible
+    _register_menu_in_sets(menu_parent)
 
     # Verify
     if not cmds.menu(menu_parent, exists=True):
@@ -211,19 +304,95 @@ def open_ui(*_args) -> None:
     show_main_window()
 
 
+def remove_shelf() -> None:
+    """Remove MayaAgent shelf tab and any Agent buttons left on other shelves."""
+    if not in_maya():
+        return
+    import maya.cmds as cmds
+    import maya.mel as mel
+
+    # 1) Dedicated MayaAgent tab
+    try:
+        if cmds.shelfLayout(SHELF_NAME, exists=True):
+            try:
+                mel.eval(f'deleteShelfTab "{SHELF_NAME}"')
+            except Exception:
+                try:
+                    cmds.deleteUI(SHELF_NAME)
+                except Exception:
+                    pass
+    except Exception as e:
+        log.debug("deleteShelfTab failed: %s", e)
+
+    # 2) Orphan Agent buttons on any remaining shelf
+    try:
+        top = mel.eval("$tmp=$gShelfTopLevel")
+    except Exception:
+        top = None
+    if not top or not cmds.shelfTabLayout(top, exists=True):
+        print("[Maya Agent] shelf removed (tab only)")
+        return
+
+    tabs = cmds.shelfTabLayout(top, query=True, childArray=True) or []
+    for tab in tabs:
+        try:
+            children = cmds.shelfLayout(tab, query=True, childArray=True) or []
+        except Exception:
+            continue
+        for ch in list(children):
+            try:
+                if not cmds.shelfButton(ch, exists=True):
+                    continue
+                label = cmds.shelfButton(ch, query=True, label=True) or ""
+                ann = cmds.shelfButton(ch, query=True, annotation=True) or ""
+                if label == SHELF_BUTTON_LABEL or "Maya Agent" in ann:
+                    cmds.deleteUI(ch)
+            except Exception:
+                pass
+
+    print("[Maya Agent] shelf removed")
+
+
+def uninstall_ui() -> None:
+    """Remove menu + shelf from a live Maya session."""
+    if not in_maya():
+        return
+    for name in (MENU_NAME, "MayaAgentMainMenu", "MayaAgent"):
+        _delete_menu_if_exists(name)
+    remove_shelf()
+    print("[Maya Agent] UI uninstalled")
+
+
 def reload_plugin(*_args) -> None:
-    import importlib
+    """
+    Hard-reload the package and reinstall menu/shelf.
+
+    Prefer clearing sys.modules over importlib.reload(): chained reloads leave
+    parent packages without submodule attributes (e.g. maya_agent.plugin missing).
+    """
     import sys
 
-    modules = [m for m in list(sys.modules) if m.startswith("maya_agent")]
-    for m in sorted(modules, reverse=True):
-        try:
-            importlib.reload(sys.modules[m])
-        except Exception:
-            pass
-    install_menu()
-    install_shelf()
-    open_ui()
+    # Keep project root on sys.path (junction / install path)
+    root = ""
+    try:
+        import maya_agent as _ma
+        import os
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(_ma.__file__)))
+        if root and root not in sys.path:
+            sys.path.insert(0, root)
+    except Exception:
+        pass
+
+    for name in list(sys.modules):
+        if name == "maya_agent" or name.startswith("maya_agent."):
+            sys.modules.pop(name, None)
+
+    import maya_agent.plugin.menu as menu_mod  # noqa: F401
+
+    menu_mod.install_menu()
+    menu_mod.install_shelf()
+    menu_mod.open_ui()
 
 
 def show_about(*_args) -> None:
@@ -262,18 +431,23 @@ def _deferred_install() -> None:
 
 
 def bootstrap() -> None:
-    """Called from userSetup.py — deferred because UI is not ready yet."""
+    """Called from userSetup.py — deferred because UI / menu sets are not ready yet."""
     if not in_maya():
         return
+    # String form is more reliable across Maya versions than passing callables
+    # into cmds.evalDeferred (which historically expects MEL/Python source text).
+    _deferred_py = (
+        "import maya_agent; maya_agent.plugin.menu._deferred_install()"
+    )
     try:
         import maya.utils
 
         maya.utils.executeDeferred(_deferred_install)
-        # Maya 2025: run once more after UI fully settles
         try:
             import maya.cmds as cmds
 
-            cmds.evalDeferred(_deferred_install, lowestPriority=True)
+            # Second pass after menu sets finish initializing (Maya 2016+)
+            cmds.evalDeferred(_deferred_py, lowestPriority=True)
         except Exception:
             maya.utils.executeDeferred(_deferred_install)
         print("[Maya Agent] bootstrap scheduled")
@@ -282,8 +456,6 @@ def bootstrap() -> None:
         try:
             import maya.cmds as cmds
 
-            cmds.evalDeferred(
-                "import maya_agent; maya_agent.plugin.menu._deferred_install()"
-            )
+            cmds.evalDeferred(_deferred_py)
         except Exception as e2:
             print("[Maya Agent] bootstrap failed:", e, e2)

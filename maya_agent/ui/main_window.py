@@ -305,6 +305,7 @@ class MayaAgentWindow:
                 chat_layout.addWidget(self._build_session_bar())
 
                 self.chat = create_chat_panel(chat_page)
+                self.chat.set_choice_handler(self._on_choice_reply)
                 chat_layout.addWidget(self.chat, 1)
 
                 composer = QtWidgets.QFrame()
@@ -743,6 +744,16 @@ class MayaAgentWindow:
 
             def _quick(self, prompt: str):
                 self.input_edit.setPlainText(prompt)
+                self._on_send()
+
+            def _on_choice_reply(self, reply: str):
+                """Auto-send when user clicks a confirmation button."""
+                text = (reply or "").strip()
+                if not text:
+                    return
+                if self._worker and self._worker.isRunning():
+                    return
+                self.input_edit.setPlainText(text)
                 self._on_send()
 
             def _on_clear(self):

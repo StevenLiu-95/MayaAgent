@@ -23,7 +23,8 @@ def help_html() -> str:
       <li>用自然语言描述任务，Agent 会自动调用工具</li>
       <li><b>Enter</b> 发送，<b>Shift+Enter</b> 换行；危险操作会弹窗确认</li>
       <li>支持<b>多组会话</b>，随 Maya 场景自动保存（sidecar 文件）</li>
-      <li>Agent 修改合并为一次 Undo，可用面板「撤销」或 Maya <b>Ctrl+Z</b> 回退</li>
+      <li>意图不清或缺参数时，Agent 会用可点击选项向你提问；点选即自动回复</li>
+      <li>危险操作会先确认；Agent 修改可合并 Undo，可用「撤销」或 <b>Ctrl+Z</b></li>
       <li>支持 Maya 2020–2026（PySide2 / PySide6）</li>
     </ul>
     </div>

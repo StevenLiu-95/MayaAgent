@@ -12,6 +12,124 @@ def escape(text: str) -> str:
     return html.escape(text or "", quote=False)
 
 
+_CHOICES_BLOCK_RE = re.compile(
+    r"\[\[CHOICES\]\]\s*(.*?)\s*\[\[/CHOICES\]\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_NUMBERED_ITEM_RE = re.compile(r"^\s*(\d+)[\.、\)]\s+(.+?)\s*$")
+_CHOICE_HINT_RE = re.compile(
+    r"(确认|请选择|请回复|是否|还是|选项|请告诉我|你想|要不要|"
+    r"请问|哪(一种|个|种)|如何|怎么|哪种|哪边|"
+    r"需要我|希望|更倾向|先确认|不清楚|不确定|"
+    r"路径|命名|格式|方案|参数)",
+    re.IGNORECASE,
+)
+
+
+def extract_user_choices(text: str) -> Tuple[str, List[Dict[str, str]]]:
+    """
+    Extract clickable reply choices from assistant text.
+
+    Supports:
+      1) Explicit block (preferred for any clarification / confirmation):
+         [[CHOICES]]
+         标签
+         标签|自动发送的完整回复
+         [[/CHOICES]]
+      2) Trailing numbered list (1. / 1、 / 1)) when the message asks
+         the user a question or seeks feedback.
+
+    Returns (display_text, choices) where each choice is
+    {"label": str, "reply": str}.
+    """
+    raw = text or ""
+    if not raw.strip():
+        return raw, []
+
+    # --- Explicit block (preferred) ---
+    match = _CHOICES_BLOCK_RE.search(raw)
+    if match:
+        choices: List[Dict[str, str]] = []
+        for line in match.group(1).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "|" in line:
+                label, reply = line.split("|", 1)
+                label, reply = label.strip(), reply.strip()
+            else:
+                label, reply = line, line
+            if label:
+                choices.append({"label": label, "reply": reply or label})
+        display = (_CHOICES_BLOCK_RE.sub("", raw)).strip()
+        display = re.sub(r"\n{3,}", "\n\n", display)
+        return display, choices[:6]
+
+    # --- Heuristic: consecutive numbered options near the end ---
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # Find runs of numbered items
+    best: Optional[Tuple[int, int, List[Dict[str, str]]]] = None
+    i = 0
+    while i < len(lines):
+        m = _NUMBERED_ITEM_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        start = i
+        items: List[Dict[str, str]] = []
+        expect = int(m.group(1))
+        while i < len(lines):
+            m2 = _NUMBERED_ITEM_RE.match(lines[i])
+            if not m2:
+                break
+            num = int(m2.group(1))
+            if items and num != expect:
+                break
+            label = m2.group(2).strip()
+            # Strip leading「」 quotes noise
+            items.append({"label": label, "reply": label})
+            expect = num + 1
+            i += 1
+        end = i  # exclusive
+        if len(items) >= 2:
+            # Prefer runs closer to the end
+            if best is None or start >= best[0]:
+                best = (start, end, items)
+        continue
+
+    if not best:
+        return raw, []
+
+    start, end, items = best
+    # Require confirmation-ish wording nearby (above or below the list)
+    window = "\n".join(lines[max(0, start - 4) : min(len(lines), end + 3)])
+    if not _CHOICE_HINT_RE.search(window):
+        return raw, []
+    # Only treat as choices if the run is in the last ~60% of the message
+    if start < len(lines) * 0.35 and end < len(lines) - 2:
+        return raw, []
+
+    # Drop trailing "请回复…" lines right after the list
+    drop_end = end
+    while drop_end < len(lines) and re.match(
+        r"^\s*(请回复.*|请选择.*|告诉我.*)?\s*$", lines[drop_end]
+    ):
+        if lines[drop_end].strip():
+            if re.match(r"^\s*请(回复|选择)", lines[drop_end]):
+                drop_end += 1
+                break
+            break
+        drop_end += 1
+
+    display_lines = lines[:start] + lines[drop_end:]
+    display = "\n".join(display_lines).strip()
+    display = re.sub(r"\n{3,}", "\n\n", display)
+    # Keep a short hint that buttons are below
+    if display and not display.endswith(("：", ":", "。", "？", "?")):
+        display = display.rstrip() + "。"
+    return display, items[:6]
+
+
 def markdown_to_html(text: str) -> str:
     """
     Convert a markdown subset to HTML that Qt RichText actually renders well.

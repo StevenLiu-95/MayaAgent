@@ -22,4 +22,11 @@ def bootstrap():
     return _boot()
 
 
-__all__ = ["__version__", "__app_name__", "get_config", "launch", "bootstrap"]
+def reload():
+    """Reload plugin code and reinstall Maya menu / shelf."""
+    from maya_agent.plugin.menu import reload_plugin
+
+    return reload_plugin()
+
+
+__all__ = ["__version__", "__app_name__", "get_config", "launch", "bootstrap", "reload"]
