@@ -58,17 +58,6 @@ def get_window_instance():
     return None
 
 
-_WELCOME_MD = (
-    "你好，我是 **Maya Agent**，面向游戏开发的 Maya AI 助手。\n\n"
-    "我可以帮你：\n"
-    "- 建模 / UV / 绑骨 / 动画\n"
-    "- 材质 / 灯光 / 渲染设置\n"
-    "- FBX / USD 导出与场景整理\n"
-    "- 编写并执行 Python / MEL\n\n"
-    "试试下方快捷按钮，或直接输入需求。"
-)
-
-
 def load_stylesheet_safe() -> str:
     try:
         return load_stylesheet()
@@ -439,7 +428,7 @@ class MayaAgentWindow:
                 return super().eventFilter(obj, event)
 
             def _show_welcome(self):
-                self.chat.add_welcome(_WELCOME_MD)
+                self.chat.clear()
 
             def _norm_session_id(self, value) -> str:
                 if value is None:

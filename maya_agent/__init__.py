@@ -1,6 +1,6 @@
 """Maya Agent — AI-powered assistant for Maya game development workflows."""
 
-__version__ = "1.0.0"
+__version__ = "1.0.2"
 __app_name__ = "Maya Agent"
 
 

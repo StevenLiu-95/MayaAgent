@@ -253,6 +253,55 @@ QLineEdit#toolbarComboEdit {
     selection-background-color: #3d6a9e;
 }
 
+QSpinBox#toolbarSpin, QDoubleSpinBox#toolbarSpin {
+    background-color: #2a2b32;
+    border: 1px solid #40414c;
+    border-radius: 6px;
+    padding: 2px 6px;
+    color: #e8e8ea;
+    font-size: 12px;
+    min-height: 26px;
+}
+
+QSpinBox#toolbarSpin:hover, QDoubleSpinBox#toolbarSpin:hover {
+    border: 1px solid #555664;
+    background-color: #30313a;
+}
+
+QSpinBox#toolbarSpin:focus, QDoubleSpinBox#toolbarSpin:focus {
+    border: 1px solid #5b8fc7;
+}
+
+QSpinBox#toolbarSpin::up-button,
+QSpinBox#toolbarSpin::down-button,
+QDoubleSpinBox#toolbarSpin::up-button,
+QDoubleSpinBox#toolbarSpin::down-button {
+    width: 0;
+    height: 0;
+    border: none;
+    background: transparent;
+}
+
+QSpinBox#toolbarSpin::up-arrow,
+QSpinBox#toolbarSpin::down-arrow,
+QDoubleSpinBox#toolbarSpin::up-arrow,
+QDoubleSpinBox#toolbarSpin::down-arrow {
+    width: 0;
+    height: 0;
+    image: none;
+    border: none;
+}
+
+QLineEdit#toolbarSpinEdit {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    color: #e8e8ea;
+    font-size: 12px;
+    selection-background-color: #3d6a9e;
+}
+
 QPushButton#toolbarBtn {
     background-color: #2f3038;
     border: 1px solid #40414c;
@@ -355,13 +404,118 @@ QTabWidget#mainTabs::pane {
 QTabWidget#settingsTabs::pane {
     border: 1px solid #33343d;
     border-radius: 8px;
-    background: #1e1f24;
+    background: #1a1b20;
     top: 0;
+    margin-top: 2px;
 }
 
 QTabWidget#settingsTabs QTabBar::tab {
-    padding: 6px 12px;
+    padding: 7px 14px;
     font-size: 12px;
+}
+
+QWidget#settingsPanel {
+    background: transparent;
+}
+
+QWidget#settingsPage {
+    background: transparent;
+}
+
+QScrollArea#settingsScroll {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#settingsScroll > QWidget > QWidget {
+    background: transparent;
+}
+
+QFrame#settingsSection {
+    background-color: #22232a;
+    border: 1px solid #33343d;
+    border-radius: 10px;
+}
+
+QLabel#settingsSectionTitle {
+    color: #f0f0f2;
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+}
+
+QLabel#settingsSectionHint {
+    color: #8a8a93;
+    font-size: 11px;
+    background: transparent;
+}
+
+QLabel#settingsFieldLabel {
+    color: #b0b0b8;
+    font-size: 12px;
+    background: transparent;
+    min-width: 88px;
+}
+
+QLabel#settingsOptionHint {
+    color: #7e7e88;
+    font-size: 11px;
+    background: transparent;
+}
+
+QCheckBox#settingsCheck {
+    color: #e8e8ea;
+    font-size: 13px;
+    spacing: 8px;
+}
+
+QFrame#settingsFooter {
+    background: transparent;
+    border-top: 1px solid #2e2f38;
+    padding-top: 8px;
+}
+
+QTreeWidget#settingsToolTree {
+    background-color: #22232a;
+    border: 1px solid #33343d;
+    border-radius: 10px;
+    outline: none;
+    padding: 6px 4px;
+    show-decoration-selected: 1;
+}
+
+QTreeWidget#settingsToolTree::item {
+    padding: 5px 8px;
+    border-radius: 4px;
+    min-height: 22px;
+}
+
+QTreeWidget#settingsToolTree::item:selected {
+    background-color: #3d6a9e;
+    color: #ffffff;
+}
+
+QTreeWidget#settingsToolTree::item:hover:!selected {
+    background-color: #2f3038;
+}
+
+QTreeWidget#settingsToolTree::branch {
+    background: transparent;
+}
+
+QTextEdit#settingsToolDesc {
+    background-color: #22232a;
+    border: 1px solid #33343d;
+    border-radius: 10px;
+    padding: 8px 10px;
+    color: #c8c8d0;
+}
+
+QTextBrowser#settingsHelpBrowser {
+    background-color: #1a1b20;
+    border: 1px solid #33343d;
+    border-radius: 10px;
+    padding: 12px 14px;
 }
 
 QTabWidget::pane {

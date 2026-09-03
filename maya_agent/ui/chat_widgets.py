@@ -750,17 +750,6 @@ def create_chat_panel(parent=None):
             self._blocks.append({"type": "error", "text": text})
             self._scroll_to_bottom()
 
-        def add_welcome(self, markdown: str):
-            self.clear()
-            block = MessageBlock("assistant")
-            block.set_markdown(markdown)
-            self._insert_before_stretch(block)
-            self._blocks.append(
-                {"type": "assistant", "text": markdown, "tools": [], "done": True}
-            )
-            self._pending_separator = True
-            self._scroll_to_bottom()
-
         def restore_blocks(self, blocks: List[Dict[str, Any]]) -> None:
             """Rebuild chat UI from persisted session blocks."""
             self.clear()
