@@ -8,7 +8,6 @@ import traceback
 from maya_agent import __app_name__, __version__
 from maya_agent.core.agent import MayaAgent
 from maya_agent.core.session_manager import SessionManager
-from maya_agent.llm.registry import list_providers
 from maya_agent.ui.chat_widgets import create_chat_panel
 from maya_agent.ui.combo_widgets import create_toolbar_combo
 from maya_agent.ui.settings_panel import create_settings_panel
@@ -161,7 +160,7 @@ class MayaAgentWindow:
                 self._save_timer.timeout.connect(self.persist_sessions)
 
                 self._build_ui()
-                self._refresh_provider_bar()
+                self._apply_provider_from_config()
                 self._load_active_session()
 
             def _build_ui(self):
@@ -192,46 +191,6 @@ class MayaAgentWindow:
                 header.addWidget(self.scene_hint, 1)
                 header.addWidget(hint, 0)
                 root.addLayout(header)
-
-                bar_wrap = QtWidgets.QFrame()
-                bar_wrap.setObjectName("toolbarFrame")
-                bar = QtWidgets.QHBoxLayout(bar_wrap)
-                bar.setContentsMargins(12, 8, 12, 8)
-                bar.setSpacing(8)
-                bar.setAlignment(QtCore.Qt.AlignVCenter)
-
-                lab = QtWidgets.QLabel("模型")
-                lab.setObjectName("toolbarLabel")
-                lab.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-                lab.setFixedHeight(30)
-
-                self.provider_combo = create_toolbar_combo()
-                self.provider_combo.setFixedHeight(30)
-                self.provider_combo.setMinimumWidth(100)
-                self.provider_combo.setMaximumWidth(140)
-                self.provider_combo.setSizePolicy(
-                    QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed
-                )
-
-                self.model_combo = create_toolbar_combo(editable=True)
-                self.model_combo.setFixedHeight(30)
-                self.model_combo.setMinimumWidth(140)
-                self.model_combo.setSizePolicy(
-                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
-                )
-                self.provider_combo.currentIndexChanged.connect(self._on_provider_ui)
-
-                settings_btn = QtWidgets.QPushButton("设置")
-                settings_btn.setObjectName("toolbarBtn")
-                settings_btn.setFixedSize(56, 30)
-                settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
-                settings_btn.clicked.connect(self._open_settings)
-
-                bar.addWidget(lab, 0, QtCore.Qt.AlignVCenter)
-                bar.addWidget(self.provider_combo, 0, QtCore.Qt.AlignVCenter)
-                bar.addWidget(self.model_combo, 1, QtCore.Qt.AlignVCenter)
-                bar.addWidget(settings_btn, 0, QtCore.Qt.AlignVCenter)
-                root.addWidget(bar_wrap)
 
                 self.tabs = QtWidgets.QTabWidget()
                 self.tabs.setObjectName("mainTabs")
@@ -671,10 +630,7 @@ class MayaAgentWindow:
             def _on_settings_saved(self):
                 get_config().reload()
                 self.setStyleSheet(load_stylesheet_safe())
-                self._refresh_provider_bar()
-                pid = get_config().get("llm.active_provider")
-                model = get_config().get(f"providers.{pid}.default_model")
-                self.agent.set_provider(pid, model)
+                self._apply_provider_from_config()
 
             def _use_tool_from_settings(self, name: str):
                 self.input_edit.setPlainText(
@@ -686,40 +642,12 @@ class MayaAgentWindow:
                         break
                 self.input_edit.setFocus()
 
-            def _open_settings(self):
-                for i in range(self.tabs.count()):
-                    if self.tabs.tabText(i) == "设置":
-                        self.tabs.setCurrentIndex(i)
-                        break
-                if hasattr(self, "settings_panel"):
-                    self.settings_panel.reload_from_config()
-
-            def _refresh_provider_bar(self):
-                self.provider_combo.blockSignals(True)
-                self.provider_combo.clear()
+            def _apply_provider_from_config(self):
                 cfg = get_config()
-                active = cfg.get("llm.active_provider", "deepseek")
-                for p in list_providers():
-                    self.provider_combo.addItem(p["label"], p["id"])
-                idx = self.provider_combo.findData(active)
-                if idx >= 0:
-                    self.provider_combo.setCurrentIndex(idx)
-                self.provider_combo.blockSignals(False)
-                self._on_provider_ui()
-
-            def _on_provider_ui(self):
-                pid = self.provider_combo.currentData()
-                if not pid:
-                    return
-                cfg = get_config()
-                pconf = cfg.get(f"providers.{pid}", {}) or {}
-                self.model_combo.blockSignals(True)
-                self.model_combo.clear()
-                for m in pconf.get("models") or []:
-                    self.model_combo.addItem(m)
-                self.model_combo.setCurrentText(pconf.get("default_model", ""))
-                self.model_combo.blockSignals(False)
-                self.agent.set_provider(pid, self.model_combo.currentText().strip())
+                pid = cfg.get("llm.active_provider", "deepseek")
+                model = cfg.get(f"providers.{pid}.default_model", "")
+                if pid:
+                    self.agent.set_provider(pid, model or None)
 
             def _confirm_destructive(self, name: str, args: dict) -> bool:
                 reply = QtWidgets.QMessageBox.question(
@@ -802,10 +730,12 @@ class MayaAgentWindow:
                 if self._worker and self._worker.isRunning():
                     return
 
-                pid = self.provider_combo.currentData()
-                model = self.model_combo.currentText().strip()
+                pid = get_config().get("llm.active_provider", "deepseek")
+                model = (
+                    get_config().get(f"providers.{pid}.default_model", "") or ""
+                ).strip()
                 if pid:
-                    self.agent.set_provider(pid, model)
+                    self.agent.set_provider(pid, model or None)
 
                 self.chat.add_user(text)
                 self.chat.begin_assistant()
