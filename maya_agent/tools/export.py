@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from maya_agent.tools.registry import ToolResult, obj_schema, tool
-from maya_agent.tools._maya import cmds as _cmds
+from maya_agent.tools._maya import cmds as _cmds, in_maya
 from maya_agent.utils.maya_compat import ensure_plugin
 
 @tool(

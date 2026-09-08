@@ -511,11 +511,40 @@ QTextEdit#settingsToolDesc {
     color: #c8c8d0;
 }
 
-QTextBrowser#settingsHelpBrowser {
-    background-color: #1a1b20;
-    border: 1px solid #33343d;
-    border-radius: 10px;
-    padding: 12px 14px;
+QLabel#settingsHelpTitle {
+    color: #f0f0f2;
+    font-size: 16px;
+    font-weight: 600;
+    background: transparent;
+}
+
+QLabel#settingsHelpVersion {
+    color: #8a8a93;
+    font-size: 12px;
+    background: transparent;
+    padding-top: 3px;
+}
+
+QLabel#settingsHelpBody {
+    color: #c4c4cc;
+    font-size: 13px;
+    background: transparent;
+    line-height: 1.45;
+}
+
+QLabel#settingsHelpItem {
+    color: #d0d0d6;
+    font-size: 13px;
+    background: transparent;
+    padding: 2px 0;
+}
+
+QLabel#settingsHelpCat {
+    color: #9eb6d4;
+    font-size: 12px;
+    font-weight: 600;
+    background: transparent;
+    padding-top: 8px;
 }
 
 QTabWidget::pane {

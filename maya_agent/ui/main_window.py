@@ -10,7 +10,11 @@ from maya_agent.core.agent import MayaAgent
 from maya_agent.core.session_manager import SessionManager
 from maya_agent.ui.chat_widgets import create_chat_panel
 from maya_agent.ui.combo_widgets import create_toolbar_combo
-from maya_agent.ui.settings_panel import create_settings_panel
+from maya_agent.ui.settings_panel import (
+    create_help_panel,
+    create_settings_panel,
+    create_tools_panel,
+)
 from maya_agent.ui.status_anim import create_animated_status
 from maya_agent.ui.stylesheets import load_stylesheet
 from maya_agent.utils.config import get_config
@@ -198,6 +202,8 @@ class MayaAgentWindow:
 
                 self._build_chat_tab()
                 self._build_settings_tab()
+                self._build_tools_tab()
+                self._build_help_tab()
 
             def _build_session_bar(self):
                 session_wrap = QtWidgets.QFrame()
@@ -292,7 +298,6 @@ class MayaAgentWindow:
                 quick_scroll.setSizePolicy(
                     QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
                 )
-                # 滚轮默认竖滑 → 改为控制横向滚动条
                 quick_scroll.viewport().installEventFilter(self)
                 self._quick_scroll = quick_scroll
 
@@ -304,9 +309,11 @@ class MayaAgentWindow:
                 quick.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
                 for label, prompt in (
                     ("场景信息", "请查看当前场景信息并简要汇总。"),
-                    ("网格统计", "对当前选择做网格拓扑统计。"),
+                    ("网格统计", "对当前选中的网格做拓扑统计。"),
                     ("导出 FBX", "帮我把当前选择导出为 FBX，先询问保存路径建议。"),
                     ("三点光", "在场景中创建三点布光。"),
+                    ("新建场景", "新建一个空场景。"),
+                    ("清空场景", "清空当前场景。"),
                 ):
                     b = QtWidgets.QPushButton(label)
                     b.setObjectName("chipBtn")
@@ -351,9 +358,19 @@ class MayaAgentWindow:
                 self.settings_panel = create_settings_panel(
                     self,
                     on_saved=self._on_settings_saved,
-                    on_tool_use=self._use_tool_from_settings,
                 )
                 self.tabs.addTab(self.settings_panel, "设置")
+
+            def _build_tools_tab(self):
+                self.tools_panel = create_tools_panel(
+                    self,
+                    on_tool_use=self._use_tool_from_settings,
+                )
+                self.tabs.addTab(self.tools_panel, "工具")
+
+            def _build_help_tab(self):
+                self.help_panel = create_help_panel(self)
+                self.tabs.addTab(self.help_panel, "帮助")
 
             def eventFilter(self, obj, event):
                 # 快捷栏：鼠标滚轮改为横向滑动

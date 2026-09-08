@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.0.2"
+  version: "1.1.0"
   language: zh-CN
   theme: dark
 
