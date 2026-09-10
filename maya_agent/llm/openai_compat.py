@@ -11,8 +11,10 @@ from maya_agent.llm.base import (
     BaseProvider,
     ChatMessage,
     ChatResponse,
+    StreamChunk,
     ToolCall,
     ToolSpec,
+    extract_thinking_text,
 )
 
 
@@ -75,7 +77,7 @@ class OpenAICompatProvider(BaseProvider):
         messages: List[ChatMessage],
         tools: Optional[List[ToolSpec]] = None,
         stream: bool = False,
-    ) -> Union[ChatResponse, Generator[str, None, ChatResponse]]:
+    ) -> Union[ChatResponse, Generator[StreamChunk, None, ChatResponse]]:
         if stream:
             return self._stream(messages, tools)
         return self._complete(messages, tools)
@@ -100,8 +102,9 @@ class OpenAICompatProvider(BaseProvider):
         self,
         messages: List[ChatMessage],
         tools: Optional[List[ToolSpec]],
-    ) -> Generator[str, None, ChatResponse]:
+    ) -> Generator[StreamChunk, None, ChatResponse]:
         content_parts: List[str] = []
+        thinking_parts: List[str] = []
         tool_acc: Dict[int, Dict[str, Any]] = {}
         finish_reason = ""
         usage: Dict[str, int] = {}
@@ -140,10 +143,14 @@ class OpenAICompatProvider(BaseProvider):
                     fr = choices[0].get("finish_reason")
                     if fr:
                         finish_reason = fr
+                    think = extract_thinking_text(delta)
                     piece = delta.get("content") or ""
-                    if piece:
-                        content_parts.append(piece)
-                        yield piece
+                    if think or piece:
+                        if think:
+                            thinking_parts.append(think)
+                        if piece:
+                            content_parts.append(piece)
+                        yield StreamChunk(text=piece or "", thinking=think or "")
                     for tc in delta.get("tool_calls") or []:
                         idx = tc.get("index", 0)
                         slot = tool_acc.setdefault(
@@ -168,6 +175,7 @@ class OpenAICompatProvider(BaseProvider):
         ]
         return ChatResponse(
             content="".join(content_parts),
+            thinking="".join(thinking_parts),
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
@@ -197,8 +205,10 @@ class OpenAICompatProvider(BaseProvider):
         }
         return ChatResponse(
             content=msg.get("content") or "",
+            thinking=extract_thinking_text(msg),
             tool_calls=tool_calls,
             raw=data,
             finish_reason=choices[0].get("finish_reason") or "",
             usage=usage,
         )
+

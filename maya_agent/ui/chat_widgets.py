@@ -95,20 +95,67 @@ def create_chat_panel(parent=None):
             pal.setColor(QtGui.QPalette.Window, QtCore.Qt.transparent)
             self.setPalette(pal)
             self.viewport().setPalette(pal)
+            self._stream_cache = None
+            self._stream_refit_n = 0
 
         def set_html(self, html: str):
+            self._stream_cache = None
+            self._stream_refit_n = 0
             self.setHtml(html or "")
             self._refit()
 
         def set_plain(self, text: str):
+            self._stream_cache = None
+            self._stream_refit_n = 0
             self.setPlainText(text or "")
             self._refit()
+
+        def set_plain_streaming(self, text: str):
+            """Fast live-update path: plain text + incremental insert when possible."""
+            text = text or ""
+            prev = self._stream_cache
+            if prev is not None and text == prev:
+                return
+            if (
+                prev
+                and text.startswith(prev)
+                and (len(text) - len(prev)) <= 800
+            ):
+                cursor = self.textCursor()
+                end = getattr(QtGui.QTextCursor, "End", None)
+                if end is None:
+                    end = QtGui.QTextCursor.MoveOperation.End
+                cursor.movePosition(end)
+                cursor.insertText(text[len(prev) :])
+                self.setTextCursor(cursor)
+            else:
+                self.setPlainText(text)
+            self._stream_cache = text
+            self._stream_refit_n = getattr(self, "_stream_refit_n", 0) + 1
+            self._refit_streaming(text, force=self._stream_refit_n % 5 == 0)
 
         def _refit(self):
             width = max(self.viewport().width(), self.width() - 4, 160)
             self.document().setTextWidth(width)
             # Keep height tight — large pads here show as empty bottom margin in bubbles
             h = int(self.document().size().height()) + 2
+            self.setFixedHeight(max(h, 16))
+
+        def _refit_streaming(self, text: str, force: bool = False):
+            """Cheaper height estimate while tokens are still arriving."""
+            width = max(self.viewport().width(), self.width() - 4, 160)
+            fm = self.fontMetrics()
+            line_h = max(fm.lineSpacing(), 14)
+            char_w = max(fm.averageCharWidth(), 6)
+            cols = max(int(width / char_w), 8)
+            wrapped = 0
+            for line in (text or "").splitlines() or [""]:
+                wrapped += max(1, (len(line) + cols - 1) // cols)
+            if force or wrapped <= 24:
+                self.document().setTextWidth(width)
+                h = int(self.document().size().height()) + 2
+            else:
+                h = wrapped * line_h + 6
             self.setFixedHeight(max(h, 16))
 
         def resizeEvent(self, event):
@@ -317,6 +364,198 @@ def create_chat_panel(parent=None):
                     break
                 parent = parent.parentWidget()
 
+    class ThinkingRow(QtWidgets.QFrame):
+        """Collapsible block for model reasoning / thinking content."""
+
+        _PREVIEW_CHARS = 280
+        _STREAM_TAIL_CHARS = 2700
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName("thinkingRow")
+            self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            lay = QtWidgets.QVBoxLayout(self)
+            lay.setContentsMargins(10, 8, 10, 8)
+            lay.setSpacing(4)
+            self.title = QtWidgets.QLabel("思考中…")
+            self.title.setWordWrap(True)
+            self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self.detail = QtWidgets.QLabel("")
+            self.detail.setWordWrap(True)
+            self.detail.setTextFormat(QtCore.Qt.PlainText)
+            self.detail.setObjectName("thinkingDetail")
+            self.detail.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self.detail.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.expand_btn = QtWidgets.QPushButton("展开全部 ▾")
+            self.expand_btn.setObjectName("thinkingExpandBtn")
+            self.expand_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.expand_btn.setFlat(True)
+            self.expand_btn.setFixedHeight(22)
+            self.expand_btn.clicked.connect(self._toggle_expand)
+            self.expand_btn.hide()
+            lay.addWidget(self.title)
+            lay.addWidget(self.detail)
+            lay.addWidget(self.expand_btn, 0, QtCore.Qt.AlignLeft)
+            self._text = ""
+            self._done = False
+            self._expanded = True
+            self._anim_frame = 0
+            self._detail_cache = None
+            self._anim_timer = QtCore.QTimer(self)
+            self._anim_timer.setInterval(220)
+            self._anim_timer.timeout.connect(self._tick)
+            self.setStyleSheet(self._stylesheet(running=True, pulse=False))
+
+        def _stylesheet(self, *, running: bool, pulse: bool = False) -> str:
+            if running:
+                bg = "#2a3040" if pulse else "#262c3a"
+                border = "#5a6a8a" if pulse else "#3e4a62"
+                title = "#b0c4e0"
+                detail = "#8a9bb8"
+                btn = "#7a90b0"
+            else:
+                bg = "#242830"
+                border = "#3a4252"
+                title = "#9aabcc"
+                detail = "#7a879c"
+                btn = "#6a7a96"
+            return f"""
+                QFrame#thinkingRow {{
+                    background-color: {bg};
+                    border: 1px solid {border};
+                    border-radius: 8px;
+                }}
+                QFrame#thinkingRow QLabel {{
+                    background: transparent;
+                    border: none;
+                    color: {title};
+                    font-size: 12px;
+                }}
+                QFrame#thinkingRow QLabel#thinkingDetail {{
+                    color: {detail};
+                    font-size: 11px;
+                    font-weight: 400;
+                }}
+                QFrame#thinkingRow QPushButton#thinkingExpandBtn {{
+                    background: transparent;
+                    border: none;
+                    color: {btn};
+                    font-size: 11px;
+                    font-weight: 500;
+                    text-align: left;
+                    padding: 0 2px;
+                    min-height: 18px;
+                }}
+                QFrame#thinkingRow QPushButton#thinkingExpandBtn:hover {{
+                    color: {title};
+                    text-decoration: underline;
+                }}
+            """
+
+        def _tick(self) -> None:
+            self._anim_frame += 1
+            spin = _SPINNER[self._anim_frame % len(_SPINNER)]
+            dots = "." * (self._anim_frame % 4)
+            self.title.setText(f"{spin} 思考中{dots}")
+            # Restyle infrequently — stylesheet rebuilds are expensive on Maya UI thread
+            if self._anim_frame % 3 == 0:
+                self.setStyleSheet(
+                    self._stylesheet(running=True, pulse=self._anim_frame % 6 == 0)
+                )
+
+        def _escape_html(self, text: str) -> str:
+            return chat_format.escape(text or "").replace("\n", "<br/>")
+
+        def _stream_display_text(self, text: str) -> str:
+            if len(text) <= self._STREAM_TAIL_CHARS:
+                return text
+            return "…\n" + text[-self._STREAM_TAIL_CHARS :]
+
+        def _refresh_detail(self) -> None:
+            text = self._text or ""
+            if not text:
+                self.detail.hide()
+                self.expand_btn.hide()
+                self._detail_cache = None
+                return
+            if not self._done:
+                shown = self._stream_display_text(text)
+                if shown == self._detail_cache:
+                    return
+                self._detail_cache = shown
+                self.detail.setTextFormat(QtCore.Qt.PlainText)
+                self.detail.setText(shown)
+                self.expand_btn.hide()
+                self.detail.show()
+                return
+
+            long = len(text) > self._PREVIEW_CHARS
+            if long and not self._expanded:
+                shown = text[: self._PREVIEW_CHARS].rstrip() + "…"
+                self.expand_btn.setText("展开全部 ▾")
+                self.expand_btn.show()
+            else:
+                shown = text
+                if long:
+                    self.expand_btn.setText("收起 ▴")
+                    self.expand_btn.show()
+                else:
+                    self.expand_btn.hide()
+            cache_key = ("done", self._expanded, shown)
+            if cache_key == self._detail_cache:
+                return
+            self._detail_cache = cache_key
+            self.detail.setTextFormat(QtCore.Qt.RichText)
+            self.detail.setText(self._escape_html(shown))
+            self.detail.show()
+
+        def append(self, piece: str) -> None:
+            if not piece:
+                return
+            self._text += piece
+            self._done = False
+            self._expanded = True
+            if not self._anim_timer.isActive():
+                self.title.setText("◐ 思考中…")
+                self._anim_timer.start()
+            self._refresh_detail()
+
+        def set_full(self, text: str, *, done: bool = True) -> None:
+            self._text = text or ""
+            if done:
+                self.set_done()
+            else:
+                self._done = False
+                self._refresh_detail()
+
+        def set_done(self) -> None:
+            if not self._text:
+                self.hide()
+                self._anim_timer.stop()
+                return
+            self._anim_timer.stop()
+            self._done = True
+            # Collapse long thinking by default once finished
+            self._expanded = len(self._text) <= self._PREVIEW_CHARS
+            self.setStyleSheet(self._stylesheet(running=False))
+            self.title.setText("💭 思考过程")
+            self._detail_cache = None
+            self._refresh_detail()
+            self.show()
+
+        def _toggle_expand(self) -> None:
+            self._expanded = not self._expanded
+            self._detail_cache = None
+            self._refresh_detail()
+            self.detail.adjustSize()
+            self.adjustSize()
+            parent = self.parentWidget()
+            while parent is not None:
+                if hasattr(parent, "_scroll_to_bottom"):
+                    parent._scroll_to_bottom()
+                    break
+                parent = parent.parentWidget()
+
     class ChoiceBar(QtWidgets.QWidget):
         """Clickable confirmation options under an assistant bubble."""
 
@@ -420,6 +659,7 @@ def create_chat_panel(parent=None):
             super().__init__(parent)
             self.role = role
             self._tools: List[ToolRow] = []
+            self._thinking_row: Optional[ThinkingRow] = None
             self._body_view: Optional[BodyView] = None
             self._choice_bar = None
 
@@ -474,6 +714,7 @@ def create_chat_panel(parent=None):
             self._set_typing(False)
 
         def set_markdown(self, text: str):
+            self.finish_thinking()
             if not text:
                 if self._body_view is not None:
                     self._body_view.hide()
@@ -506,16 +747,53 @@ def create_chat_panel(parent=None):
                 self._choice_bar.clear()
 
         def set_streaming_text(self, text: str):
+            self.finish_thinking()
             view = self._ensure_body()
-            safe = chat_format.escape(text or "").replace("\n", "<br/>")
-            view.set_html(
-                f'<p style="margin:0;line-height:140%;">{safe}</p>'
-            )
-            view.setVisible(bool(text))
-            if text:
+            # Avoid expensive choice parsing while streaming; hide incomplete marker cheaply
+            display = text or ""
+            marker = display.find("[[CHOICES]]")
+            if marker >= 0:
+                display = display[:marker].rstrip()
+            view.set_plain_streaming(display)
+            view.setVisible(bool(display))
+            if display:
                 self._set_typing(False)
-            elif not self._tools:
+            elif not self._tools and self._thinking_row is None:
                 self._set_typing(True)
+
+        def append_thinking(self, piece: str) -> None:
+            if not piece:
+                return
+            # Always append at the end so thinking stays in timeline order
+            # (after prior text / tools), not stacked at the top.
+            if self._thinking_row is None or self._thinking_row._done:
+                row = ThinkingRow(self.bubble)
+                self.content.addWidget(row)
+                self._thinking_row = row
+            self._thinking_row.append(piece)
+            self._set_typing(False)
+
+        def finish_thinking(self) -> None:
+            if self._thinking_row is not None:
+                self._thinking_row.set_done()
+
+        def set_thinking_text(self, text: str) -> None:
+            """Add a completed thinking block at the current timeline position."""
+            if not text:
+                return
+            row = ThinkingRow(self.bubble)
+            self.content.addWidget(row)
+            self._thinking_row = row
+            self._thinking_row.set_full(text, done=True)
+            self._set_typing(False)
+
+        def add_text_segment(self, text: str) -> None:
+            """Add a completed text segment at the current timeline position."""
+            if not text:
+                return
+            self._body_view = None
+            display, _ = chat_format.extract_user_choices(text)
+            self.set_markdown(display or text)
 
         def _set_typing(self, on: bool):
             if on:
@@ -529,9 +807,15 @@ def create_chat_panel(parent=None):
             has_body = (
                 self._body_view is not None and bool(self._body_view.toPlainText())
             )
-            self._set_typing(on and not has_body and not self._tools)
+            self._set_typing(
+                on
+                and not has_body
+                and not self._tools
+                and self._thinking_row is None
+            )
 
         def add_tool_running(self, name: str) -> ToolRow:
+            self.finish_thinking()
             self._body_view = None
             row = ToolRow(self.bubble)
             row.set_running(name)
@@ -589,9 +873,13 @@ def create_chat_panel(parent=None):
             self._widgets: List[QtWidgets.QWidget] = []
             self._current: Optional[MessageBlock] = None
             self._stream_text = ""
+            self._thinking_text = ""
             self._pending_separator = False
             self._on_choice_reply = None
             self._active_choice_block = None
+            self._last_scroll_ms = 0
+            self._scroll_pending = False
+            self._scroll_min_interval_ms = 120
 
             self.setStyleSheet(
                 """
@@ -618,8 +906,11 @@ def create_chat_panel(parent=None):
             self._widgets.clear()
             self._current = None
             self._stream_text = ""
+            self._thinking_text = ""
             self._pending_separator = False
             self._active_choice_block = None
+            self._last_scroll_ms = 0
+            self._scroll_pending = False
 
         def set_choice_handler(self, fn) -> None:
             """fn(reply_text) called when user clicks a confirmation button."""
@@ -638,9 +929,36 @@ def create_chat_panel(parent=None):
             self.v.insertWidget(idx, widget)
             self._widgets.append(widget)
 
-        def _scroll_to_bottom(self):
+        def _is_near_bottom(self, margin: int = 96) -> bool:
+            bar = self.scroll.verticalScrollBar()
+            return (bar.maximum() - bar.value()) <= margin
+
+        def _scroll_to_bottom(self, force: bool = False):
+            """Scroll to bottom. Soft (default): only if already near bottom."""
+            if not force and not self._is_near_bottom():
+                self._scroll_pending = False
+                return
+            if not force:
+                now = QtCore.QDateTime.currentMSecsSinceEpoch()
+                elapsed = now - self._last_scroll_ms
+                if elapsed < self._scroll_min_interval_ms:
+                    if not self._scroll_pending:
+                        self._scroll_pending = True
+                        QtCore.QTimer.singleShot(
+                            max(1, self._scroll_min_interval_ms - elapsed),
+                            self._flush_pending_scroll,
+                        )
+                    return
+            self._scroll_pending = False
+            self._last_scroll_ms = QtCore.QDateTime.currentMSecsSinceEpoch()
             bar = self.scroll.verticalScrollBar()
             QtCore.QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
+
+        def _flush_pending_scroll(self) -> None:
+            if not self._scroll_pending:
+                return
+            self._scroll_pending = False
+            self._scroll_to_bottom(force=False)
 
         def add_user(self, text: str):
             self.disable_active_choices()
@@ -652,7 +970,7 @@ def create_chat_panel(parent=None):
             self._insert_before_stretch(block)
             self._blocks.append({"type": "user", "text": text})
             self._current = None
-            self._scroll_to_bottom()
+            self._scroll_to_bottom(force=True)
 
         def begin_assistant(self):
             block = MessageBlock("assistant")
@@ -660,35 +978,91 @@ def create_chat_panel(parent=None):
             self._insert_before_stretch(block)
             self._current = block
             self._stream_text = ""
+            self._thinking_text = ""
             self._blocks.append(
-                {"type": "assistant", "text": "", "tools": [], "done": False}
+                {
+                    "type": "assistant",
+                    "text": "",
+                    "thinking": "",
+                    "tools": [],
+                    "parts": [],
+                    "done": False,
+                }
             )
-            self._scroll_to_bottom()
+            self._scroll_to_bottom(force=True)
             return block
+
+        def _assistant_block(self) -> Optional[Dict[str, Any]]:
+            if self._blocks and self._blocks[-1].get("type") == "assistant":
+                return self._blocks[-1]
+            return None
+
+        def _parts(self) -> List[Dict[str, Any]]:
+            block = self._assistant_block()
+            if block is None:
+                return []
+            return block.setdefault("parts", [])
+
+        def _extend_part(self, kind: str, text: str = "", **extra: Any) -> None:
+            parts = self._parts()
+            if kind in ("thinking", "text") and parts and parts[-1].get("kind") == kind:
+                parts[-1]["text"] = (parts[-1].get("text") or "") + text
+                return
+            part: Dict[str, Any] = {"kind": kind}
+            if kind in ("thinking", "text"):
+                part["text"] = text
+            part.update(extra)
+            parts.append(part)
+
+        def append_thinking(self, piece: str):
+            if not piece:
+                return
+            if self._current is None:
+                self.begin_assistant()
+            row = self._current._thinking_row
+            started_new = row is None or row._done
+            self._thinking_text += piece
+            self._current.append_thinking(piece)
+            block = self._assistant_block()
+            if block is not None:
+                block["thinking"] = self._thinking_text
+                if started_new:
+                    self._parts().append({"kind": "thinking", "text": piece})
+                else:
+                    self._extend_part("thinking", piece)
+            self._scroll_to_bottom()
+
+        def finish_thinking(self):
+            if self._current is not None:
+                self._current.finish_thinking()
 
         def append_assistant_text(self, piece: str):
             if self._current is None:
                 self.begin_assistant()
+            self.finish_thinking()
             self._stream_text += piece
-            # Hide choice markers while streaming; buttons appear on finish
-            display, _ = chat_format.extract_user_choices(self._stream_text)
-            self._current.set_streaming_text(display or self._stream_text)
-            if self._blocks and self._blocks[-1].get("type") == "assistant":
-                self._blocks[-1]["text"] = (
-                    self._blocks[-1].get("text") or ""
-                ) + piece
+            # Streaming uses plain text; choice markers stripped cheaply inside
+            self._current.set_streaming_text(self._stream_text)
+            block = self._assistant_block()
+            if block is not None:
+                block["text"] = (block.get("text") or "") + piece
+                self._extend_part("text", piece)
             self._scroll_to_bottom()
 
         def tool_start(self, name: str):
             if self._current is None:
                 self.begin_assistant()
+            self.finish_thinking()
             if self._stream_text:
                 self._current.set_streaming_text(self._stream_text)
             self._stream_text = ""
             self._current.add_tool_running(name)
-            if self._blocks and self._blocks[-1].get("type") == "assistant":
-                self._blocks[-1].setdefault("tools", []).append(
-                    {"name": name, "status": "running"}
+            block = self._assistant_block()
+            if block is not None:
+                tool = {"name": name, "status": "running"}
+                block.setdefault("tools", []).append(tool)
+                self._parts().append(
+                    {"kind": "tool", "name": name, "status": "running"}
                 )
             self._scroll_to_bottom()
 
@@ -696,18 +1070,28 @@ def create_chat_panel(parent=None):
             if self._current is None:
                 self.begin_assistant()
             self._current.finish_last_tool(name, result)
-            if self._blocks and self._blocks[-1].get("type") == "assistant":
-                tools = self._blocks[-1].setdefault("tools", [])
-                for t in reversed(tools):
+            block = self._assistant_block()
+            if block is not None:
+                for t in reversed(block.setdefault("tools", [])):
                     if t.get("name") == name and t.get("status") == "running":
                         t["status"] = "done"
                         t["result"] = result
+                        break
+                for p in reversed(self._parts()):
+                    if (
+                        p.get("kind") == "tool"
+                        and p.get("name") == name
+                        and p.get("status") == "running"
+                    ):
+                        p["status"] = "done"
+                        p["result"] = result
                         break
             self._scroll_to_bottom()
 
         def finish_assistant(self, final_text: Optional[str] = None):
             if self._current is None:
                 return
+            self.finish_thinking()
             text = self._stream_text
             if final_text and not text:
                 text = final_text
@@ -727,15 +1111,24 @@ def create_chat_panel(parent=None):
                 self._current._set_typing(False)
                 if self._current._body_view is not None and not self._current._body_view.toPlainText():
                     self._current._body_view.hide()
-            if self._blocks and self._blocks[-1].get("type") == "assistant":
-                self._blocks[-1]["done"] = True
-                if text:
-                    # Persist original text (incl. markers) for session fidelity
-                    self._blocks[-1]["text"] = text
+            block = self._assistant_block()
+            if block is not None:
+                block["done"] = True
+                parts = block.get("parts") or []
+                agg_text = "".join(
+                    p.get("text") or "" for p in parts if p.get("kind") == "text"
+                )
+                if agg_text:
+                    block["text"] = agg_text
+                elif text:
+                    block["text"] = text
+                if self._thinking_text:
+                    block["thinking"] = self._thinking_text
                 if choices:
-                    self._blocks[-1]["choices"] = choices
+                    block["choices"] = choices
             self._current = None
             self._stream_text = ""
+            self._thinking_text = ""
             self._scroll_to_bottom()
 
         def _handle_choice(self, reply: str) -> None:
@@ -748,7 +1141,46 @@ def create_chat_panel(parent=None):
             block.set_plain_text(text)
             self._insert_before_stretch(block)
             self._blocks.append({"type": "error", "text": text})
-            self._scroll_to_bottom()
+            self._scroll_to_bottom(force=True)
+
+        def _restore_assistant(self, block: Dict[str, Any]) -> None:
+            mb = MessageBlock("assistant")
+            parts = block.get("parts")
+            if parts:
+                for part in parts:
+                    kind = part.get("kind")
+                    if kind == "thinking":
+                        mb.set_thinking_text(part.get("text") or "")
+                    elif kind == "text":
+                        mb.add_text_segment(part.get("text") or "")
+                    elif kind == "tool":
+                        name = part.get("name") or "tool"
+                        mb.add_tool_running(name)
+                        if part.get("status") == "done":
+                            mb.finish_last_tool(name, part.get("result") or "")
+            else:
+                # Legacy sessions: thinking → tools → text (order was lossy)
+                thinking = block.get("thinking") or ""
+                if thinking:
+                    mb.set_thinking_text(thinking)
+                for tool in block.get("tools") or []:
+                    name = tool.get("name") or "tool"
+                    mb.add_tool_running(name)
+                    if tool.get("status") == "done":
+                        mb.finish_last_tool(name, tool.get("result") or "")
+                text = block.get("text") or ""
+                if text:
+                    mb.add_text_segment(text)
+            choices = block.get("choices") or []
+            if not choices:
+                raw = block.get("text") or ""
+                if raw:
+                    _, choices = chat_format.extract_user_choices(raw)
+            if choices:
+                mb.set_choices(choices, enabled=False)
+            if not (block.get("text") or block.get("parts")):
+                mb._set_typing(False)
+            self._insert_before_stretch(mb)
 
         def restore_blocks(self, blocks: List[Dict[str, Any]]) -> None:
             """Rebuild chat UI from persisted session blocks."""
@@ -770,29 +1202,14 @@ def create_chat_panel(parent=None):
                     mb.set_plain_text(block.get("text") or "")
                     self._insert_before_stretch(mb)
                 elif btype == "assistant":
-                    mb = MessageBlock("assistant")
-                    for tool in block.get("tools") or []:
-                        name = tool.get("name") or "tool"
-                        mb.add_tool_running(name)
-                        if tool.get("status") == "done":
-                            mb.finish_last_tool(name, tool.get("result") or "")
-                    text = block.get("text") or ""
-                    if text:
-                        display, _parsed = chat_format.extract_user_choices(text)
-                        mb.set_markdown(display or text)
-                        choices = block.get("choices") or _parsed
-                        if choices:
-                            # Historical choices are shown but not clickable
-                            mb.set_choices(choices, enabled=False)
-                    else:
-                        mb._set_typing(False)
-                    self._insert_before_stretch(mb)
+                    self._restore_assistant(block)
 
             self._blocks = [dict(b) for b in blocks]
             self._current = None
             self._stream_text = ""
+            self._thinking_text = ""
             self._pending_separator = bool(blocks)
-            self._scroll_to_bottom()
+            self._scroll_to_bottom(force=True)
 
         @property
         def blocks(self) -> List[Dict[str, Any]]:

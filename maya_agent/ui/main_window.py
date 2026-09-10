@@ -153,10 +153,12 @@ class MayaAgentWindow:
                 self.sessions = SessionManager()
                 self._session_switching = False
                 self._worker = None
+                self._skip_confirm_this_turn = False
                 self._stream_buf = ""
+                self._thinking_buf = ""
                 self._stream_timer = QtCore.QTimer(self)
                 self._stream_timer.setSingleShot(True)
-                self._stream_timer.setInterval(40)
+                self._stream_timer.setInterval(80)
                 self._stream_timer.timeout.connect(self._flush_stream)
                 self._save_timer = QtCore.QTimer(self)
                 self._save_timer.setSingleShot(True)
@@ -330,12 +332,6 @@ class MayaAgentWindow:
                 clear_btn.setObjectName("secondaryBtn")
                 clear_btn.setFixedWidth(56)
                 clear_btn.clicked.connect(self._on_clear)
-                self.undo_btn = QtWidgets.QPushButton("撤销")
-                self.undo_btn.setObjectName("secondaryBtn")
-                self.undo_btn.setFixedWidth(56)
-                self.undo_btn.setEnabled(False)
-                self.undo_btn.setToolTip("回退上一次 Agent 对场景的修改（等同于合并后的 Ctrl+Z）")
-                self.undo_btn.clicked.connect(self._on_undo)
                 self.stop_btn = QtWidgets.QPushButton("停止")
                 self.stop_btn.setObjectName("secondaryBtn")
                 self.stop_btn.setFixedWidth(56)
@@ -346,7 +342,6 @@ class MayaAgentWindow:
                 self.send_btn.setFixedWidth(72)
                 self.send_btn.clicked.connect(self._on_send)
                 action_row.addWidget(clear_btn, 0)
-                action_row.addWidget(self.undo_btn, 0)
                 action_row.addWidget(self.stop_btn, 0)
                 action_row.addWidget(self.send_btn, 0)
                 composer_layout.addLayout(action_row)
@@ -493,6 +488,7 @@ class MayaAgentWindow:
 
             def _apply_session(self, session):
                 self._stream_buf = ""
+                self._thinking_buf = ""
                 if self._stream_timer.isActive():
                     self._stream_timer.stop()
                 if self.chat._current is not None:
@@ -639,6 +635,10 @@ class MayaAgentWindow:
                 self.status_label.setText("会话已删除")
 
             def _flush_stream(self):
+                if self._thinking_buf:
+                    piece = self._thinking_buf
+                    self._thinking_buf = ""
+                    self.chat.append_thinking(piece)
                 if self._stream_buf:
                     piece = self._stream_buf
                     self._stream_buf = ""
@@ -667,14 +667,37 @@ class MayaAgentWindow:
                     self.agent.set_provider(pid, model or None)
 
             def _confirm_destructive(self, name: str, args: dict) -> bool:
-                reply = QtWidgets.QMessageBox.question(
-                    self,
-                    "确认操作",
-                    f"工具「{name}」可能修改/删除场景内容。\n\n参数:\n"
-                    f"{json.dumps(args, ensure_ascii=False, indent=2)[:600]}\n\n是否继续？",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                # 「允许本轮对话执行」后，本轮内后续危险工具不再弹窗
+                if self._skip_confirm_this_turn:
+                    return True
+
+                args_text = json.dumps(args, ensure_ascii=False, indent=2)
+                if len(args_text) > 600:
+                    args_text = args_text[:600] + "\n…"
+
+                box = QtWidgets.QMessageBox(self)
+                box.setWindowTitle("确认操作")
+                box.setIcon(QtWidgets.QMessageBox.Question)
+                box.setText(f"工具「{name}」可能修改/删除场景内容。")
+                box.setInformativeText(f"参数:\n{args_text}\n\n是否继续？")
+
+                btn_once = box.addButton(
+                    "允许本次执行", QtWidgets.QMessageBox.AcceptRole
                 )
-                return reply == QtWidgets.QMessageBox.Yes
+                btn_turn = box.addButton(
+                    "允许本轮对话执行", QtWidgets.QMessageBox.ActionRole
+                )
+                btn_no = box.addButton("取消执行", QtWidgets.QMessageBox.RejectRole)
+                box.setDefaultButton(btn_once)
+                box.exec_()
+
+                clicked = box.clickedButton()
+                if clicked is btn_turn:
+                    self._skip_confirm_this_turn = True
+                    return True
+                if clicked is btn_once:
+                    return True
+                return False
 
             def _quick(self, prompt: str):
                 self.input_edit.setPlainText(prompt)
@@ -697,21 +720,6 @@ class MayaAgentWindow:
                 self._show_welcome()
                 self._persist_active_session(refresh_combo=True)
                 self.status_label.set_idle("当前会话已清空")
-                self.undo_btn.setEnabled(False)
-
-            def _on_undo(self):
-                if self._worker and self._worker.isRunning():
-                    self.status_label.set_idle("请先停止当前任务再撤销")
-                    return
-                result = self.agent.undo_last_turn()
-                if result.get("ok"):
-                    self.status_label.set_idle(result.get("message") or "已撤销")
-                    self.undo_btn.setEnabled(bool(self.agent.undo.can_undo))
-                else:
-                    self.status_label.set_idle(
-                        result.get("error") or "撤销失败"
-                    )
-                    self.undo_btn.setEnabled(False)
 
             def _on_stop(self):
                 if self._worker and self._worker.isRunning():
@@ -728,16 +736,13 @@ class MayaAgentWindow:
                 self._flush_stream()
                 self.chat.finish_assistant()
                 self._set_busy(False)
-                self.undo_btn.setEnabled(bool(self.agent.undo.can_undo))
+                self._skip_confirm_this_turn = False
                 self.status_label.set_idle("已停止")
                 self._schedule_persist()
 
             def _set_busy(self, busy: bool):
                 self.send_btn.setEnabled(not busy)
                 self.stop_btn.setEnabled(busy)
-                self.undo_btn.setEnabled(
-                    (not busy) and bool(self.agent.undo.can_undo)
-                )
                 self.input_edit.setReadOnly(busy)
 
             def _on_send(self):
@@ -757,6 +762,8 @@ class MayaAgentWindow:
                 self.chat.add_user(text)
                 self.chat.begin_assistant()
                 self._stream_buf = ""
+                self._thinking_buf = ""
+                self._skip_confirm_this_turn = False
                 self.input_edit.clear()
                 self._set_busy(True)
                 self.status_label.set_thinking()
@@ -771,40 +778,53 @@ class MayaAgentWindow:
             def _on_event(self, event: dict):
                 et = event.get("type")
                 show_tools = get_config().get("agent.show_tool_calls", True)
+                show_thinking = get_config().get("agent.show_thinking", False)
 
-                if et == "text":
+                if et == "thinking" and show_thinking:
+                    self._thinking_buf += event.get("content", "")
+                    if not self._stream_timer.isActive():
+                        self._stream_timer.start()
+
+                elif et == "text":
+                    if self._thinking_buf:
+                        self._flush_stream()
+                        self.chat.finish_thinking()
                     self._stream_buf += event.get("content", "")
                     if not self._stream_timer.isActive():
                         self._stream_timer.start()
 
-                elif et == "tool_start" and show_tools:
+                elif et == "tool_start":
                     self._flush_stream()
-                    self.chat.tool_start(event.get("name", ""))
-                    self.status_label.set_tool(event.get("name", ""))
+                    self.chat.finish_thinking()
+                    if show_tools:
+                        self.chat.tool_start(event.get("name", ""))
+                        self.status_label.set_tool(event.get("name", ""))
 
-                elif et == "tool_end" and show_tools:
+                elif et == "tool_end":
                     self._flush_stream()
-                    self.chat.tool_end(
-                        event.get("name", ""), event.get("result") or ""
-                    )
+                    if show_tools:
+                        self.chat.tool_end(
+                            event.get("name", ""), event.get("result") or ""
+                        )
                     if self._worker and self._worker.isRunning():
                         self.status_label.set_thinking()
 
                 elif et == "error":
                     self._flush_stream()
+                    self.chat.finish_thinking()
                     self.chat.add_error(event.get("content", ""))
 
                 elif et == "done":
                     self._flush_stream()
+                    self.chat.finish_thinking()
                     final = event.get("content")
                     self.chat.finish_assistant(final if final else None)
 
                 elif et == "undo_ready":
-                    self.undo_btn.setEnabled(bool(event.get("can_undo")))
                     if event.get("can_undo"):
                         tip = self.status_label.text()
                         if tip in ("就绪", "", "思考中", "思考中…"):
-                            self.status_label.set_idle("就绪 · 可撤销本次修改")
+                            self.status_label.set_idle("就绪 · 可用 Ctrl+Z 撤销")
 
             def _on_finished(self):
                 self._flush_stream()
@@ -812,10 +832,10 @@ class MayaAgentWindow:
                 if self.chat._current is not None:
                     self.chat.finish_assistant()
                 self._stream_timer.stop()
+                self._skip_confirm_this_turn = False
                 self._set_busy(False)
                 if self.agent.undo.can_undo:
-                    self.undo_btn.setEnabled(True)
-                    self.status_label.set_idle("就绪 · 可撤销本次修改")
+                    self.status_label.set_idle("就绪 · 可用 Ctrl+Z 撤销")
                 else:
                     self.status_label.set_idle("就绪")
                 self._schedule_persist()
@@ -826,6 +846,7 @@ class MayaAgentWindow:
                     self.chat.finish_assistant()
                 self.chat.add_error(err)
                 self._stream_timer.stop()
+                self._skip_confirm_this_turn = False
                 self._set_busy(False)
                 self.status_label.set_error("出错")
                 self._schedule_persist()

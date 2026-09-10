@@ -11,6 +11,7 @@ from maya_agent.llm.base import (
     BaseProvider,
     ChatMessage,
     ChatResponse,
+    StreamChunk,
     ToolCall,
     ToolSpec,
 )
@@ -25,7 +26,7 @@ class GoogleProvider(BaseProvider):
         messages: List[ChatMessage],
         tools: Optional[List[ToolSpec]] = None,
         stream: bool = False,
-    ) -> Union[ChatResponse, Generator[str, None, ChatResponse]]:
+    ) -> Union[ChatResponse, Generator[StreamChunk, None, ChatResponse]]:
         system, contents = self._convert(messages)
         body: Dict[str, Any] = {
             "contents": contents,
@@ -63,8 +64,9 @@ class GoogleProvider(BaseProvider):
                 raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:500]}")
             return self._parse(r.json())
 
-    def _stream(self, url, body) -> Generator[str, None, ChatResponse]:
+    def _stream(self, url, body) -> Generator[StreamChunk, None, ChatResponse]:
         content_parts: List[str] = []
+        thinking_parts: List[str] = []
         tool_calls: List[ToolCall] = []
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", url, json=body) as r:
@@ -82,11 +84,18 @@ class GoogleProvider(BaseProvider):
                     except json.JSONDecodeError:
                         continue
                     partial = self._parse(data)
+                    if partial.thinking:
+                        thinking_parts.append(partial.thinking)
+                        yield StreamChunk(thinking=partial.thinking)
                     if partial.content:
                         content_parts.append(partial.content)
-                        yield partial.content
+                        yield StreamChunk(text=partial.content)
                     tool_calls.extend(partial.tool_calls)
-        return ChatResponse(content="".join(content_parts), tool_calls=tool_calls)
+        return ChatResponse(
+            content="".join(content_parts),
+            thinking="".join(thinking_parts),
+            tool_calls=tool_calls,
+        )
 
     @staticmethod
     def _convert(messages: List[ChatMessage]):
@@ -141,10 +150,15 @@ class GoogleProvider(BaseProvider):
             return ChatResponse(content="", raw=data)
         parts = ((cands[0].get("content") or {}).get("parts")) or []
         texts = []
+        thinking_parts = []
         tool_calls = []
         for i, p in enumerate(parts):
             if "text" in p:
-                texts.append(p["text"])
+                # Gemini thinking models mark thought parts with thought=true
+                if p.get("thought"):
+                    thinking_parts.append(p["text"])
+                else:
+                    texts.append(p["text"])
             if "functionCall" in p:
                 fc = p["functionCall"]
                 tool_calls.append(
@@ -156,6 +170,7 @@ class GoogleProvider(BaseProvider):
                 )
         return ChatResponse(
             content="".join(texts),
+            thinking="".join(thinking_parts),
             tool_calls=tool_calls,
             raw=data,
             finish_reason=(cands[0].get("finishReason") or ""),

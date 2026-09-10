@@ -54,12 +54,32 @@ class ToolCall:
 
 
 @dataclass
+class StreamChunk:
+    """One streamed delta — text reply and/or model thinking/reasoning."""
+
+    text: str = ""
+    thinking: str = ""
+
+
+@dataclass
 class ChatResponse:
     content: str = ""
+    thinking: str = ""
     tool_calls: List[ToolCall] = field(default_factory=list)
     raw: Any = None
     finish_reason: str = ""
     usage: Dict[str, int] = field(default_factory=dict)
+
+
+def extract_thinking_text(payload: Dict[str, Any]) -> str:
+    """Pick reasoning/thinking text from OpenAI-compat delta or message dicts."""
+    if not payload:
+        return ""
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return ""
 
 
 class BaseProvider:
@@ -91,7 +111,7 @@ class BaseProvider:
         messages: List[ChatMessage],
         tools: Optional[List[ToolSpec]] = None,
         stream: bool = False,
-    ) -> Union[ChatResponse, Generator[str, None, ChatResponse]]:
+    ) -> Union[ChatResponse, Generator[StreamChunk, None, ChatResponse]]:
         raise NotImplementedError
 
     def test_connection(self) -> Dict[str, Any]:

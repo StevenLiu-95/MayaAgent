@@ -225,6 +225,7 @@ def create_settings_panel(
             self.auto_undo = QtWidgets.QCheckBox("自动 Undo 块")
             self.confirm_destructive = QtWidgets.QCheckBox("危险操作前确认")
             self.stream_check = QtWidgets.QCheckBox("流式输出")
+            self.show_thinking = QtWidgets.QCheckBox("显示思考内容")
             self.show_tools = QtWidgets.QCheckBox("显示工具调用详情")
 
             beh_lay.addWidget(
@@ -239,6 +240,12 @@ def create_settings_panel(
             )
             beh_lay.addWidget(
                 self._option_row(self.stream_check, "边生成边显示回复，响应更快")
+            )
+            beh_lay.addWidget(
+                self._option_row(
+                    self.show_thinking,
+                    "对支持思考链的模型，在回复前展示其推理过程",
+                )
             )
             beh_lay.addWidget(
                 self._option_row(
@@ -298,6 +305,7 @@ def create_settings_panel(
                 bool(self.auto_undo.isChecked()),
                 bool(self.confirm_destructive.isChecked()),
                 bool(self.stream_check.isChecked()),
+                bool(self.show_thinking.isChecked()),
                 bool(self.show_tools.isChecked()),
                 int(self.max_rounds.value()),
                 self.font_family.text().strip(),
@@ -329,6 +337,7 @@ def create_settings_panel(
             self.auto_undo.toggled.connect(self._update_dirty)
             self.confirm_destructive.toggled.connect(self._update_dirty)
             self.stream_check.toggled.connect(self._update_dirty)
+            self.show_thinking.toggled.connect(self._update_dirty)
             self.show_tools.toggled.connect(self._update_dirty)
             self.max_rounds.valueChanged.connect(self._update_dirty)
             self.font_family.textChanged.connect(self._update_dirty)
@@ -360,6 +369,9 @@ def create_settings_panel(
                     bool(self.cfg.get("maya.confirm_destructive", True))
                 )
                 self.stream_check.setChecked(bool(self.cfg.get("agent.stream", True)))
+                self.show_thinking.setChecked(
+                    bool(self.cfg.get("agent.show_thinking", False))
+                )
                 self.show_tools.setChecked(
                     bool(self.cfg.get("agent.show_tool_calls", True))
                 )
@@ -394,6 +406,7 @@ def create_settings_panel(
                 "maya.confirm_destructive", self.confirm_destructive.isChecked()
             )
             self.cfg.set("agent.stream", self.stream_check.isChecked())
+            self.cfg.set("agent.show_thinking", self.show_thinking.isChecked())
             self.cfg.set("agent.show_tool_calls", self.show_tools.isChecked())
             self.cfg.set("maya.max_tool_rounds", self.max_rounds.value())
             self.cfg.set("ui.font_family", self.font_family.text().strip())
@@ -615,7 +628,7 @@ def create_help_panel(parent=None):
             "打开菜单「Maya Agent → 打开面板」，或点击工具架 Agent 按钮",
             "在「设置 → 模型与 API」选择服务商、填写 API Key，点「测试连接」通过后「保存设置」",
             "切回「对话」，用自然语言描述任务；也可点底部快捷芯片快速试用",
-            "Agent 会自动调用工具改场景；危险操作会先确认，可用「撤销」或 Ctrl+Z 回退",
+            "Agent 会自动调用工具改场景；危险操作会先确认，可用 Ctrl+Z 回退",
         ),
         numbered=True,
     )
@@ -632,10 +645,11 @@ def create_help_panel(parent=None):
             "会话会随场景自动保存（sidecar：场景名.ma.mayaagent.json）；未命名场景先暂存本地，保存场景后迁移",
             "Enter 发送，Shift+Enter 换行；「停止」可中断进行中的任务",
             "「清空」只清空当前会话聊天与记忆，不会清空 Maya 场景",
-            "「撤销」回退上一轮 Agent 对场景的修改（开启「自动 Undo 块」时一轮合并为一次撤销）",
+            "开启「自动 Undo 块」后，一轮场景修改可合并，便于用 Ctrl+Z 一次回退",
             "快捷芯片：场景信息、网格统计、导出 FBX、三点光（栏过窄时可横向滚动）",
             "意图不清时，助手会给出可点击选项按钮，点选即自动回复",
             "开启「显示工具调用详情」后，对话中会展示工具名与结果摘要",
+            "开启「显示思考内容」后，支持思考链的模型会在回复前展示推理过程",
         ),
     )
     root.addWidget(chat)
@@ -649,7 +663,7 @@ def create_help_panel(parent=None):
         (
             "模型与 API：服务商、模型、API Key、Base URL、Temperature、Max Tokens；支持测试连接",
             "服务商包括 OpenAI、Azure、Anthropic、Gemini、DeepSeek、通义、智谱、Kimi、豆包、百川、SiliconFlow、Ollama、自定义 OpenAI 兼容接口等",
-            "Agent：自动 Undo 块、危险操作前确认、流式输出、显示工具调用、最大工具轮次（1–30）",
+            "Agent：自动 Undo 块、危险操作前确认、流式输出、显示思考内容、显示工具调用、最大工具轮次（1–30）",
             "界面：字体与字号（部分控件需重新打开面板后完全生效）",
         ),
     )

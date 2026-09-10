@@ -11,6 +11,7 @@ from maya_agent.llm.base import (
     BaseProvider,
     ChatMessage,
     ChatResponse,
+    StreamChunk,
     ToolCall,
     ToolSpec,
 )
@@ -25,7 +26,7 @@ class AnthropicProvider(BaseProvider):
         messages: List[ChatMessage],
         tools: Optional[List[ToolSpec]] = None,
         stream: bool = False,
-    ) -> Union[ChatResponse, Generator[str, None, ChatResponse]]:
+    ) -> Union[ChatResponse, Generator[StreamChunk, None, ChatResponse]]:
         system, converted = self._convert_messages(messages)
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -58,10 +59,11 @@ class AnthropicProvider(BaseProvider):
                 raise RuntimeError(f"Anthropic HTTP {r.status_code}: {r.text[:500]}")
             return self._parse(r.json())
 
-    def _stream(self, url, headers, payload) -> Generator[str, None, ChatResponse]:
+    def _stream(self, url, headers, payload) -> Generator[StreamChunk, None, ChatResponse]:
         payload = dict(payload)
         payload["stream"] = True
         content_parts: List[str] = []
+        thinking_parts: List[str] = []
         tool_calls: List[ToolCall] = []
         current_tool: Optional[Dict[str, Any]] = None
         finish_reason = ""
@@ -90,13 +92,25 @@ class AnthropicProvider(BaseProvider):
                                 "name": block.get("name", ""),
                                 "arguments": "",
                             }
+                        elif block.get("type") == "thinking":
+                            think = block.get("thinking") or ""
+                            if think:
+                                thinking_parts.append(think)
+                                yield StreamChunk(thinking=think)
                     elif et == "content_block_delta":
                         delta = event.get("delta") or {}
-                        if delta.get("type") == "text_delta":
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
                             piece = delta.get("text") or ""
-                            content_parts.append(piece)
-                            yield piece
-                        elif delta.get("type") == "input_json_delta" and current_tool:
+                            if piece:
+                                content_parts.append(piece)
+                                yield StreamChunk(text=piece)
+                        elif dtype == "thinking_delta":
+                            think = delta.get("thinking") or ""
+                            if think:
+                                thinking_parts.append(think)
+                                yield StreamChunk(thinking=think)
+                        elif dtype == "input_json_delta" and current_tool:
                             current_tool["arguments"] += delta.get("partial_json") or ""
                     elif et == "content_block_stop":
                         if current_tool:
@@ -113,6 +127,7 @@ class AnthropicProvider(BaseProvider):
 
         return ChatResponse(
             content="".join(content_parts),
+            thinking="".join(thinking_parts),
             tool_calls=tool_calls,
             finish_reason=finish_reason,
         )
@@ -165,11 +180,15 @@ class AnthropicProvider(BaseProvider):
     @staticmethod
     def _parse(data: Dict[str, Any]) -> ChatResponse:
         text_parts = []
+        thinking_parts = []
         tool_calls = []
         for block in data.get("content") or []:
-            if block.get("type") == "text":
+            btype = block.get("type")
+            if btype == "text":
                 text_parts.append(block.get("text") or "")
-            elif block.get("type") == "tool_use":
+            elif btype == "thinking":
+                thinking_parts.append(block.get("thinking") or "")
+            elif btype == "tool_use":
                 tool_calls.append(
                     ToolCall(
                         id=block.get("id") or "",
@@ -180,6 +199,7 @@ class AnthropicProvider(BaseProvider):
         usage = data.get("usage") or {}
         return ChatResponse(
             content="".join(text_parts),
+            thinking="".join(thinking_parts),
             tool_calls=tool_calls,
             raw=data,
             finish_reason=data.get("stop_reason") or "",

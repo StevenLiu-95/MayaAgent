@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional
 from maya_agent.core.executor import ToolExecutor
 from maya_agent.core.memory import ConversationMemory
 from maya_agent.core.undo import UndoTurnManager
-from maya_agent.llm.base import ChatMessage, ChatResponse, ToolCall
+from maya_agent.llm.base import ChatMessage, ChatResponse, StreamChunk, ToolCall
 from maya_agent.llm.registry import create_provider
 from maya_agent.tools.registry import ensure_tools_loaded, tool_specs
 from maya_agent.utils.config import get_config
@@ -127,23 +127,45 @@ class MayaAgent:
                     if use_stream:
                         gen = provider.chat(self.memory.as_list(), tools=tools, stream=True)
                         text_parts: List[str] = []
+                        thinking_parts: List[str] = []
                         resp: Optional[ChatResponse] = None
                         try:
                             while True:
                                 piece = next(gen)
-                                text_parts.append(piece)
-                                yield {"type": "text", "content": piece}
+                                if isinstance(piece, str):
+                                    piece = StreamChunk(text=piece)
+                                if not isinstance(piece, StreamChunk):
+                                    continue
+                                if piece.thinking:
+                                    thinking_parts.append(piece.thinking)
+                                    yield {
+                                        "type": "thinking",
+                                        "content": piece.thinking,
+                                    }
+                                if piece.text:
+                                    text_parts.append(piece.text)
+                                    yield {"type": "text", "content": piece.text}
                         except StopIteration as stop:
                             resp = stop.value
                         if resp is None:
-                            resp = ChatResponse(content="".join(text_parts))
+                            resp = ChatResponse(
+                                content="".join(text_parts),
+                                thinking="".join(thinking_parts),
+                            )
                         if not resp.content and text_parts:
                             resp.content = "".join(text_parts)
+                        if not resp.thinking and thinking_parts:
+                            resp.thinking = "".join(thinking_parts)
                     else:
                         resp = provider.chat(
                             self.memory.as_list(), tools=tools, stream=False
                         )
                         assert isinstance(resp, ChatResponse)
+                        if resp.thinking:
+                            yield {
+                                "type": "thinking",
+                                "content": resp.thinking,
+                            }
                         if resp.content:
                             yield {"type": "text", "content": resp.content}
                 except Exception as e:
