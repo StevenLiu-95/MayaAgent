@@ -14,6 +14,7 @@ from maya_agent.llm.base import (
     StreamChunk,
     ToolCall,
     ToolSpec,
+    normalize_usage,
 )
 
 
@@ -68,6 +69,7 @@ class GoogleProvider(BaseProvider):
         content_parts: List[str] = []
         thinking_parts: List[str] = []
         tool_calls: List[ToolCall] = []
+        usage: Dict[str, int] = {}
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", url, json=body) as r:
                 if r.status_code >= 400:
@@ -84,6 +86,9 @@ class GoogleProvider(BaseProvider):
                     except json.JSONDecodeError:
                         continue
                     partial = self._parse(data)
+                    if partial.usage:
+                        # Gemini SSE usage is typically cumulative — keep latest
+                        usage = dict(partial.usage)
                     if partial.thinking:
                         thinking_parts.append(partial.thinking)
                         yield StreamChunk(thinking=partial.thinking)
@@ -95,6 +100,7 @@ class GoogleProvider(BaseProvider):
             content="".join(content_parts),
             thinking="".join(thinking_parts),
             tool_calls=tool_calls,
+            usage=usage,
         )
 
     @staticmethod
@@ -174,4 +180,5 @@ class GoogleProvider(BaseProvider):
             tool_calls=tool_calls,
             raw=data,
             finish_reason=(cands[0].get("finishReason") or ""),
+            usage=normalize_usage(data.get("usageMetadata") or {}),
         )

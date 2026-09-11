@@ -84,7 +84,10 @@ def execute_mel(command: str) -> ToolResult:
 
 @tool(
     name="generate_python_snippet",
-    description="根据任务描述生成可在 Maya 中运行的 Python 示例代码（不执行，仅返回代码）。",
+    description=(
+        "根据任务描述生成可在 Maya 中运行的简易 Python 示例（不执行）。"
+        "正式开发工具请优先用 scaffold_maya_tool（maya_dev）。"
+    ),
     parameters=obj_schema(
         {
             "task": {"type": "string", "description": "任务描述"},

@@ -12,11 +12,57 @@ def escape(text: str) -> str:
     return html.escape(text or "", quote=False)
 
 
+_ZWSP = "\u200b"
+_LONG_RUN_RE = re.compile(r"\S{36,}")
+
+
+def soft_break_long_runs(text: str, every: int = 36) -> str:
+    """Insert zero-width spaces so Qt rich text can wrap long unbreakable runs."""
+    if not text or every <= 0:
+        return text or ""
+
+    def _split(match: "re.Match[str]") -> str:
+        s = match.group(0)
+        return _ZWSP.join(s[i : i + every] for i in range(0, len(s), every))
+
+    return _LONG_RUN_RE.sub(_split, text)
+
+
+def escape_wrap(text: str) -> str:
+    """HTML-escape and soft-wrap long tokens for chat bubbles."""
+    return escape(soft_break_long_runs(text or ""))
+
+
+# Opening / closing tags that models commonly emit (canonical + variants).
+_CHOICES_OPEN_RE = re.compile(
+    r"(?:\[\[\s*CHOICES\s*\]\]|\[\s*CHOICES\s*\]|【\s*CHOICES\s*】|"
+    r"<\s*CHOICES\s*>)",
+    re.IGNORECASE,
+)
+_CHOICES_CLOSE_RE = re.compile(
+    r"(?:\[\[\s*/\s*CHOICES\s*\]\]|\[\s*/\s*CHOICES\s*\]|"
+    r"【\s*/\s*CHOICES\s*】|<\s*/\s*CHOICES\s*>|"
+    r"\[\[\s*\\\\CHOICES\s*\]\]|\[\[\s*\\CHOICES\s*\]\])",
+    re.IGNORECASE,
+)
+# Full block: open … close (non-greedy body)
 _CHOICES_BLOCK_RE = re.compile(
-    r"\[\[CHOICES\]\]\s*(.*?)\s*\[\[/CHOICES\]\]",
+    _CHOICES_OPEN_RE.pattern + r"\s*(.*?)\s*" + _CHOICES_CLOSE_RE.pattern,
     re.IGNORECASE | re.DOTALL,
 )
+# Unclosed block to EOF (model forgot closing tag)
+_CHOICES_UNCLOSED_RE = re.compile(
+    _CHOICES_OPEN_RE.pattern + r"\s*(.*)\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+# Leftover tags to scrub from display text
+_CHOICES_TAG_SCRUB_RE = re.compile(
+    r"(?:\[\[\s*/?\s*CHOICES\s*\]\]|\[\s*/?\s*CHOICES\s*\]|"
+    r"【\s*/?\s*CHOICES\s*】|</?\s*CHOICES\s*>)",
+    re.IGNORECASE,
+)
 _NUMBERED_ITEM_RE = re.compile(r"^\s*(\d+)[\.、\)]\s+(.+?)\s*$")
+_BULLET_ITEM_RE = re.compile(r"^\s*(?:[-*•]|(?:[A-Za-z])[\.、\)])\s+(.+?)\s*$")
 _CHOICE_HINT_RE = re.compile(
     r"(确认|请选择|请回复|是否|还是|选项|请告诉我|你想|要不要|"
     r"请问|哪(一种|个|种)|如何|怎么|哪种|哪边|"
@@ -26,16 +72,82 @@ _CHOICE_HINT_RE = re.compile(
 )
 
 
+def strip_incomplete_choices(text: str) -> str:
+    """Hide an in-progress CHOICES block while the reply is still streaming."""
+    raw = text or ""
+    m = _CHOICES_OPEN_RE.search(raw)
+    if not m:
+        # Also hide a partial opening tag like "[[CHOIC"
+        partial = re.search(r"\[\[\s*CHOIC\w*$|\[\s*CHOIC\w*$|【\s*CHOIC\w*$", raw, re.I)
+        if partial:
+            return raw[: partial.start()].rstrip()
+        return raw
+    return raw[: m.start()].rstrip()
+
+
+def _scrub_choice_tags(text: str) -> str:
+    cleaned = _CHOICES_TAG_SCRUB_RE.sub("", text or "")
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _parse_choice_line(line: str) -> Optional[Dict[str, str]]:
+    line = (line or "").strip()
+    if not line or line.startswith("#"):
+        return None
+    # Ignore stray close tags that leaked into the body
+    if _CHOICES_CLOSE_RE.fullmatch(line) or _CHOICES_OPEN_RE.fullmatch(line):
+        return None
+    # Strip list markers: 1. / A) / -
+    m = _NUMBERED_ITEM_RE.match(line)
+    if m:
+        line = m.group(2).strip()
+    else:
+        m = _BULLET_ITEM_RE.match(line)
+        if m:
+            line = m.group(1).strip()
+    if "|" in line:
+        label, reply = line.split("|", 1)
+        label, reply = label.strip(), reply.strip()
+    else:
+        label, reply = line, line
+    if not label:
+        return None
+    # Prefer clause before colon as short button label when left side is long
+    if len(label) > 20:
+        for sep in ("：", ":", " — ", " - "):
+            if sep in label:
+                short = label.split(sep, 1)[0].strip()
+                if 2 <= len(short) <= 20:
+                    # Keep full reply (explicit | reply, or original long label)
+                    full_reply = reply if reply != label else label
+                    return {"label": short, "reply": full_reply}
+                break
+    return {"label": label, "reply": reply or label}
+
+
+def _choices_from_body(body: str) -> List[Dict[str, str]]:
+    choices: List[Dict[str, str]] = []
+    for line in (body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        item = _parse_choice_line(line)
+        if item:
+            choices.append(item)
+        if len(choices) >= 6:
+            break
+    return choices
+
+
 def extract_user_choices(text: str) -> Tuple[str, List[Dict[str, str]]]:
     """
     Extract clickable reply choices from assistant text.
 
     Supports:
-      1) Explicit block (preferred for any clarification / confirmation):
+      1) Explicit block (preferred):
          [[CHOICES]]
-         标签
-         标签|自动发送的完整回复
+         短标签|发给助手的完整回复
          [[/CHOICES]]
+         Also tolerates common tag mistakes: [/CHOICES], [CHOICES], etc.
+         Unclosed blocks (open tag then options to EOF) are recovered.
       2) Trailing numbered list (1. / 1、 / 1)) when the message asks
          the user a question or seeks feedback.
 
@@ -46,24 +158,34 @@ def extract_user_choices(text: str) -> Tuple[str, List[Dict[str, str]]]:
     if not raw.strip():
         return raw, []
 
-    # --- Explicit block (preferred) ---
+    # --- Explicit block (preferred), including mistyped close tags ---
     match = _CHOICES_BLOCK_RE.search(raw)
     if match:
-        choices: List[Dict[str, str]] = []
-        for line in match.group(1).splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "|" in line:
-                label, reply = line.split("|", 1)
-                label, reply = label.strip(), reply.strip()
-            else:
-                label, reply = line, line
-            if label:
-                choices.append({"label": label, "reply": reply or label})
-        display = (_CHOICES_BLOCK_RE.sub("", raw)).strip()
-        display = re.sub(r"\n{3,}", "\n\n", display)
-        return display, choices[:6]
+        choices = _choices_from_body(match.group(1))
+        display = _CHOICES_BLOCK_RE.sub("", raw)
+        display = _scrub_choice_tags(display)
+        return display, choices
+
+    # --- Open tag present but close missing / wrong: take body to EOF ---
+    open_m = _CHOICES_OPEN_RE.search(raw)
+    if open_m:
+        unclosed = _CHOICES_UNCLOSED_RE.search(raw)
+        body = unclosed.group(1) if unclosed else raw[open_m.end() :]
+        # Drop a trailing broken close-ish line if present
+        body_lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        while body_lines and _CHOICES_CLOSE_RE.search(body_lines[-1] or ""):
+            body_lines.pop()
+        choices = _choices_from_body("\n".join(body_lines))
+        display = raw[: open_m.start()]
+        display = _scrub_choice_tags(display)
+        # Only accept if we got real options; otherwise just scrub tags
+        if len(choices) >= 1:
+            return display, choices
+        return display or _scrub_choice_tags(raw), []
+
+    # Scrub any orphan tags that appear without a proper block
+    if _CHOICES_TAG_SCRUB_RE.search(raw):
+        raw = _scrub_choice_tags(raw)
 
     # --- Heuristic: consecutive numbered options near the end ---
     lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -85,9 +207,9 @@ def extract_user_choices(text: str) -> Tuple[str, List[Dict[str, str]]]:
             num = int(m2.group(1))
             if items and num != expect:
                 break
-            label = m2.group(2).strip()
-            # Strip leading「」 quotes noise
-            items.append({"label": label, "reply": label})
+            parsed = _parse_choice_line(m2.group(0))
+            if parsed:
+                items.append(parsed)
             expect = num + 1
             i += 1
         end = i  # exclusive
@@ -202,11 +324,12 @@ def markdown_to_html(text: str) -> str:
                 code_lines.append(lines[i])
                 i += 1
             i += 1
-            code = escape("\n".join(code_lines))
+            code = escape_wrap("\n".join(code_lines))
             out.append(
                 '<p style="margin:4px 0;padding:6px 8px;background-color:#1a1b20;'
                 "color:#d0d0d6;font-family:Consolas,'Courier New',monospace;"
-                f'font-size:12px;line-height:130%;">{code.replace(chr(10), "<br/>")}</p>'
+                f'font-size:12px;line-height:130%;word-wrap:break-word;">'
+                f"{code.replace(chr(10), '<br/>')}</p>"
             )
             prev_blank = False
             continue
@@ -323,11 +446,17 @@ def _inline(text: str) -> str:
     )
     s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
     s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", s)
-    return s
+    # Soft-break remaining long runs (paths etc.) without touching HTML tags
+    parts = re.split(r"(<[^>]+>)", s)
+    for i, part in enumerate(parts):
+        if part.startswith("<"):
+            continue
+        parts[i] = soft_break_long_runs(part)
+    return "".join(parts)
 
 
 def _clean_code(raw: str) -> str:
-    t = escape(raw.strip())
+    t = escape_wrap(raw.strip())
     # Maya DAG path often starts with | — keep last short name readable
     if t.startswith("|") and "|" in t[1:]:
         t = t.split("|")[-1]
@@ -361,7 +490,7 @@ def _summarize_tool_result_impl(
         data = json.loads(result_json) if result_json else {}
     except json.JSONDecodeError:
         raw = result_json or ""
-        preview = escape(raw[:300] + ("…" if len(raw) > 300 else ""))
+        preview = escape_wrap(raw[:300] + ("…" if len(raw) > 300 else ""))
         body = f'<p style="margin:2px 0;color:#b0b0b8;font-size:11px;">{preview}</p>'
         return f"工具 {escape(name)}", body, False, len(raw)
 
@@ -374,11 +503,11 @@ def _summarize_tool_result_impl(
     parts: List[str] = []
     if message:
         parts.append(
-            f'<p style="margin:0 0 4px 0;color:#d0d0d6;">{escape(message)}</p>'
+            f'<p style="margin:0 0 4px 0;color:#d0d0d6;">{escape_wrap(message)}</p>'
         )
     if error:
         parts.append(
-            f'<p style="margin:0 0 4px 0;color:#e07070;">{escape(str(error))}</p>'
+            f'<p style="margin:0 0 4px 0;color:#e07070;">{escape_wrap(str(error))}</p>'
         )
 
     summary = _format_payload(name, payload, compact=compact)
@@ -388,10 +517,11 @@ def _summarize_tool_result_impl(
         dump = json.dumps(payload, ensure_ascii=False, indent=2)
         limit = 280 if compact else 4000
         clipped = dump[:limit] + ("…" if len(dump) > limit else "")
-        compact_html = escape(clipped)
+        compact_html = escape_wrap(clipped)
         parts.append(
             f'<p style="margin:4px 0 0 0;color:#a8a8b0;font-size:11px;'
-            f'font-family:Consolas,monospace;">{compact_html.replace(chr(10), "<br/>")}</p>'
+            f'font-family:Consolas,monospace;word-wrap:break-word;">'
+            f"{compact_html.replace(chr(10), '<br/>')}</p>"
         )
 
     body = "".join(parts) or "<i>无返回数据</i>"
@@ -456,7 +586,7 @@ def _format_payload(name: str, payload: Any, *, compact: bool = True) -> str:
         if not payload:
             return '<p style="margin:2px 0;color:#b0b0b8;">空列表</p>'
         limit = 8 if compact else 40
-        items = "、".join(escape(_short_name(x)) for x in payload[:limit])
+        items = "、".join(escape_wrap(_short_name(x)) for x in payload[:limit])
         more = f" 等 {len(payload)} 项" if len(payload) > limit else ""
         return f'<p style="margin:2px 0;color:#d0d0d6;">{items}{more}</p>'
 
@@ -474,7 +604,10 @@ def _format_payload(name: str, payload: Any, *, compact: bool = True) -> str:
 
     if isinstance(payload, (str, int, float, bool)):
         text = _clip_text(_short_name(payload), clip)
-        return f'<p style="margin:2px 0;color:#d0d0d6;">{escape(text)}</p>'
+        return (
+            f'<p style="margin:2px 0;color:#d0d0d6;word-wrap:break-word;">'
+            f"{escape_wrap(text)}</p>"
+        )
 
     return ""
 
@@ -497,18 +630,21 @@ def _kv_table(rows: List[Tuple[str, Any]], clip: int = 160) -> str:
     trs = []
     for k, v in rows:
         text = _clip_text(v, clip)
-        # Preserve newlines in long script output for readability
-        cell = escape(text).replace("\n", "<br/>")
+        # Preserve newlines; soft-break long paths/identifiers so the bubble
+        # cannot force the chat ScrollArea wider than the viewport.
+        cell = escape_wrap(text).replace("\n", "<br/>")
         trs.append(
             "<tr>"
-            f'<td style="color:#8e8e98;padding:2px 12px 2px 0;white-space:nowrap;'
-            f'vertical-align:top;font-size:11px;">{escape(str(k))}</td>'
+            f'<td width="72" style="color:#8e8e98;padding:2px 10px 2px 0;'
+            f'vertical-align:top;font-size:11px;">{escape_wrap(str(k))}</td>'
             f'<td style="color:#e0e0e6;padding:2px 0;font-size:11px;'
-            f'vertical-align:top;font-family:Consolas,monospace;">{cell}</td>'
+            f'vertical-align:top;font-family:Consolas,monospace;'
+            f'word-wrap:break-word;">{cell}</td>'
             "</tr>"
         )
     return (
-        '<table cellspacing="0" cellpadding="0" style="margin:2px 0;border:none;">'
+        '<table width="100%" cellspacing="0" cellpadding="0" '
+        'style="margin:2px 0;border:none;table-layout:fixed;">'
         + "".join(trs)
         + "</table>"
     )

@@ -15,6 +15,7 @@ from maya_agent.llm.base import (
     ToolCall,
     ToolSpec,
     extract_thinking_text,
+    normalize_usage,
 )
 
 
@@ -70,6 +71,9 @@ class OpenAICompatProvider(BaseProvider):
         if tools:
             payload["tools"] = [t.to_openai() for t in tools]
             payload["tool_choice"] = "auto"
+        if stream:
+            # Ask compatible APIs to include usage on the final SSE chunk
+            payload["stream_options"] = {"include_usage": True}
         return payload
 
     def chat(
@@ -131,11 +135,7 @@ class OpenAICompatProvider(BaseProvider):
                     except json.JSONDecodeError:
                         continue
                     if "usage" in chunk and chunk["usage"]:
-                        usage = {
-                            k: int(v)
-                            for k, v in chunk["usage"].items()
-                            if isinstance(v, (int, float))
-                        }
+                        usage = normalize_usage(chunk["usage"])
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -198,17 +198,12 @@ class OpenAICompatProvider(BaseProvider):
                 )
             )
         usage_raw = data.get("usage") or {}
-        usage = {
-            k: int(v)
-            for k, v in usage_raw.items()
-            if isinstance(v, (int, float))
-        }
         return ChatResponse(
             content=msg.get("content") or "",
             thinking=extract_thinking_text(msg),
             tool_calls=tool_calls,
             raw=data,
             finish_reason=choices[0].get("finish_reason") or "",
-            usage=usage,
+            usage=normalize_usage(usage_raw),
         )
 

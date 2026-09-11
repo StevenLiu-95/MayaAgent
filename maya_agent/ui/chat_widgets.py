@@ -8,6 +8,7 @@ from maya_agent.ui import chat_format
 from maya_agent.ui.palette import SPINNER_FRAMES
 from maya_agent.ui.status_anim import create_typing_indicator
 from maya_agent.utils.maya_compat import import_qt
+from maya_agent.llm.base import format_turn_meta
 
 _SPINNER = SPINNER_FRAMES
 
@@ -39,6 +40,10 @@ def create_chat_panel(parent=None):
             self.setObjectName(f"bubble_{kind}")
             self.setFrameShape(QtWidgets.QFrame.NoFrame)
             self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            self.setMinimumWidth(0)
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+            )
             colors = {
                 "user": ("#2c4f73", "#5a8fc4"),
                 "assistant": ("#2c2d36", "#4a4b56"),
@@ -65,9 +70,17 @@ def create_chat_panel(parent=None):
             self.setOpenExternalLinks(True)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.setMinimumWidth(0)
             self.setSizePolicy(
                 QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
             )
+            # Allow QTextDocument to break long tokens inside the bubble width
+            try:
+                opt = self.document().defaultTextOption()
+                opt.setWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+                self.document().setDefaultTextOption(opt)
+            except Exception:
+                pass
             self.document().setDocumentMargin(0)
             self.setAutoFillBackground(False)
             self.viewport().setAutoFillBackground(False)
@@ -171,14 +184,23 @@ def create_chat_panel(parent=None):
             super().__init__(parent)
             self.setObjectName("toolRow")
             self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            self.setMinimumWidth(0)
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+            )
             lay = QtWidgets.QVBoxLayout(self)
             lay.setContentsMargins(10, 8, 10, 8)
             lay.setSpacing(4)
             self.title = QtWidgets.QLabel("⚙ …")
             self.title.setWordWrap(True)
+            self.title.setMinimumWidth(0)
             self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
             self.detail = QtWidgets.QLabel("")
             self.detail.setWordWrap(True)
+            self.detail.setMinimumWidth(0)
+            self.detail.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
             self.detail.setTextFormat(QtCore.Qt.RichText)
             self.detail.setObjectName("toolDetail")
             self.detail.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
@@ -355,8 +377,7 @@ def create_chat_panel(parent=None):
             else:
                 self.detail.setText(self._preview_html or self._full_html)
                 self.expand_btn.setText("展开全部 ▾")
-            self.detail.adjustSize()
-            self.adjustSize()
+            self.detail.updateGeometry()
             parent = self.parentWidget()
             while parent is not None:
                 if hasattr(parent, "_scroll_to_bottom"):
@@ -367,21 +388,30 @@ def create_chat_panel(parent=None):
     class ThinkingRow(QtWidgets.QFrame):
         """Collapsible block for model reasoning / thinking content."""
 
-        _PREVIEW_CHARS = 280
+        _PREVIEW_CHARS = 840
         _STREAM_TAIL_CHARS = 2700
 
         def __init__(self, parent=None):
             super().__init__(parent)
             self.setObjectName("thinkingRow")
             self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            self.setMinimumWidth(0)
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+            )
             lay = QtWidgets.QVBoxLayout(self)
             lay.setContentsMargins(10, 8, 10, 8)
             lay.setSpacing(4)
             self.title = QtWidgets.QLabel("思考中…")
             self.title.setWordWrap(True)
+            self.title.setMinimumWidth(0)
             self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
             self.detail = QtWidgets.QLabel("")
             self.detail.setWordWrap(True)
+            self.detail.setMinimumWidth(0)
+            self.detail.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
             self.detail.setTextFormat(QtCore.Qt.PlainText)
             self.detail.setObjectName("thinkingDetail")
             self.detail.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
@@ -547,8 +577,7 @@ def create_chat_panel(parent=None):
             self._expanded = not self._expanded
             self._detail_cache = None
             self._refresh_detail()
-            self.detail.adjustSize()
-            self.adjustSize()
+            self.detail.updateGeometry()
             parent = self.parentWidget()
             while parent is not None:
                 if hasattr(parent, "_scroll_to_bottom"):
@@ -658,6 +687,10 @@ def create_chat_panel(parent=None):
         def __init__(self, role: str, parent=None):
             super().__init__(parent)
             self.role = role
+            self.setMinimumWidth(0)
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+            )
             self._tools: List[ToolRow] = []
             self._thinking_row: Optional[ThinkingRow] = None
             self._body_view: Optional[BodyView] = None
@@ -681,6 +714,7 @@ def create_chat_panel(parent=None):
             self.typing.setMaximumHeight(0)
             bubble_lay.addWidget(self.typing)
 
+            self._meta_label = None
             if role == "user":
                 root.addStretch(1)
                 root.addWidget(self.bubble, 6)
@@ -695,10 +729,45 @@ def create_chat_panel(parent=None):
                 root.addStretch(1)
                 self._choice_bar = ChoiceBar(self.bubble)
                 bubble_lay.addWidget(self._choice_bar)
+                self._meta_label = QtWidgets.QLabel("")
+                self._meta_label.setObjectName("turnMeta")
+                self._meta_label.setWordWrap(True)
+                self._meta_label.setTextInteractionFlags(
+                    QtCore.Qt.TextSelectableByMouse
+                )
+                self._meta_label.setStyleSheet(
+                    "QLabel#turnMeta {"
+                    " color:#6a6a72; font-size:11px;"
+                    " background:transparent; border:none;"
+                    " padding-top:2px;"
+                    "}"
+                )
+                self._meta_label.hide()
+                bubble_lay.addWidget(self._meta_label)
 
+            self.bubble.setMinimumWidth(0)
             self.bubble.setSizePolicy(
-                QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
             )
+
+        def set_turn_meta(
+            self,
+            model: str = "",
+            usage: Optional[Dict[str, Any]] = None,
+            text: Optional[str] = None,
+            llm_calls: int = 0,
+        ) -> None:
+            if self._meta_label is None:
+                return
+            line = (text or "").strip() or format_turn_meta(
+                model, usage, llm_calls=llm_calls
+            )
+            if not line:
+                self._meta_label.hide()
+                self._meta_label.clear()
+                return
+            self._meta_label.setText(line)
+            self._meta_label.show()
 
         def _ensure_body(self) -> BodyView:
             if self._body_view is None:
@@ -861,12 +930,18 @@ def create_chat_panel(parent=None):
 
             self.container = QtWidgets.QWidget()
             self.container.setObjectName("chatContainer")
+            self.container.setMinimumWidth(0)
+            self.container.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
             self.v = QtWidgets.QVBoxLayout(self.container)
             self.v.setContentsMargins(10, 14, 10, 18)
             self.v.setSpacing(6)
             self.v.addStretch(1)
 
             self.scroll.setWidget(self.container)
+            # Prevent wide children from expanding the scroll content past viewport
+            self.scroll.setWidgetResizable(True)
             outer.addWidget(self.scroll)
 
             self._blocks: List[Dict[str, Any]] = []
@@ -1088,7 +1163,14 @@ def create_chat_panel(parent=None):
                         break
             self._scroll_to_bottom()
 
-        def finish_assistant(self, final_text: Optional[str] = None):
+        def finish_assistant(
+            self,
+            final_text: Optional[str] = None,
+            *,
+            model: str = "",
+            usage: Optional[Dict[str, Any]] = None,
+            llm_calls: int = 0,
+        ):
             if self._current is None:
                 return
             self.finish_thinking()
@@ -1111,6 +1193,10 @@ def create_chat_panel(parent=None):
                 self._current._set_typing(False)
                 if self._current._body_view is not None and not self._current._body_view.toPlainText():
                     self._current._body_view.hide()
+            if model or usage or llm_calls:
+                self._current.set_turn_meta(
+                    model=model, usage=usage, llm_calls=llm_calls
+                )
             block = self._assistant_block()
             if block is not None:
                 block["done"] = True
@@ -1126,6 +1212,12 @@ def create_chat_panel(parent=None):
                     block["thinking"] = self._thinking_text
                 if choices:
                     block["choices"] = choices
+                if model:
+                    block["model"] = model
+                if usage:
+                    block["usage"] = dict(usage)
+                if llm_calls:
+                    block["llm_calls"] = int(llm_calls)
             self._current = None
             self._stream_text = ""
             self._thinking_text = ""
@@ -1178,6 +1270,11 @@ def create_chat_panel(parent=None):
                     _, choices = chat_format.extract_user_choices(raw)
             if choices:
                 mb.set_choices(choices, enabled=False)
+            model = block.get("model") or ""
+            usage = block.get("usage") or {}
+            llm_calls = int(block.get("llm_calls") or 0)
+            if model or usage or llm_calls:
+                mb.set_turn_meta(model=model, usage=usage, llm_calls=llm_calls)
             if not (block.get("text") or block.get("parts")):
                 mb._set_typing(False)
             self._insert_before_stretch(mb)

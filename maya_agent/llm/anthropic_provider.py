@@ -14,6 +14,7 @@ from maya_agent.llm.base import (
     StreamChunk,
     ToolCall,
     ToolSpec,
+    normalize_usage,
 )
 
 
@@ -67,6 +68,7 @@ class AnthropicProvider(BaseProvider):
         tool_calls: List[ToolCall] = []
         current_tool: Optional[Dict[str, Any]] = None
         finish_reason = ""
+        usage: Dict[str, int] = {}
 
         with httpx.Client(timeout=self.timeout) as client:
             with client.stream("POST", url, headers=headers, json=payload) as r:
@@ -84,7 +86,12 @@ class AnthropicProvider(BaseProvider):
                     except json.JSONDecodeError:
                         continue
                     et = event.get("type")
-                    if et == "content_block_start":
+                    if et == "message_start":
+                        msg = event.get("message") or {}
+                        u = normalize_usage(msg.get("usage") or {})
+                        if u:
+                            usage.update(u)
+                    elif et == "content_block_start":
                         block = event.get("content_block") or {}
                         if block.get("type") == "tool_use":
                             current_tool = {
@@ -124,12 +131,24 @@ class AnthropicProvider(BaseProvider):
                             current_tool = None
                     elif et == "message_delta":
                         finish_reason = (event.get("delta") or {}).get("stop_reason") or ""
+                        u = normalize_usage(event.get("usage") or {})
+                        if "completion_tokens" in u:
+                            usage["completion_tokens"] = u["completion_tokens"]
+                        if "prompt_tokens" in u and "prompt_tokens" not in usage:
+                            usage["prompt_tokens"] = u["prompt_tokens"]
+                        if usage.get("prompt_tokens") is not None or usage.get(
+                            "completion_tokens"
+                        ) is not None:
+                            usage["total_tokens"] = int(
+                                usage.get("prompt_tokens", 0)
+                            ) + int(usage.get("completion_tokens", 0))
 
         return ChatResponse(
             content="".join(content_parts),
             thinking="".join(thinking_parts),
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            usage=normalize_usage(usage),
         )
 
     @staticmethod
@@ -203,8 +222,10 @@ class AnthropicProvider(BaseProvider):
             tool_calls=tool_calls,
             raw=data,
             finish_reason=data.get("stop_reason") or "",
-            usage={
-                "input_tokens": int(usage.get("input_tokens") or 0),
-                "output_tokens": int(usage.get("output_tokens") or 0),
-            },
+            usage=normalize_usage(
+                {
+                    "input_tokens": int(usage.get("input_tokens") or 0),
+                    "output_tokens": int(usage.get("output_tokens") or 0),
+                }
+            ),
         )

@@ -818,7 +818,12 @@ class MayaAgentWindow:
                     self._flush_stream()
                     self.chat.finish_thinking()
                     final = event.get("content")
-                    self.chat.finish_assistant(final if final else None)
+                    self.chat.finish_assistant(
+                        final if final else None,
+                        model=event.get("model") or "",
+                        usage=event.get("usage") or {},
+                        llm_calls=int(event.get("llm_calls") or 0),
+                    )
 
                 elif et == "undo_ready":
                     if event.get("can_undo"):

@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional
 from maya_agent.core.executor import ToolExecutor
 from maya_agent.core.memory import ConversationMemory
 from maya_agent.core.undo import UndoTurnManager
-from maya_agent.llm.base import ChatMessage, ChatResponse, StreamChunk, ToolCall
+from maya_agent.llm.base import ChatMessage, ChatResponse, StreamChunk, ToolCall, merge_usage
 from maya_agent.llm.registry import create_provider
 from maya_agent.tools.registry import ensure_tools_loaded, tool_specs
 from maya_agent.utils.config import get_config
@@ -86,10 +86,11 @@ class MayaAgent:
         """
         Yields event dicts:
           {"type":"text","content":"..."}
+          {"type":"thinking","content":"..."}
           {"type":"tool_start","name":"...","arguments":"..."}
           {"type":"tool_end","name":"...","result":"..."}
           {"type":"error","content":"..."}
-          {"type":"done","content":"..."}
+          {"type":"done","content":"...","model":"...","usage":{...}}
           {"type":"undo_ready","can_undo": bool}
         Returns final assistant text.
         """
@@ -101,6 +102,8 @@ class MayaAgent:
         final_text = ""
         turn_opened = False
         had_tools = False
+        turn_usage: Dict[str, int] = {}
+        llm_calls = 0
 
         try:
             provider = create_provider(self.provider_id, model=self.model)
@@ -108,6 +111,7 @@ class MayaAgent:
             yield {"type": "error", "content": str(e)}
             return str(e)
 
+        model_name = getattr(provider, "model", "") or self.model or ""
         tools = tool_specs() if provider.supports_tools else None
 
         def _close_undo_turn():
@@ -176,6 +180,10 @@ class MayaAgent:
                     yield {"type": "error", "content": f"LLM 调用失败: {e}"}
                     return str(e)
 
+                if resp.usage:
+                    merge_usage(turn_usage, resp.usage)
+                llm_calls += 1
+
                 if resp.tool_calls:
                     if auto_undo and not turn_opened:
                         self.undo.begin_turn()
@@ -208,7 +216,13 @@ class MayaAgent:
 
                 final_text = resp.content or ""
                 self.memory.add(ChatMessage(role="assistant", content=final_text))
-                yield {"type": "done", "content": final_text}
+                yield {
+                    "type": "done",
+                    "content": final_text,
+                    "model": model_name,
+                    "usage": dict(turn_usage),
+                    "llm_calls": llm_calls,
+                }
                 evt = _close_undo_turn()
                 if evt:
                     yield evt

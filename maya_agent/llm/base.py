@@ -82,6 +82,100 @@ def extract_thinking_text(payload: Dict[str, Any]) -> str:
     return ""
 
 
+def normalize_usage(usage: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """Normalize provider usage dicts to prompt/completion/total tokens."""
+    if not usage:
+        return {}
+    out: Dict[str, int] = {}
+    for k, v in usage.items():
+        if isinstance(v, (int, float)):
+            out[str(k)] = int(v)
+
+    prompt = out.get("prompt_tokens")
+    if prompt is None:
+        prompt = out.get("input_tokens")
+    if prompt is None and "promptTokenCount" in out:
+        prompt = out.get("promptTokenCount")
+
+    completion = out.get("completion_tokens")
+    if completion is None:
+        completion = out.get("output_tokens")
+    if completion is None and "candidatesTokenCount" in out:
+        completion = out.get("candidatesTokenCount")
+
+    total = out.get("total_tokens")
+    if total is None and "totalTokenCount" in out:
+        total = out.get("totalTokenCount")
+
+    result: Dict[str, int] = {}
+    if prompt is not None:
+        result["prompt_tokens"] = int(prompt)
+    if completion is not None:
+        result["completion_tokens"] = int(completion)
+    if total is not None:
+        result["total_tokens"] = int(total)
+    elif result:
+        result["total_tokens"] = int(result.get("prompt_tokens", 0)) + int(
+            result.get("completion_tokens", 0)
+        )
+    # Keep reasoning / cached extras if present
+    for extra in ("reasoning_tokens", "cached_tokens"):
+        if extra in out:
+            result[extra] = out[extra]
+    return result
+
+
+def merge_usage(acc: Dict[str, int], usage: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """Add one response's usage into an accumulator (mutates and returns acc).
+
+    Only prompt/completion (and reasoning) are summed across LLM rounds.
+    total_tokens is always recomputed so it cannot drift from double-counted
+    provider totals.
+    """
+    norm = normalize_usage(usage)
+    for key in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_tokens"):
+        if key in norm:
+            acc[key] = int(acc.get(key, 0)) + int(norm[key])
+    prompt = int(acc.get("prompt_tokens", 0))
+    completion = int(acc.get("completion_tokens", 0))
+    if prompt or completion:
+        acc["total_tokens"] = prompt + completion
+    elif "total_tokens" in norm and "total_tokens" not in acc:
+        # Fallback when a provider only reports a single total
+        acc["total_tokens"] = int(norm["total_tokens"])
+    return acc
+
+
+def format_turn_meta(
+    model: str = "",
+    usage: Optional[Dict[str, Any]] = None,
+    llm_calls: int = 0,
+) -> str:
+    """Small footer line: model name + token counts for one user turn."""
+    model = (model or "").strip() or "未知模型"
+    norm = normalize_usage(usage)
+    bits = [model]
+    calls = int(llm_calls or 0)
+    if calls <= 0 and norm:
+        # Older sessions without llm_calls — infer nothing, just show tokens
+        calls = 0
+    if calls > 1:
+        bits.append(f"{calls} 次请求")
+    if not norm:
+        return " · ".join(bits)
+    prompt = int(norm.get("prompt_tokens") or 0)
+    completion = int(norm.get("completion_tokens") or 0)
+    total = int(norm.get("total_tokens") or (prompt + completion))
+    if prompt or completion or total:
+        # Multi-round Agent turns re-send tools/history each request; summed
+        # prompt_tokens is the real billable input across those calls.
+        if prompt or completion:
+            bits.append(f"输入 {prompt}")
+            bits.append(f"输出 {completion}")
+        bits.append(f"合计 {total}")
+    return " · ".join(bits)
+
+
 class BaseProvider:
     """Unified chat completion interface."""
 
