@@ -1,10 +1,10 @@
 # Maya Agent
 
-**v1.1.2** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型 API。
+**v1.2.0** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型 API。
 
 ## 特性
 
-- **覆盖游戏工作流**：约 60 个工具，涵盖场景、多边形建模、UV、绑骨蒙皮、动画、材质、灯光、FBX/USD/OBJ/Alembic 导出、LOD、碰撞体、命名规范与脚本执行等
+- **覆盖游戏工作流**：约 100+ 个工具，涵盖场景、建模、UV、**原生自动绑骨**（15 种模板骨架 / SkinCage / FK·IK 控制器，不依赖 AdvancedSkeleton）、蒙皮烘焙、动画、材质、灯光、导出、脚本与工具开发辅助等
 - **多模型兼容**：默认 DeepSeek；另支持 OpenAI / Azure / Anthropic Claude / Google Gemini，以及通义千问、智谱 GLM、Moonshot Kimi、豆包、百川、硅基流动、Ollama 本地与自定义 OpenAI 兼容接口
 - **Maya 原生界面**：停靠式深色面板，顶栏 **对话 / 设置 / 工具 / 帮助**；Enter 发送、Shift+Enter 换行、自动 Undo 块、危险操作确认
 - **会话与场景联动**：多会话管理；对话随场景 sidecar 自动保存（`场景名.ma.mayaagent.json`）

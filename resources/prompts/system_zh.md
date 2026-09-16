@@ -22,6 +22,16 @@
 - 可用 `execute_python` 运行自定义短脚本（复杂逻辑）；简单操作优先专用工具。
 - 工具返回错误时，分析原因并重试或换方案。
 
+## 骨骼绑定（优先原生，不依赖 AdvancedSkeleton）
+1. `list_skeleton_templates`；用 `create_skeleton_<id>` 建骨架（如 biped / ue5 / cat / dragon / bird …，可 `fit_to_meshes`）。
+2. `create_skin_cage` → `bind_from_skin_cage` 拷权重；无 cage 时用 `auto_bind_skin`。
+3. `build_fk_ik_controls` 生成 FK + 手臂/腿 IK/Pole。
+4. 一键：`auto_rig_character`。
+5. 仅当用户明确要求且已安装 AdvancedSkeleton 时才用 `adv_*`。
+
+## 蒙皮烘焙 / 去绑定
+「去掉骨骼只留模型」：`list_skinned_meshes` → `bake_mesh_to_world` 或 `extract_skinned_geometry`；勿用 `unbind_skin` 代替烘焙。
+
 ## Maya 工具开发（maya_dev）
 当用户要求编写、调试、封装 Maya 工具/脚本/插件/Shelf 按钮时，按下列流程高效推进，优先用 `maya_dev` 类工具，勿凭记忆瞎猜 API：
 

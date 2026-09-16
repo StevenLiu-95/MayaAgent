@@ -7,7 +7,15 @@ from typing import Any, Callable, Dict, Generator, List, Optional
 from maya_agent.core.executor import ToolExecutor
 from maya_agent.core.memory import ConversationMemory
 from maya_agent.core.undo import UndoTurnManager
-from maya_agent.llm.base import ChatMessage, ChatResponse, StreamChunk, ToolCall, merge_usage
+from maya_agent.llm.base import (
+    ChatMessage,
+    ChatResponse,
+    StreamChunk,
+    ToolCall,
+    describe_finish_reason,
+    merge_usage,
+    stop_notice_for_reason,
+)
 from maya_agent.llm.registry import create_provider
 from maya_agent.tools.registry import ensure_tools_loaded, tool_specs
 from maya_agent.utils.config import get_config
@@ -89,8 +97,9 @@ class MayaAgent:
           {"type":"thinking","content":"..."}
           {"type":"tool_start","name":"...","arguments":"..."}
           {"type":"tool_end","name":"...","result":"..."}
-          {"type":"error","content":"..."}
-          {"type":"done","content":"...","model":"...","usage":{...}}
+          {"type":"error","content":"...","stop_notice":"..."}
+          {"type":"done","content":"...","model":"...","usage":{...},"stop_notice":"..."}
+          {"type":"stopped","reason":"...","stop_notice":"..."}
           {"type":"undo_ready","can_undo": bool}
         Returns final assistant text.
         """
@@ -177,7 +186,20 @@ class MayaAgent:
                     evt = _close_undo_turn()
                     if evt:
                         yield evt
-                    yield {"type": "error", "content": f"LLM 调用失败: {e}"}
+                    err_text = str(e).strip() or repr(e)
+                    # Friendly formatter already returns full Chinese guidance
+                    if err_text.startswith(("LLM ", "Anthropic ", "Gemini ", "Cursor ")):
+                        content = err_text
+                    else:
+                        content = f"LLM 调用失败：{err_text}"
+                    notice = stop_notice_for_reason("llm_error")
+                    if "Max Tokens" in err_text or "max_tokens" in err_text.lower():
+                        notice = "已停止：Max Tokens 等请求参数不符合当前模型限制，请按下方说明调整设置。"
+                    yield {
+                        "type": "error",
+                        "content": content,
+                        "stop_notice": notice,
+                    }
                     return str(e)
 
                 if resp.usage:
@@ -216,28 +238,41 @@ class MayaAgent:
 
                 final_text = resp.content or ""
                 self.memory.add(ChatMessage(role="assistant", content=final_text))
+                stop_notice = describe_finish_reason(resp.finish_reason) or ""
                 yield {
                     "type": "done",
                     "content": final_text,
                     "model": model_name,
                     "usage": dict(turn_usage),
                     "llm_calls": llm_calls,
+                    "finish_reason": resp.finish_reason or "",
+                    "stop_notice": stop_notice,
                 }
                 evt = _close_undo_turn()
                 if evt:
                     yield evt
                 return final_text
 
-            msg = "已达到最大工具调用轮次，请缩小任务范围后重试。"
+            msg = stop_notice_for_reason("max_tool_rounds")
             evt = _close_undo_turn()
             if evt:
                 yield evt
-            yield {"type": "error", "content": msg}
+            yield {
+                "type": "stopped",
+                "reason": "max_tool_rounds",
+                "content": "",
+                "stop_notice": msg,
+                "model": model_name,
+                "usage": dict(turn_usage),
+                "llm_calls": llm_calls,
+            }
             return msg
-        except Exception:
+        except Exception as e:
             if turn_opened:
                 self.undo.end_turn(had_edits=had_tools)
                 turn_opened = False
+            # Re-raise after closing undo; outer UI maps unexpected errors.
+            # Also surface a stopped tip when this is an LLM-path failure already handled above.
             raise
         finally:
             # Safety: never leave an open Maya undo chunk behind

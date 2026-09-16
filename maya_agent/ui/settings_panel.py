@@ -194,7 +194,8 @@ def create_settings_panel(
 
             gen, gen_lay = self._section(
                 "生成参数",
-                "影响回复风格与长度。Agent 任务建议 Temperature 偏低。",
+                "影响回复风格与长度。Agent 任务建议 Temperature 偏低。"
+                " Max Tokens 为各服务商共用：通义千问兼容接口通常上限 8192，设过大将直接报错。",
             )
             gform = self._form(gen_lay)
             self.temp_spin = create_toolbar_spin(decimal=True)
@@ -208,6 +209,11 @@ def create_settings_panel(
             self.max_tokens_spin.setSingleStep(256)
             self.max_tokens_spin.setFixedHeight(30)
             self.max_tokens_spin.setFixedWidth(132)
+            self.max_tokens_spin.setToolTip(
+                "单次回复最大输出 Token。\n"
+                "不同服务商上限不同，例如通义千问 DashScope 兼容模式常见为 1～8192。\n"
+                "若报 InvalidParameter / max_tokens range，请调低本项后保存重试。"
+            )
             gform.addRow(self._field_label("Temperature"), self.temp_spin)
             gform.addRow(self._field_label("Max Tokens"), self.max_tokens_spin)
             root.addWidget(gen)
@@ -690,8 +696,10 @@ def create_help_panel(parent=None):
         ),
         (
             "绑骨 rigging",
-            "create_joint、create_joint_chain、orient_joints、bind_skin、unbind_skin、"
-            "create_ik_handle、create_control_curve、constrain_objects",
+            "list_skeleton_templates、create_skeleton_*（biped/ue5/cat/dragon 等 15 种）、"
+            "create_skin_cage、bind_from_skin_cage、build_fk_ik_controls、auto_rig_character、"
+            "list_skinned_meshes、bake_mesh_to_world、extract_skinned_geometry 等"
+            "（adv_* 仅在已安装 AdvancedSkeleton 且用户明确要求时使用）",
         ),
         (
             "动画 animation",

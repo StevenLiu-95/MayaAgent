@@ -715,6 +715,7 @@ def create_chat_panel(parent=None):
             bubble_lay.addWidget(self.typing)
 
             self._meta_label = None
+            self._notice_label = None
             if role == "user":
                 root.addStretch(1)
                 root.addWidget(self.bubble, 6)
@@ -729,6 +730,25 @@ def create_chat_panel(parent=None):
                 root.addStretch(1)
                 self._choice_bar = ChoiceBar(self.bubble)
                 bubble_lay.addWidget(self._choice_bar)
+                self._notice_label = QtWidgets.QLabel("")
+                self._notice_label.setObjectName("stopNotice")
+                self._notice_label.setWordWrap(True)
+                self._notice_label.setTextInteractionFlags(
+                    QtCore.Qt.TextSelectableByMouse
+                )
+                self._notice_label.setStyleSheet(
+                    "QLabel#stopNotice {"
+                    " color:#d4b06a;"
+                    " background-color:#2a281c;"
+                    " border:1px solid #4a4330;"
+                    " border-radius:6px;"
+                    " font-size:12px;"
+                    " padding:6px 8px;"
+                    " margin-top:2px;"
+                    "}"
+                )
+                self._notice_label.hide()
+                bubble_lay.addWidget(self._notice_label)
                 self._meta_label = QtWidgets.QLabel("")
                 self._meta_label.setObjectName("turnMeta")
                 self._meta_label.setWordWrap(True)
@@ -768,6 +788,19 @@ def create_chat_panel(parent=None):
                 return
             self._meta_label.setText(line)
             self._meta_label.show()
+
+        def set_stop_notice(self, text: str = "") -> None:
+            """Show an abnormal-stop tip at the end of the assistant bubble."""
+            if self._notice_label is None:
+                return
+            line = (text or "").strip()
+            if not line:
+                self._notice_label.hide()
+                self._notice_label.clear()
+                return
+            self._notice_label.setText(line)
+            self._notice_label.show()
+            self._set_typing(False)
 
         def _ensure_body(self) -> BodyView:
             if self._body_view is None:
@@ -1170,6 +1203,7 @@ def create_chat_panel(parent=None):
             model: str = "",
             usage: Optional[Dict[str, Any]] = None,
             llm_calls: int = 0,
+            stop_notice: str = "",
         ):
             if self._current is None:
                 return
@@ -1193,6 +1227,8 @@ def create_chat_panel(parent=None):
                 self._current._set_typing(False)
                 if self._current._body_view is not None and not self._current._body_view.toPlainText():
                     self._current._body_view.hide()
+            if stop_notice:
+                self._current.set_stop_notice(stop_notice)
             if model or usage or llm_calls:
                 self._current.set_turn_meta(
                     model=model, usage=usage, llm_calls=llm_calls
@@ -1218,6 +1254,8 @@ def create_chat_panel(parent=None):
                     block["usage"] = dict(usage)
                 if llm_calls:
                     block["llm_calls"] = int(llm_calls)
+                if stop_notice:
+                    block["stop_notice"] = stop_notice
             self._current = None
             self._stream_text = ""
             self._thinking_text = ""
@@ -1270,6 +1308,9 @@ def create_chat_panel(parent=None):
                     _, choices = chat_format.extract_user_choices(raw)
             if choices:
                 mb.set_choices(choices, enabled=False)
+            notice = block.get("stop_notice") or ""
+            if notice:
+                mb.set_stop_notice(notice)
             model = block.get("model") or ""
             usage = block.get("usage") or {}
             llm_calls = int(block.get("llm_calls") or 0)

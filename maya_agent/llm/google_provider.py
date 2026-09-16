@@ -15,6 +15,7 @@ from maya_agent.llm.base import (
     ToolCall,
     ToolSpec,
     normalize_usage,
+    raise_llm_http_error,
 )
 
 
@@ -62,7 +63,13 @@ class GoogleProvider(BaseProvider):
         with httpx.Client(timeout=self.timeout) as client:
             r = client.post(url, json=body)
             if r.status_code >= 400:
-                raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:500]}")
+                raise_llm_http_error(
+                    r.status_code,
+                    r.text,
+                    max_tokens=self.max_tokens,
+                    model=self.model,
+                    provider_label="Gemini",
+                )
             return self._parse(r.json())
 
     def _stream(self, url, body) -> Generator[StreamChunk, None, ChatResponse]:
@@ -74,7 +81,13 @@ class GoogleProvider(BaseProvider):
             with client.stream("POST", url, json=body) as r:
                 if r.status_code >= 400:
                     err = r.read().decode("utf-8", errors="replace")
-                    raise RuntimeError(f"Gemini HTTP {r.status_code}: {err[:500]}")
+                    raise_llm_http_error(
+                        r.status_code,
+                        err,
+                        max_tokens=self.max_tokens,
+                        model=self.model,
+                        provider_label="Gemini",
+                    )
                 for line in r.iter_lines():
                     if not line.startswith("data:"):
                         continue

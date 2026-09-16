@@ -49,6 +49,25 @@ def _unregister_menu_from_sets(name: str) -> None:
         pass
 
 
+def _add_menu_to_set(menu_set: str, name: str) -> bool:
+    """Add menu to a menuSet; try string then list form (Maya version differences)."""
+    import maya.cmds as cmds
+
+    try:
+        arr = cmds.menuSet(menu_set, query=True, menuArray=True) or []
+    except Exception:
+        return False
+    if name in arr:
+        return True
+    for payload in (name, [name]):
+        try:
+            cmds.menuSet(menu_set, edit=True, addMenu=payload)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _register_menu_in_sets(name: str) -> None:
     """
     Register custom menu into Maya menu sets so it actually appears.
@@ -56,28 +75,20 @@ def _register_menu_in_sets(name: str) -> None:
     Maya 2016+ only shows menus that belong to the active menu set
     (建模 / 绑定 / 动画 …). Menus in commonMenuSet are always visible
     alongside File / Edit / Window — required for custom tools.
+    Also register into every menu set as a fallback for localized / odd builds.
     """
     import maya.cmds as cmds
 
-    registered = False
-    try:
-        arr = cmds.menuSet("commonMenuSet", query=True, menuArray=True) or []
-        if name not in arr:
-            # Maya expects a plain string for addMenu (not a Python list)
-            cmds.menuSet("commonMenuSet", edit=True, addMenu=name)
-        registered = True
-    except Exception as e:
-        log.warning("commonMenuSet register failed: %s", e)
-
+    registered = _add_menu_to_set("commonMenuSet", name)
     if not registered:
-        try:
-            for ms in cmds.menuSet(query=True, allMenuSets=True) or []:
-                arr = cmds.menuSet(ms, query=True, menuArray=True) or []
-                if name not in arr:
-                    cmds.menuSet(ms, edit=True, addMenu=name)
-            registered = True
-        except Exception as e:
-            log.warning("menuSet fallback register failed: %s", e)
+        log.warning("commonMenuSet register failed for %s", name)
+
+    try:
+        for ms in cmds.menuSet(query=True, allMenuSets=True) or []:
+            if _add_menu_to_set(ms, name):
+                registered = True
+    except Exception as e:
+        log.warning("menuSet fallback register failed: %s", e)
 
     if not registered:
         raise RuntimeError(f"failed to register menu {name} into any menu set")
@@ -96,7 +107,7 @@ def _register_menu_in_sets(name: str) -> None:
     except Exception as e:
         log.debug("menu visibility/index tweak failed: %s", e)
 
-    print(f"[Maya Agent] menuSet OK: {name} -> commonMenuSet")
+    print(f"[Maya Agent] menuSet OK: {name} -> commonMenuSet (+ all sets)")
 
 
 def _delete_menu_if_exists(name: str) -> None:
@@ -115,9 +126,11 @@ def _delete_menu_if_exists(name: str) -> None:
 
 def _menu_item_cmd(dotted: str) -> str:
     """Stable Python command string for menuItem (survives reload better than callables)."""
+    # Must import the submodule path — `import maya_agent` alone does not
+    # expose maya_agent.plugin as an attribute on older / lazy packages.
     return (
-        "import maya_agent\n"
-        f"maya_agent.plugin.menu.{dotted}()\n"
+        "import maya_agent.plugin.menu as _ma_menu\n"
+        f"_ma_menu.{dotted}()\n"
     )
 
 
@@ -390,9 +403,11 @@ def reload_plugin(*_args) -> None:
 
     import maya_agent.plugin.menu as menu_mod  # noqa: F401
 
+    menu_mod._INSTALL_ATTEMPTS = 0
     menu_mod.install_menu()
     menu_mod.install_shelf()
     menu_mod.open_ui()
+    return True
 
 
 def show_about(*_args) -> None:
@@ -406,56 +421,99 @@ def show_about(*_args) -> None:
     )
 
 
-def _deferred_install() -> None:
+_INSTALL_ATTEMPTS = 0
+_MAX_INSTALL_ATTEMPTS = 8
+
+
+def _deferred_install(force: bool = False) -> None:
+    """Install menu/shelf; retry while Maya main window / menu sets warm up."""
+    global _INSTALL_ATTEMPTS
+    if not force:
+        _INSTALL_ATTEMPTS += 1
+    attempt = _INSTALL_ATTEMPTS
+
     menu_ok = False
     shelf_ok = False
     try:
         install_menu()
         menu_ok = True
     except Exception as e:
-        log.exception("menu install failed")
-        print("[Maya Agent] menu install failed:", e)
+        log.exception("menu install failed (attempt %s)", attempt)
+        print(f"[Maya Agent] menu install failed (attempt {attempt}):", e)
     try:
         install_shelf()
         shelf_ok = True
     except Exception as e:
-        log.exception("shelf install failed")
-        print("[Maya Agent] shelf install failed:", e)
-    print(f"[Maya Agent] register done (menu={menu_ok}, shelf={shelf_ok})")
-    try:
-        from maya_agent.plugin.scene_hooks import install_scene_hooks
+        log.exception("shelf install failed (attempt %s)", attempt)
+        print(f"[Maya Agent] shelf install failed (attempt {attempt}):", e)
 
-        install_scene_hooks()
-    except Exception as e:
-        log.warning("scene hooks failed: %s", e)
+    print(f"[Maya Agent] register done (menu={menu_ok}, shelf={shelf_ok}, attempt={attempt})")
 
+    if menu_ok:
+        try:
+            from maya_agent.plugin.scene_hooks import install_scene_hooks
 
-def bootstrap() -> None:
-    """Called from userSetup.py — deferred because UI / menu sets are not ready yet."""
-    if not in_maya():
+            install_scene_hooks()
+        except Exception as e:
+            log.warning("scene hooks failed: %s", e)
         return
-    # String form is more reliable across Maya versions than passing callables
-    # into cmds.evalDeferred (which historically expects MEL/Python source text).
-    _deferred_py = (
-        "import maya_agent; maya_agent.plugin.menu._deferred_install()"
-    )
+
+    if attempt >= _MAX_INSTALL_ATTEMPTS:
+        print(
+            "[Maya Agent] menu still missing after retries. "
+            "In Script Editor run: import maya_agent; maya_agent.reload()"
+        )
+        return
+
+    # Menu sets / main window often lag behind plug-in init — retry soon.
+    _schedule_retry()
+
+
+def _schedule_retry() -> None:
+    py = "import maya_agent.plugin.menu as m; m._deferred_install()"
+    try:
+        import maya.cmds as cmds
+
+        cmds.evalDeferred(py, lowestPriority=True)
+        return
+    except Exception:
+        pass
     try:
         import maya.utils
 
         maya.utils.executeDeferred(_deferred_install)
-        try:
-            import maya.cmds as cmds
-
-            # Second pass after menu sets finish initializing (Maya 2016+)
-            cmds.evalDeferred(_deferred_py, lowestPriority=True)
-        except Exception:
-            maya.utils.executeDeferred(_deferred_install)
-        print("[Maya Agent] bootstrap scheduled")
     except Exception as e:
-        log.error("bootstrap schedule failed: %s", e)
-        try:
-            import maya.cmds as cmds
+        print("[Maya Agent] retry schedule failed:", e)
 
-            cmds.evalDeferred(_deferred_py)
-        except Exception as e2:
-            print("[Maya Agent] bootstrap failed:", e, e2)
+
+def bootstrap() -> None:
+    """Called from userSetup / plug-in — deferred because UI / menu sets are not ready yet."""
+    if not in_maya():
+        return
+    global _INSTALL_ATTEMPTS
+    _INSTALL_ATTEMPTS = 0
+
+    # Prefer string form: more reliable across Maya versions than callables.
+    _deferred_py = "import maya_agent.plugin.menu as m; m._deferred_install()"
+    scheduled = False
+    try:
+        import maya.cmds as cmds
+
+        cmds.evalDeferred(_deferred_py)
+        cmds.evalDeferred(_deferred_py, lowestPriority=True)
+        scheduled = True
+    except Exception as e:
+        log.warning("cmds.evalDeferred failed: %s", e)
+
+    if not scheduled:
+        try:
+            import maya.utils
+
+            maya.utils.executeDeferred(_deferred_install)
+            scheduled = True
+        except Exception as e:
+            log.error("bootstrap schedule failed: %s", e)
+            print("[Maya Agent] bootstrap failed:", e)
+
+    if scheduled:
+        print("[Maya Agent] bootstrap scheduled")

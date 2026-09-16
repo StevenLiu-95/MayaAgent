@@ -16,6 +16,7 @@ from maya_agent.llm.base import (
     ToolSpec,
     extract_thinking_text,
     normalize_usage,
+    raise_llm_http_error,
 )
 
 
@@ -98,7 +99,13 @@ class OpenAICompatProvider(BaseProvider):
                 json=self._payload(messages, tools, stream=False),
             )
             if r.status_code >= 400:
-                raise RuntimeError(f"LLM HTTP {r.status_code}: {r.text[:500]}")
+                raise_llm_http_error(
+                    r.status_code,
+                    r.text,
+                    max_tokens=self.max_tokens,
+                    model=self.model,
+                    provider_label="LLM",
+                )
             data = r.json()
         return self._parse_response(data)
 
@@ -122,7 +129,13 @@ class OpenAICompatProvider(BaseProvider):
             ) as r:
                 if r.status_code >= 400:
                     body = r.read().decode("utf-8", errors="replace")
-                    raise RuntimeError(f"LLM HTTP {r.status_code}: {body[:500]}")
+                    raise_llm_http_error(
+                        r.status_code,
+                        body,
+                        max_tokens=self.max_tokens,
+                        model=self.model,
+                        provider_label="LLM",
+                    )
                 for line in r.iter_lines():
                     if not line:
                         continue

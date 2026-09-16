@@ -25,6 +25,7 @@ from maya_agent.utils.maya_compat import (
     maya_version,
     wrap_maya_ptr,
 )
+from maya_agent.llm.base import stop_notice_for_reason
 
 _WINDOW_INSTANCE = None
 
@@ -74,7 +75,17 @@ def show_main_window():
         try:
             from maya_agent.ui.dock import show_dockable
 
-            return show_dockable()
+            result = show_dockable()
+            # Fallback if dock reported OK but nothing usable is visible.
+            win = get_window_instance()
+            if win is not None:
+                try:
+                    win.show()
+                    win.raise_()
+                    win.activateWindow()
+                except Exception:
+                    pass
+            return result
         except Exception:
             pass
     return show_floating_window()
@@ -154,6 +165,7 @@ class MayaAgentWindow:
                 self._session_switching = False
                 self._worker = None
                 self._skip_confirm_this_turn = False
+                self._stopped_by_user = False
                 self._stream_buf = ""
                 self._thinking_buf = ""
                 self._stream_timer = QtCore.QTimer(self)
@@ -722,6 +734,7 @@ class MayaAgentWindow:
                 self.status_label.set_idle("当前会话已清空")
 
             def _on_stop(self):
+                self._stopped_by_user = True
                 if self._worker and self._worker.isRunning():
                     self._worker.terminate()
                     self._worker.wait(1000)
@@ -734,7 +747,9 @@ class MayaAgentWindow:
                 except Exception:
                     pass
                 self._flush_stream()
-                self.chat.finish_assistant()
+                self.chat.finish_assistant(
+                    stop_notice=stop_notice_for_reason("user_cancel")
+                )
                 self._set_busy(False)
                 self._skip_confirm_this_turn = False
                 self.status_label.set_idle("已停止")
@@ -764,6 +779,7 @@ class MayaAgentWindow:
                 self._stream_buf = ""
                 self._thinking_buf = ""
                 self._skip_confirm_this_turn = False
+                self._stopped_by_user = False
                 self.input_edit.clear()
                 self._set_busy(True)
                 self.status_label.set_thinking()
@@ -812,7 +828,30 @@ class MayaAgentWindow:
                 elif et == "error":
                     self._flush_stream()
                     self.chat.finish_thinking()
+                    # Keep any partial reply, then tip + error bubble
+                    if self.chat._current is not None:
+                        self.chat.finish_assistant(
+                            stop_notice=event.get("stop_notice")
+                            or stop_notice_for_reason("llm_error")
+                        )
                     self.chat.add_error(event.get("content", ""))
+
+                elif et == "stopped":
+                    self._flush_stream()
+                    self.chat.finish_thinking()
+                    notice = (
+                        event.get("stop_notice")
+                        or stop_notice_for_reason(event.get("reason") or "")
+                    )
+                    final = event.get("content")
+                    self.chat.finish_assistant(
+                        final if final else None,
+                        model=event.get("model") or "",
+                        usage=event.get("usage") or {},
+                        llm_calls=int(event.get("llm_calls") or 0),
+                        stop_notice=notice,
+                    )
+                    self.status_label.set_idle("已停止")
 
                 elif et == "done":
                     self._flush_stream()
@@ -823,6 +862,7 @@ class MayaAgentWindow:
                         model=event.get("model") or "",
                         usage=event.get("usage") or {},
                         llm_calls=int(event.get("llm_calls") or 0),
+                        stop_notice=event.get("stop_notice") or "",
                     )
 
                 elif et == "undo_ready":
@@ -832,6 +872,11 @@ class MayaAgentWindow:
                             self.status_label.set_idle("就绪 · 可用 Ctrl+Z 撤销")
 
             def _on_finished(self):
+                if self._stopped_by_user:
+                    self._stopped_by_user = False
+                    self._stream_timer.stop()
+                    self._schedule_persist()
+                    return
                 self._flush_stream()
                 # ensure assistant bubble finalized (idempotent-ish)
                 if self.chat._current is not None:
@@ -846,9 +891,18 @@ class MayaAgentWindow:
                 self._schedule_persist()
 
             def _on_failed(self, err: str):
+                if self._stopped_by_user:
+                    # terminate() may surface as failure — tip already shown in _on_stop
+                    self._stopped_by_user = False
+                    self._stream_timer.stop()
+                    self._set_busy(False)
+                    self._schedule_persist()
+                    return
                 self._flush_stream()
                 if self.chat._current is not None:
-                    self.chat.finish_assistant()
+                    self.chat.finish_assistant(
+                        stop_notice=stop_notice_for_reason("worker_error")
+                    )
                 self.chat.add_error(err)
                 self._stream_timer.stop()
                 self._skip_confirm_this_turn = False

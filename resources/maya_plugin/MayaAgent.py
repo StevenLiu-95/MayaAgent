@@ -44,18 +44,46 @@ def initializePlugin(plugin):  # noqa: N802 — Maya API name
     """Called when Maya loads this plug-in."""
     print("[Maya Agent] plug-in loading…")
     if not _ensure_path():
+        # Still mark as loaded in Plug-in Manager, but UI will be missing —
+        # surface a clear hint in the Script Editor.
+        print("[Maya Agent] path missing — menu will not appear until install is fixed")
         return
-    # UI / menu sets are not ready during plug-in init — defer like userSetup
-    try:
-        import maya.utils
 
-        maya.utils.executeDeferred(_bootstrap)
-    except Exception:
-        cmds.evalDeferred(
-            "import maya_agent; maya_agent.bootstrap()",
-            lowestPriority=True,
-        )
-    print("[Maya Agent] plug-in loaded (menu deferred)")
+    # Prefer string-form deferred calls: callable deferred is flaky in some
+    # Maya / plug-in load paths, which leaves MayaAgent loaded with no menu.
+    boot_py = (
+        "import sys\n"
+        f"p=r'{MODULE_ROOT.replace(chr(92), '/')}'\n"
+        "sys.path.insert(0,p) if p and p not in sys.path else None\n"
+        "import maya_agent\n"
+        "maya_agent.bootstrap()\n"
+    )
+    scheduled = False
+    try:
+        cmds.evalDeferred(boot_py)
+        cmds.evalDeferred(boot_py, lowestPriority=True)
+        scheduled = True
+    except Exception as exc:
+        print("[Maya Agent] evalDeferred failed:", exc)
+
+    if not scheduled:
+        try:
+            import maya.utils
+
+            maya.utils.executeDeferred(_bootstrap)
+            scheduled = True
+        except Exception as exc:
+            print("[Maya Agent] executeDeferred failed:", exc)
+            try:
+                _bootstrap()
+                scheduled = True
+            except Exception as exc2:
+                print("[Maya Agent] immediate bootstrap failed:", exc2)
+
+    if scheduled:
+        print("[Maya Agent] plug-in loaded (menu deferred)")
+    else:
+        print("[Maya Agent] plug-in loaded but bootstrap could not be scheduled")
 
 
 def uninitializePlugin(plugin):  # noqa: N802 — Maya API name

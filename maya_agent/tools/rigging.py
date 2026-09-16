@@ -137,7 +137,10 @@ def bind_skin(
 
 @tool(
     name="unbind_skin",
-    description="解除蒙皮。",
+    description=(
+        "解除蒙皮（回到 bind pose 几何，不保留当前变形姿态）。"
+        "若要保留当前姿势的静态模型，请用 bake_mesh_to_world 或 extract_skinned_geometry。"
+    ),
     parameters=obj_schema({"mesh": {"type": "string"}}, required=["mesh"]),
     category="rigging",
     destructive=True,

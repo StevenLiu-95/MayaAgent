@@ -31,6 +31,20 @@ def main() -> int:
     print(f"tools registered: {len(specs)}")
     for cat, items in sorted(cats.items()):
         print(f"  [{cat}] {len(items)}")
+
+    from maya_agent.tools.skeleton_templates import list_templates, template_payload
+
+    tmpls = list_templates()
+    avail = [t for t in tmpls if t["available"]]
+    print(f"skeleton templates: {len(avail)}/{len(tmpls)} available")
+    for t in avail:
+        joints, mirror, _ = template_payload(t["id"])
+        names = {j["name"] for j in joints}
+        bad = [j["name"] for j in joints if j.get("parent") and j["parent"] not in names]
+        if bad:
+            raise SystemExit(f"template {t['id']} broken parents: {bad[:5]}")
+        print(f"  - {t['id']}: {t['joint_count']} joints mirror={mirror}")
+
     print("system prompt chars:", len(cfg.system_prompt()))
     print("OK")
     return 0

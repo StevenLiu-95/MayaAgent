@@ -15,6 +15,7 @@ from maya_agent.llm.base import (
     ToolCall,
     ToolSpec,
     normalize_usage,
+    raise_llm_http_error,
 )
 
 
@@ -57,7 +58,13 @@ class AnthropicProvider(BaseProvider):
         with httpx.Client(timeout=self.timeout) as client:
             r = client.post(url, headers=headers, json=payload)
             if r.status_code >= 400:
-                raise RuntimeError(f"Anthropic HTTP {r.status_code}: {r.text[:500]}")
+                raise_llm_http_error(
+                    r.status_code,
+                    r.text,
+                    max_tokens=self.max_tokens,
+                    model=self.model,
+                    provider_label="Anthropic",
+                )
             return self._parse(r.json())
 
     def _stream(self, url, headers, payload) -> Generator[StreamChunk, None, ChatResponse]:
@@ -74,7 +81,13 @@ class AnthropicProvider(BaseProvider):
             with client.stream("POST", url, headers=headers, json=payload) as r:
                 if r.status_code >= 400:
                     body = r.read().decode("utf-8", errors="replace")
-                    raise RuntimeError(f"Anthropic HTTP {r.status_code}: {body[:500]}")
+                    raise_llm_http_error(
+                        r.status_code,
+                        body,
+                        max_tokens=self.max_tokens,
+                        model=self.model,
+                        provider_label="Anthropic",
+                    )
                 for line in r.iter_lines():
                     if not line.startswith("data:"):
                         continue

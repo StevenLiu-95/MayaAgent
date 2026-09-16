@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from maya_agent.llm.anthropic_provider import AnthropicProvider
 from maya_agent.llm.base import BaseProvider
+from maya_agent.llm.cursor_provider import CursorProvider
 from maya_agent.llm.google_provider import GoogleProvider
 from maya_agent.llm.openai_compat import OpenAICompatProvider
 from maya_agent.utils.config import get_config
@@ -72,6 +73,11 @@ def create_provider(
         return AnthropicProvider(**common)
     if pid == "google":
         return GoogleProvider(**common)
+    if pid == "cursor":
+        return CursorProvider(
+            auth_mode=pconf.get("auth_mode", "auto"),
+            **common,
+        )
     if pid == "azure_openai":
         return OpenAICompatProvider(
             azure=True,

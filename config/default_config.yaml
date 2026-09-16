@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.1.2"
+  version: "1.2.0"
   language: zh-CN
   theme: dark
 
@@ -124,6 +124,22 @@ providers:
       - Baichuan3-Turbo
     default_model: Baichuan4
 
+  cursor:
+    enabled: true
+    label: Cursor
+    # 官方 api.cursor.com 是 Cloud Agents，不是 Chat Completions。
+    # MayaAgent 需指向 Cursor→OpenAI 兼容代理（本地常见端口 4646）。
+    base_url: http://127.0.0.1:4646/v1
+    api_key_env: CURSOR_API_KEY
+    auth_mode: auto  # auto | bearer | basic
+    models:
+      - auto
+      - composer-2.5
+      - composer-2.5-fast
+      - claude-4.6-sonnet-thinking
+      - gpt-5.2
+    default_model: auto
+
   siliconflow:
     enabled: true
     label: SiliconFlow (硅基流动)
@@ -161,6 +177,8 @@ maya:
   auto_undo: true
   confirm_destructive: true
   max_tool_rounds: 12
+  # AdvancedSkeleton 根目录（内含 AdvancedSkeleton.mel）。空则自动搜索桌面/环境变量
+  advanced_skeleton_path: "D:/桌面/AdvancedSkeleton"
 
 agent:
   history_limit: 40
