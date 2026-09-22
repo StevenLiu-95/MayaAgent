@@ -10,20 +10,26 @@ from maya_agent.core.undo import UndoTurnManager
 from maya_agent.llm.base import (
     ChatMessage,
     ChatResponse,
+    ImageAttachment,
     StreamChunk,
     ToolCall,
     describe_finish_reason,
     merge_usage,
     stop_notice_for_reason,
 )
+from maya_agent.llm.image_codec import MAX_IMAGES
 from maya_agent.llm.registry import create_provider
-from maya_agent.tools.registry import ensure_tools_loaded, tool_specs
+from maya_agent.tools.registry import ToolResult, ensure_tools_loaded, tool_specs
 from maya_agent.utils.config import get_config
 from maya_agent.utils.logger import get_logger
 from maya_agent.utils.maya_compat import in_maya, maya_version
 
 log = get_logger("maya_agent.agent")
 
+_VISION_INJECT_PROMPT = (
+    "[系统] 以下为工具刚截取的场景视口图像，请据此进行视觉分析，"
+    "并继续完成用户任务（可再截图或调用其他工具）。"
+)
 
 class MayaAgent:
     def __init__(
@@ -90,20 +96,28 @@ class MayaAgent:
         self,
         user_text: str,
         stream: bool = False,
+        images: Optional[List[Any]] = None,
     ) -> Generator[Dict[str, Any], None, str]:
         """
         Yields event dicts:
           {"type":"text","content":"..."}
           {"type":"thinking","content":"..."}
           {"type":"tool_start","name":"...","arguments":"..."}
-          {"type":"tool_end","name":"...","result":"..."}
+          {"type":"tool_end","name":"...","result":"...","images":[...optional...]}
+          {"type":"vision_context","count":N}
           {"type":"error","content":"...","stop_notice":"..."}
           {"type":"done","content":"...","model":"...","usage":{...},"stop_notice":"..."}
           {"type":"stopped","reason":"...","stop_notice":"..."}
           {"type":"undo_ready","can_undo": bool}
         Returns final assistant text.
         """
-        self.memory.add(ChatMessage(role="user", content=user_text))
+        attached = [img for img in (images or []) if getattr(img, "data_b64", "")]
+        text = (user_text or "").strip()
+        if attached and not text:
+            text = "请查看附图。"
+        self.memory.add(
+            ChatMessage(role="user", content=text, images=attached or None)
+        )
         cfg = get_config()
         max_rounds = int(cfg.get("maya.max_tool_rounds", 12))
         use_stream = stream and cfg.get("agent.stream", True)
@@ -121,7 +135,10 @@ class MayaAgent:
             return str(e)
 
         model_name = getattr(provider, "model", "") or self.model or ""
-        tools = tool_specs() if provider.supports_tools else None
+        vision_ok = bool(getattr(provider, "supports_vision", False))
+        tools = (
+            tool_specs(vision=vision_ok) if provider.supports_tools else None
+        )
 
         def _close_undo_turn():
             nonlocal turn_opened
@@ -232,8 +249,26 @@ class MayaAgent:
                             tool_calls=tc_payload,
                         )
                     )
+                    vision_batch: List[ImageAttachment] = []
                     for tc in resp.tool_calls:
-                        yield from self._run_one_tool(tc)
+                        yield from self._run_one_tool(
+                            tc,
+                            vision_ok=vision_ok,
+                            vision_batch=vision_batch,
+                        )
+                    if vision_batch and vision_ok:
+                        clipped = vision_batch[:MAX_IMAGES]
+                        self.memory.add(
+                            ChatMessage(
+                                role="user",
+                                content=_VISION_INJECT_PROMPT,
+                                images=clipped,
+                            )
+                        )
+                        yield {
+                            "type": "vision_context",
+                            "count": len(clipped),
+                        }
                     continue
 
                 final_text = resp.content or ""
@@ -279,15 +314,35 @@ class MayaAgent:
             if turn_opened:
                 self.undo.end_turn(had_edits=had_tools)
 
-    def _run_one_tool(self, tc: ToolCall) -> Generator[Dict[str, Any], None, None]:
+    def _run_one_tool(
+        self,
+        tc: ToolCall,
+        *,
+        vision_ok: bool = False,
+        vision_batch: Optional[List[ImageAttachment]] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
         if self.on_tool_start:
             self.on_tool_start(tc.name, tc.arguments)
         yield {"type": "tool_start", "name": tc.name, "arguments": tc.arguments}
         result = self.executor.execute(tc.name, tc.arguments)
+        result = self._apply_vision_gate(result, vision_ok=vision_ok)
         text = result.to_str()
+        image_dicts = []
+        for img in result.images or []:
+            if getattr(img, "data_b64", ""):
+                image_dicts.append(img.to_dict())
+                if vision_batch is not None and vision_ok:
+                    vision_batch.append(img)
         if self.on_tool_end:
             self.on_tool_end(tc.name, text)
-        yield {"type": "tool_end", "name": tc.name, "result": text}
+        evt: Dict[str, Any] = {
+            "type": "tool_end",
+            "name": tc.name,
+            "result": text,
+        }
+        if image_dicts:
+            evt["images"] = image_dicts
+        yield evt
         self.memory.add(
             ChatMessage(
                 role="tool",
@@ -297,9 +352,28 @@ class MayaAgent:
             )
         )
 
-    def chat_sync(self, user_text: str) -> str:
+    @staticmethod
+    def _apply_vision_gate(result: ToolResult, *, vision_ok: bool) -> ToolResult:
+        """Drop or reject image-bearing results when the model cannot see them."""
+        imgs = [img for img in (result.images or []) if getattr(img, "data_b64", "")]
+        if not imgs:
+            return result
+        if vision_ok:
+            result.images = imgs
+            return result
+        return ToolResult(
+            ok=False,
+            error=(
+                "当前模型不支持视觉分析，无法使用视口截图。"
+                "请在设置中切换到支持看图的模型（如 gpt-4o、Claude、Gemini，"
+                "或名称含 vision / vl 的模型），或将「图片输入」设为开启。"
+            ),
+            data=result.data,
+        )
+
+    def chat_sync(self, user_text: str, images: Optional[List[Any]] = None) -> str:
         final = ""
-        for event in self.chat(user_text, stream=False):
+        for event in self.chat(user_text, stream=False, images=images):
             if event["type"] in ("done", "error"):
                 final = event.get("content", "")
         return final

@@ -29,7 +29,9 @@ class AnthropicProvider(BaseProvider):
         tools: Optional[List[ToolSpec]] = None,
         stream: bool = False,
     ) -> Union[ChatResponse, Generator[StreamChunk, None, ChatResponse]]:
-        system, converted = self._convert_messages(messages)
+        system, converted = self._convert_messages(
+            messages, include_images=self.supports_vision
+        )
         payload: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens or 4096,
@@ -165,12 +167,24 @@ class AnthropicProvider(BaseProvider):
         )
 
     @staticmethod
-    def _convert_messages(messages: List[ChatMessage]):
+    def _convert_messages(messages: List[ChatMessage], include_images: bool = True):
         system_parts = []
         out = []
         for m in messages:
             if m.role == "system":
                 system_parts.append(m.content)
+                continue
+            if m.role == "user" and (m.images or []):
+                if include_images:
+                    blocks: List[Dict[str, Any]] = []
+                    if m.content:
+                        blocks.append({"type": "text", "text": m.content})
+                    for img in m.images or []:
+                        if img.data_b64:
+                            blocks.append(img.to_anthropic_part())
+                    out.append({"role": "user", "content": blocks or (m.content or "")})
+                else:
+                    out.append({"role": "user", "content": m._text_for_api(False)})
                 continue
             if m.role == "tool":
                 out.append(
@@ -207,7 +221,29 @@ class AnthropicProvider(BaseProvider):
                 out.append({"role": "assistant", "content": content})
                 continue
             out.append({"role": m.role, "content": m.content or ""})
-        return "\n\n".join(system_parts), out
+        return "\n\n".join(system_parts), AnthropicProvider._merge_same_role(out)
+
+    @staticmethod
+    def _merge_same_role(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Anthropic requires strict user/assistant alternation."""
+        merged: List[Dict[str, Any]] = []
+        for msg in messages:
+            if merged and merged[-1].get("role") == msg.get("role"):
+                prev = merged[-1]
+                prev["content"] = AnthropicProvider._as_blocks(
+                    prev.get("content")
+                ) + AnthropicProvider._as_blocks(msg.get("content"))
+            else:
+                merged.append(dict(msg))
+        return merged
+
+    @staticmethod
+    def _as_blocks(content: Any) -> List[Dict[str, Any]]:
+        if isinstance(content, list):
+            return [dict(b) for b in content if isinstance(b, dict)]
+        if content is None or content == "":
+            return []
+        return [{"type": "text", "text": str(content)}]
 
     @staticmethod
     def _parse(data: Dict[str, Any]) -> ChatResponse:

@@ -29,7 +29,9 @@ class GoogleProvider(BaseProvider):
         tools: Optional[List[ToolSpec]] = None,
         stream: bool = False,
     ) -> Union[ChatResponse, Generator[StreamChunk, None, ChatResponse]]:
-        system, contents = self._convert(messages)
+        system, contents = self._convert(
+            messages, include_images=self.supports_vision
+        )
         body: Dict[str, Any] = {
             "contents": contents,
             "generationConfig": {
@@ -117,7 +119,7 @@ class GoogleProvider(BaseProvider):
         )
 
     @staticmethod
-    def _convert(messages: List[ChatMessage]):
+    def _convert(messages: List[ChatMessage], include_images: bool = True):
         system_parts = []
         contents = []
         for m in messages:
@@ -141,8 +143,15 @@ class GoogleProvider(BaseProvider):
                 continue
             role = "model" if m.role == "assistant" else "user"
             parts: List[Dict[str, Any]] = []
-            if m.content:
-                parts.append({"text": m.content})
+            text = m.content or ""
+            if m.role == "user" and m.images and not include_images:
+                text = m._text_for_api(False)
+            if text:
+                parts.append({"text": text})
+            if include_images and m.role == "user":
+                for img in m.images or []:
+                    if img.data_b64:
+                        parts.append(img.to_gemini_part())
             if m.tool_calls:
                 for tc in m.tool_calls:
                     fn = tc.get("function") or {}
@@ -160,7 +169,19 @@ class GoogleProvider(BaseProvider):
                     )
             if parts:
                 contents.append({"role": role, "parts": parts})
-        return "\n\n".join(system_parts), contents
+        return "\n\n".join(system_parts), GoogleProvider._merge_same_role(contents)
+
+    @staticmethod
+    def _merge_same_role(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        for msg in contents:
+            if merged and merged[-1].get("role") == msg.get("role"):
+                prev_parts = list(merged[-1].get("parts") or [])
+                prev_parts.extend(msg.get("parts") or [])
+                merged[-1] = {"role": msg["role"], "parts": prev_parts}
+            else:
+                merged.append(dict(msg))
+        return merged
 
     @staticmethod
     def _parse(data: Dict[str, Any]) -> ChatResponse:

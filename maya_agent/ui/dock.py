@@ -100,15 +100,27 @@ def _raise_workspace_control() -> None:
             pass
 
     # Defer a second restore: Maya often finishes docking layout one tick later.
+    # cmds.evalDeferred(string) is MEL — use executeDeferred(callable).
+    def _restore_again():
+        try:
+            if cmds.workspaceControl(CONTROL_NAME, exists=True):
+                cmds.workspaceControl(
+                    CONTROL_NAME, edit=True, visible=True, restore=True
+                )
+        except Exception:
+            pass
+
     try:
-        cmds.evalDeferred(
-            "import maya.cmds as cmds\n"
-            f"if cmds.workspaceControl('{CONTROL_NAME}', exists=True):\n"
-            f"    cmds.workspaceControl('{CONTROL_NAME}', edit=True, visible=True, restore=True)\n",
-            lowestPriority=True,
-        )
+        from maya_agent.utils.maya_compat import defer_idle_lowest
+
+        defer_idle_lowest(_restore_again)
     except Exception:
-        pass
+        try:
+            import maya.utils
+
+            maya.utils.executeDeferred(_restore_again)
+        except Exception:
+            pass
 
 
 def _create_workspace_control():

@@ -95,9 +95,11 @@ echo   请重启 Maya，然后检查:
 echo     1. 顶部菜单是否有「Maya Agent」
 echo     2. 工具架是否有「MayaAgent」页签
 echo.
-echo   若菜单未出现，在 Script Editor 执行:
-echo     import maya_agent
-echo     maya_agent.plugin.menu._deferred_install()
+echo   若菜单仍未出现，任选其一:
+echo     A. 把项目根目录的 install_dragdrop.mel 拖进 Maya 视口
+echo     B. 在 Script Editor 执行:
+echo          import maya_agent
+echo          maya_agent.reload()
 echo.
 echo   卸载请双击: uninstall.bat
 echo ============================================================

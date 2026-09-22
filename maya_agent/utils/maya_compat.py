@@ -130,3 +130,70 @@ def run_on_main_thread(fn: Callable[[], T]) -> T:
         return maya.utils.executeInMainThreadWithResult(fn)
     except Exception:
         return fn()
+
+
+def defer_idle(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
+    """
+    Schedule a Python callable for the next idle tick.
+
+    IMPORTANT: ``cmds.evalDeferred(string)`` evaluates the string as **MEL**,
+    not Python. Passing raw Python source there silently fails and is why the
+    plug-in could load without creating the menu/shelf. Always prefer
+    ``maya.utils.executeDeferred(callable)``.
+    """
+    if not in_maya():
+        try:
+            callback(*args, **kwargs)
+            return True
+        except Exception:
+            return False
+
+    # Primary: Python-native deferred execution (callable form).
+    try:
+        import maya.utils
+
+        maya.utils.executeDeferred(callback, *args, **kwargs)
+        return True
+    except Exception:
+        pass
+
+    # Fallback: MEL evalDeferred wrapping python("...")
+    try:
+        import maya.cmds as cmds
+
+        # Build a tiny importless trampoline via a one-shot module attribute
+        # when no args; otherwise we already failed the preferred path.
+        if args or kwargs:
+            return False
+        name = getattr(callback, "__name__", "") or "callback"
+        mod = getattr(callback, "__module__", "") or ""
+        if not mod or not name:
+            return False
+        py = f"import {mod} as _m; getattr(_m, {name!r})()"
+        escaped = py.replace("\\", "\\\\").replace('"', '\\"')
+        cmds.evalDeferred(f'python("{escaped}")')
+        return True
+    except Exception:
+        return False
+
+
+def defer_idle_lowest(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
+    """Like defer_idle, plus a lowest-priority MEL/python backup when possible."""
+    ok = defer_idle(callback, *args, **kwargs)
+    if not in_maya():
+        return ok
+    try:
+        import maya.cmds as cmds
+
+        if args or kwargs:
+            return ok
+        name = getattr(callback, "__name__", "") or ""
+        mod = getattr(callback, "__module__", "") or ""
+        if not mod or not name:
+            return ok
+        py = f"import {mod} as _m; getattr(_m, {name!r})()"
+        escaped = py.replace("\\", "\\\\").replace('"', '\\"')
+        cmds.evalDeferred(f'python("{escaped}")', lowestPriority=True)
+        return True
+    except Exception:
+        return ok

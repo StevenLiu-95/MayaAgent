@@ -9,6 +9,7 @@ from maya_agent.llm.base import BaseProvider
 from maya_agent.llm.cursor_provider import CursorProvider
 from maya_agent.llm.google_provider import GoogleProvider
 from maya_agent.llm.openai_compat import OpenAICompatProvider
+from maya_agent.llm.vision import model_supports_vision
 from maya_agent.utils.config import get_config
 
 
@@ -70,19 +71,22 @@ def create_provider(
     )
 
     if pid == "anthropic":
-        return AnthropicProvider(**common)
-    if pid == "google":
-        return GoogleProvider(**common)
-    if pid == "cursor":
-        return CursorProvider(
+        provider = AnthropicProvider(**common)
+    elif pid == "google":
+        provider = GoogleProvider(**common)
+    elif pid == "cursor":
+        provider = CursorProvider(
             auth_mode=pconf.get("auth_mode", "auto"),
             **common,
         )
-    if pid == "azure_openai":
-        return OpenAICompatProvider(
+    elif pid == "azure_openai":
+        provider = OpenAICompatProvider(
             azure=True,
             api_version=pconf.get("api_version", "2024-06-01"),
             **common,
         )
-    # OpenAI-compatible endpoints (and unknown custom ids)
-    return OpenAICompatProvider(**common)
+    else:
+        # OpenAI-compatible endpoints (and unknown custom ids)
+        provider = OpenAICompatProvider(**common)
+    provider.supports_vision = model_supports_vision(pid, provider.model)
+    return provider

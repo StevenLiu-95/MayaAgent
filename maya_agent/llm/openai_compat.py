@@ -61,7 +61,9 @@ class OpenAICompatProvider(BaseProvider):
         stream: bool,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
-            "messages": [m.to_openai() for m in messages],
+            "messages": [
+                m.to_openai(include_images=self.supports_vision) for m in messages
+            ],
             "temperature": self.temperature,
             "stream": stream,
         }

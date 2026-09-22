@@ -68,7 +68,7 @@ QPlainTextEdit#composerInput {
     background-color: #22232a;
     border: 1px solid #3a3b44;
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 10px 12px;
 }
 
 QPushButton {
@@ -111,7 +111,11 @@ QPushButton#dangerBtn {
 QPushButton#sendBtn {
     background-color: #2f7d5b;
     font-weight: 600;
-    min-width: 72px;
+    min-width: 64px;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
 }
 
 QPushButton#sendBtn:hover {
@@ -121,6 +125,30 @@ QPushButton#sendBtn:hover {
 QPushButton#sendBtn:disabled {
     background-color: #2a4a3c;
     color: #7a9a8a;
+}
+
+QPushButton#composerBtn {
+    background-color: #2a2b32;
+    border: 1px solid #3a3b44;
+    border-radius: 6px;
+    color: #c8c8d0;
+    font-size: 12px;
+    min-width: 48px;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 8px;
+}
+
+QPushButton#composerBtn:hover {
+    background-color: #34353e;
+    border-color: #5b8fc7;
+    color: #ffffff;
+}
+
+QPushButton#composerBtn:disabled {
+    background-color: #25262c;
+    border-color: #32333c;
+    color: #5a5a62;
 }
 
 QPushButton#chipBtn {
@@ -139,11 +167,79 @@ QPushButton#chipBtn:hover {
     color: #e8e8ea;
 }
 
+QPushButton#attachBtn {
+    background-color: #2a2b32;
+    border: 1px solid #3a3b44;
+    border-radius: 6px;
+    color: #c8c8d0;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 0;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton#attachBtn:hover {
+    background-color: #32333e;
+    border-color: #5b8fc7;
+    color: #ffffff;
+}
+
+QPushButton#attachBtn:disabled {
+    background-color: #25262c;
+    border-color: #32333c;
+    color: #5a5a62;
+}
+
+QPushButton#quickCmdBtn {
+    background-color: #2a2b32;
+    border: 1px solid #3a3b44;
+    border-radius: 12px;
+    color: #a8a8b0;
+    font-size: 12px;
+    padding: 0 10px;
+    min-height: 24px;
+    max-height: 24px;
+}
+
+QPushButton#quickCmdBtn:hover {
+    background-color: #34353e;
+    border-color: #5b8fc7;
+    color: #e8e8ea;
+}
+
+QPushButton#quickCmdBtn:checked {
+    background-color: #2e3a48;
+    border-color: #5b8fc7;
+    color: #c8d8e8;
+}
+
+QWidget#composerStatus,
+QWidget#statusBar {
+    background: transparent;
+    border: none;
+}
+
+QLabel#statusLabel {
+    color: #7a7a84;
+    font-size: 12px;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+QLabel#statusSpinner {
+    background: transparent;
+    border: none;
+}
+
 QScrollArea#quickScroll {
     background: transparent;
     border: none;
-    min-height: 40px;
-    max-height: 40px;
+    min-height: 34px;
+    max-height: 36px;
 }
 
 QScrollArea#quickScroll QWidget#quickHost {
@@ -181,6 +277,15 @@ QScrollArea#quickScroll QScrollBar:vertical {
     width: 0;
     height: 0;
     border: none;
+}
+
+QScrollArea#imageStrip {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#imageStrip QWidget#imageStripHost {
+    background: transparent;
 }
 
 QFrame#toolbarFrame, QFrame#composerFrame {

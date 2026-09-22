@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from maya_agent.llm.base import ChatMessage
+from maya_agent.llm.base import ChatMessage, ImageAttachment
 
 
 def message_to_dict(msg: ChatMessage) -> Dict[str, Any]:
@@ -15,16 +15,23 @@ def message_to_dict(msg: ChatMessage) -> Dict[str, Any]:
         d["tool_call_id"] = msg.tool_call_id
     if msg.tool_calls:
         d["tool_calls"] = msg.tool_calls
+    if msg.images:
+        d["images"] = [img.to_dict() for img in msg.images if img.data_b64]
     return d
 
 
 def message_from_dict(data: Dict[str, Any]) -> ChatMessage:
+    images = []
+    for item in data.get("images") or []:
+        if isinstance(item, dict) and item.get("data_b64"):
+            images.append(ImageAttachment.from_dict(item))
     return ChatMessage(
         role=str(data.get("role") or "user"),
         content=str(data.get("content") or ""),
         name=data.get("name"),
         tool_call_id=data.get("tool_call_id"),
         tool_calls=data.get("tool_calls"),
+        images=images or None,
     )
 
 

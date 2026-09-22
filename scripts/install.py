@@ -190,7 +190,7 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
         return
     root_fwd = str(root).replace("\\", "/")
     mod.write_text(
-        f"+ MayaAgent 1.2.0 {root_fwd}\n"
+        f"+ MayaAgent 1.3.0 {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",
@@ -431,59 +431,91 @@ def remove_project_junction(version: str) -> None:
         print(f"Could not remove {link}: {e} (safe to delete manually if it is only a junction)")
 
 
+def install_version(
+    version: str,
+    project_root: Path | None = None,
+    *,
+    uninstall: bool = False,
+) -> Path:
+    """
+    Install (or uninstall) Maya Agent hooks for one Maya version.
+
+    Returns the load path used for MODULE_ROOT / PYTHONPATH (junction or project).
+    """
+    root = Path(project_root or PROJECT_ROOT).resolve()
+    scripts = scripts_dir_for(version)
+    modules = modules_dir_for(version)
+    print(f"\n=== Maya {version} → {scripts} ===")
+
+    if uninstall:
+        write_usersetup(scripts, root, uninstall=True)
+        write_usersetup_mel(scripts, root, uninstall=True)
+        write_module(modules, root, uninstall=True)
+        install_module_link(scripts, uninstall=True)
+        patch_plugin_prefs(version, uninstall=True)
+        remove_shelf_prefs(version)
+        remove_project_junction(version)
+        return root
+
+    link_root = ensure_junction_or_copy(version, root)
+    print(f"Load path: {link_root}")
+    write_usersetup(scripts, link_root, uninstall=False)
+    write_usersetup_mel(scripts, link_root, uninstall=False)
+    write_module(modules, link_root, uninstall=False)
+    install_module_link(scripts, uninstall=False)
+    patch_plugin_prefs(version, uninstall=False)
+    try:
+        enable_usersetup_security_pref(version)
+    except Exception as e:
+        print(f"Security pref skip ({e})")
+    return Path(link_root)
+
+
+def install_all(
+    versions: list[str] | None = None,
+    project_root: Path | None = None,
+    *,
+    uninstall: bool = False,
+) -> Path:
+    """Install for multiple versions; write shared plug-in once. Returns MODULE_ROOT path."""
+    root = Path(project_root or PROJECT_ROOT).resolve()
+    vers = list(versions or [])
+    if not vers:
+        vers = maya_versions_on_disk()
+    if not vers:
+        vers = ["2022", "2023", "2024", "2025", "2026"]
+        print("未检测到 Maya 用户目录，将写入常见版本路径。")
+
+    print(f"Project root: {root}")
+    shared_root: Path | None = None
+
+    for ver in vers:
+        try:
+            link = install_version(ver, root, uninstall=uninstall)
+            if not uninstall:
+                shared_root = shared_root or link
+        except OSError as e:
+            print(f"Skip {ver}: {e}")
+
+    try:
+        if uninstall:
+            write_autoload_plugin(root, uninstall=True)
+        else:
+            write_autoload_plugin(shared_root or root, uninstall=False)
+    except OSError as e:
+        print(f"Plug-in install error: {e}")
+
+    return shared_root or root
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Install Maya Agent into Maya")
     parser.add_argument("--maya-version", default="", help="e.g. 2025; default=all detected")
     parser.add_argument("--uninstall", action="store_true")
     args = parser.parse_args(argv)
 
-    versions = [args.maya_version] if args.maya_version else maya_versions_on_disk()
-    if not versions:
-        versions = ["2022", "2023", "2024", "2025", "2026"]
-        print("未检测到 Maya 用户目录，将写入常见版本路径。")
-
-    print(f"Project root: {PROJECT_ROOT}")
-
-    # Shared plug-in is version-agnostic; write once using first version's junction
-    shared_root = None
-
-    for ver in versions:
-        scripts = scripts_dir_for(ver)
-        modules = modules_dir_for(ver)
-        print(f"\n=== Maya {ver} → {scripts} ===")
-        try:
-            if args.uninstall:
-                write_usersetup(scripts, PROJECT_ROOT, uninstall=True)
-                write_usersetup_mel(scripts, PROJECT_ROOT, uninstall=True)
-                write_module(modules, PROJECT_ROOT, uninstall=True)
-                install_module_link(scripts, uninstall=True)
-                patch_plugin_prefs(ver, uninstall=True)
-                remove_shelf_prefs(ver)
-                remove_project_junction(ver)
-            else:
-                link_root = ensure_junction_or_copy(ver, PROJECT_ROOT)
-                shared_root = shared_root or link_root
-                print(f"Load path: {link_root}")
-                write_usersetup(scripts, link_root, uninstall=False)
-                write_usersetup_mel(scripts, link_root, uninstall=False)
-                write_module(modules, link_root, uninstall=False)
-                install_module_link(scripts, uninstall=False)
-                patch_plugin_prefs(ver, uninstall=False)
-                try:
-                    enable_usersetup_security_pref(ver)
-                except Exception as e:
-                    print(f"Security pref skip ({e})")
-        except OSError as e:
-            print(f"Skip {ver}: {e}")
-
-    # Primary startup: Documents/maya/plug-ins/MayaAgent.py
-    try:
-        if args.uninstall:
-            write_autoload_plugin(PROJECT_ROOT, uninstall=True)
-        else:
-            write_autoload_plugin(shared_root or PROJECT_ROOT, uninstall=False)
-    except OSError as e:
-        print(f"Plug-in install error: {e}")
+    versions = [args.maya_version] if args.maya_version else None
+    install_all(versions, PROJECT_ROOT, uninstall=args.uninstall)
 
     if not args.uninstall:
         print(
@@ -492,9 +524,10 @@ def main(argv=None) -> int:
             "  [Maya Agent] plug-in loading…\n"
             "  [Maya Agent] menu OK: …\n"
             "顶部菜单应有「Maya Agent」，工具架有「MayaAgent」。\n"
-            "若仍没有，在 Script Editor 执行:\n"
+            "若仍没有，可把项目根目录的 install_dragdrop.mel 拖进 Maya 视口，\n"
+            "或在 Script Editor 执行:\n"
             "  import maya_agent; maya_agent.reload()\n"
-            "或检查 Windows > Settings/Preferences > Plug-in Manager 中 MayaAgent.py 是否勾选 Loaded/Auto load。\n"
+            "并检查 Plug-in Manager 中 MayaAgent.py 是否勾选 Loaded/Auto load。\n"
         )
     else:
         print(

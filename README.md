@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.2.0** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型 API。
+**v1.3.0** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型 API。
 
 ## 特性
 
@@ -13,7 +13,7 @@
 
 ## 快速开始
 
-### Windows 一键安装（推荐）
+### 方式 A：Windows 一键安装（推荐）
 
 双击项目根目录的 **`install.bat`**。
 
@@ -27,6 +27,14 @@ install.bat all
 卸载双击 **`uninstall.bat`**。
 
 安装会写入模块路径、自动加载插件（`Documents/maya/plug-ins/MayaAgent.py`）与菜单 / 工具架入口。完成后**重启 Maya**，菜单栏会出现 **Maya Agent**，工具架会有 Agent 按钮。
+
+### 方式 B：拖入式安装（Maya 内一键生效）
+
+1. 打开 Maya
+2. 把项目根目录的 **`install_dragdrop.mel`** 拖进 **视口**（或拖到工具架 / Script Editor）
+3. 弹出成功对话框后，菜单与工具架会**立即出现**（当前会话无需重启）；同时写入自动加载，下次启动仍可用
+
+适合：`install.bat` 后插件列表有 MayaAgent、但菜单/工具架仍没有；或想跳过重启立刻使用。
 
 ### 1. 安装依赖
 
@@ -111,7 +119,9 @@ MayaAgent/
 │   ├── prompts/                 # 系统提示词
 │   └── maya_plugin/             # 自动加载插件模板
 ├── scripts/install.py           # 安装 / 卸载脚本
+├── scripts/drag_install.py      # 拖入式安装（由 MEL 调用）
 ├── install.bat / uninstall.bat  # Windows 一键入口
+├── install_dragdrop.mel         # 拖进 Maya 视口即可安装
 └── requirements.txt
 ```
 

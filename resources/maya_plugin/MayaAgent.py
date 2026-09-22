@@ -4,6 +4,9 @@ Maya Agent — Maya Python plug-in (auto-load).
 
 Installed to Documents/maya/plug-ins/MayaAgent.py by scripts/install.py.
 Relies on MODULE_ROOT pointing at the project (or ASCII junction).
+
+NOTE: Do NOT pass raw Python source to cmds.evalDeferred() — that command
+evaluates strings as MEL. Use maya.utils.executeDeferred(callable) instead.
 """
 from __future__ import annotations
 
@@ -18,14 +21,17 @@ MODULE_ROOT = r"__MAYA_AGENT_ROOT__"
 def _ensure_path() -> bool:
     root = (MODULE_ROOT or "").replace("\\", "/")
     if not root or root.startswith("__"):
-        print("[Maya Agent] MODULE_ROOT not configured — re-run install.bat")
+        print(
+            "[Maya Agent] MODULE_ROOT not configured — re-run install.bat "
+            "or drag install_dragdrop.mel into the viewport"
+        )
         return False
     if root not in sys.path:
         sys.path.insert(0, root)
     return True
 
 
-def _bootstrap():
+def _bootstrap() -> None:
     if not _ensure_path():
         return
     try:
@@ -40,6 +46,47 @@ def _bootstrap():
         traceback.print_exc()
 
 
+def _schedule_bootstrap() -> None:
+    """Defer bootstrap until Maya idle — must use Python callables, not MEL strings."""
+    scheduled = False
+
+    # Preferred: maya.utils.executeDeferred(callable)
+    try:
+        import maya.utils
+
+        maya.utils.executeDeferred(_bootstrap)
+        scheduled = True
+    except Exception as exc:
+        print("[Maya Agent] executeDeferred failed:", exc)
+
+    # Backup: MEL evalDeferred wrapping python("...") — never pass raw Python
+    try:
+        root = MODULE_ROOT.replace("\\", "/")
+        py = (
+            f"import sys; p=r'{root}'; "
+            "sys.path.insert(0,p) if p and p not in sys.path else None; "
+            "import maya_agent; maya_agent.bootstrap()"
+        )
+        escaped = py.replace("\\", "\\\\").replace('"', '\\"')
+        mel = f'python("{escaped}")'
+        cmds.evalDeferred(mel, lowestPriority=True)
+        scheduled = True
+    except Exception as exc:
+        print("[Maya Agent] evalDeferred(python(...)) failed:", exc)
+
+    if not scheduled:
+        try:
+            _bootstrap()
+            scheduled = True
+        except Exception as exc:
+            print("[Maya Agent] immediate bootstrap failed:", exc)
+
+    if scheduled:
+        print("[Maya Agent] plug-in loaded (menu deferred)")
+    else:
+        print("[Maya Agent] plug-in loaded but bootstrap could not be scheduled")
+
+
 def initializePlugin(plugin):  # noqa: N802 — Maya API name
     """Called when Maya loads this plug-in."""
     print("[Maya Agent] plug-in loading…")
@@ -48,42 +95,7 @@ def initializePlugin(plugin):  # noqa: N802 — Maya API name
         # surface a clear hint in the Script Editor.
         print("[Maya Agent] path missing — menu will not appear until install is fixed")
         return
-
-    # Prefer string-form deferred calls: callable deferred is flaky in some
-    # Maya / plug-in load paths, which leaves MayaAgent loaded with no menu.
-    boot_py = (
-        "import sys\n"
-        f"p=r'{MODULE_ROOT.replace(chr(92), '/')}'\n"
-        "sys.path.insert(0,p) if p and p not in sys.path else None\n"
-        "import maya_agent\n"
-        "maya_agent.bootstrap()\n"
-    )
-    scheduled = False
-    try:
-        cmds.evalDeferred(boot_py)
-        cmds.evalDeferred(boot_py, lowestPriority=True)
-        scheduled = True
-    except Exception as exc:
-        print("[Maya Agent] evalDeferred failed:", exc)
-
-    if not scheduled:
-        try:
-            import maya.utils
-
-            maya.utils.executeDeferred(_bootstrap)
-            scheduled = True
-        except Exception as exc:
-            print("[Maya Agent] executeDeferred failed:", exc)
-            try:
-                _bootstrap()
-                scheduled = True
-            except Exception as exc2:
-                print("[Maya Agent] immediate bootstrap failed:", exc2)
-
-    if scheduled:
-        print("[Maya Agent] plug-in loaded (menu deferred)")
-    else:
-        print("[Maya Agent] plug-in loaded but bootstrap could not be scheduled")
+    _schedule_bootstrap()
 
 
 def uninitializePlugin(plugin):  # noqa: N802 — Maya API name

@@ -9,26 +9,89 @@ from typing import Any, Dict, Generator, List, Optional, Union
 
 
 @dataclass
+class ImageAttachment:
+    """One user image, stored as base64 (no data-URL prefix)."""
+
+    mime: str
+    data_b64: str
+    name: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"mime": self.mime, "data_b64": self.data_b64, "name": self.name or ""}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ImageAttachment":
+        return cls(
+            mime=str(data.get("mime") or "image/png"),
+            data_b64=str(data.get("data_b64") or ""),
+            name=str(data.get("name") or ""),
+        )
+
+    def to_openai_part(self) -> Dict[str, Any]:
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{self.mime};base64,{self.data_b64}"},
+        }
+
+    def to_anthropic_part(self) -> Dict[str, Any]:
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": self.mime,
+                "data": self.data_b64,
+            },
+        }
+
+    def to_gemini_part(self) -> Dict[str, Any]:
+        return {
+            "inlineData": {
+                "mimeType": self.mime,
+                "data": self.data_b64,
+            }
+        }
+
+
+@dataclass
 class ChatMessage:
     role: str  # system | user | assistant | tool
     content: str = ""
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    images: Optional[List[ImageAttachment]] = None
 
-    def to_openai(self) -> Dict[str, Any]:
+    def to_openai(self, include_images: bool = True) -> Dict[str, Any]:
         msg: Dict[str, Any] = {"role": self.role}
+        images = list(self.images or []) if include_images else []
         if self.role == "assistant" and self.tool_calls:
             # Many providers (DeepSeek etc.) prefer null over "" when calling tools
             msg["content"] = self.content if self.content else None
             msg["tool_calls"] = self.tool_calls
+        elif self.role == "user" and images:
+            parts: List[Dict[str, Any]] = []
+            text = self.content or ""
+            if text:
+                parts.append({"type": "text", "text": text})
+            for img in images:
+                if img.data_b64:
+                    parts.append(img.to_openai_part())
+            msg["content"] = parts or (text or "")
         else:
-            msg["content"] = self.content if self.content is not None else ""
+            msg["content"] = self._text_for_api(include_images)
         if self.name and self.role == "tool":
             msg["name"] = self.name
         if self.tool_call_id:
             msg["tool_call_id"] = self.tool_call_id
         return msg
+
+    def _text_for_api(self, include_images: bool) -> str:
+        text = self.content if self.content is not None else ""
+        n = len(self.images or [])
+        if n and not include_images and self.role == "user":
+            note = f"（用户曾附带 {n} 张图片，当前模型无法查看。）"
+            text = f"{text}\n\n{note}" if text else note
+        return text
 
 
 @dataclass
@@ -371,6 +434,7 @@ class BaseProvider:
 
     name: str = "base"
     supports_tools: bool = True
+    supports_vision: bool = False
 
     def __init__(
         self,

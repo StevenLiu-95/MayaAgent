@@ -26,6 +26,14 @@ from maya_agent.utils.maya_compat import (
     wrap_maya_ptr,
 )
 from maya_agent.llm.base import stop_notice_for_reason
+from maya_agent.llm.vision import model_supports_vision
+from maya_agent.ui.image_attach import (
+    MAX_IMAGES,
+    attachment_from_path,
+    attachments_from_clipboard,
+    is_image_path,
+    pixmap_from_attachment,
+)
 
 _WINDOW_INSTANCE = None
 
@@ -124,7 +132,7 @@ class _WorkerSignals:
         return Signals()
 
 
-def _create_worker(QtCore, agent: MayaAgent, text: str, stream: bool):
+def _create_worker(QtCore, agent: MayaAgent, text: str, stream: bool, images=None):
     class Worker(QtCore.QThread):
         def __init__(self):
             super().__init__()
@@ -132,7 +140,7 @@ def _create_worker(QtCore, agent: MayaAgent, text: str, stream: bool):
 
         def run(self):
             try:
-                for event in agent.chat(text, stream=stream):
+                for event in agent.chat(text, stream=stream, images=images):
                     self.signals.event.emit(event)
                 self.signals.finished.emit()
             except Exception:
@@ -168,6 +176,8 @@ class MayaAgentWindow:
                 self._stopped_by_user = False
                 self._stream_buf = ""
                 self._thinking_buf = ""
+                self._pending_images = []
+                self._vision_enabled = False
                 self._stream_timer = QtCore.QTimer(self)
                 self._stream_timer.setSingleShot(True)
                 self._stream_timer.setInterval(80)
@@ -268,7 +278,7 @@ class MayaAgentWindow:
                 chat_page = QtWidgets.QWidget()
                 chat_layout = QtWidgets.QVBoxLayout(chat_page)
                 chat_layout.setContentsMargins(0, 8, 0, 0)
-                chat_layout.setSpacing(8)
+                chat_layout.setSpacing(6)
 
                 chat_layout.addWidget(self._build_session_bar())
 
@@ -276,31 +286,41 @@ class MayaAgentWindow:
                 self.chat.set_choice_handler(self._on_choice_reply)
                 chat_layout.addWidget(self.chat, 1)
 
+                # 对话区底部：状态行（含快捷命令按钮）+ 输入框
+                chat_layout.addWidget(self._build_composer())
+                self.tabs.addTab(chat_page, "对话")
+
+            def _build_composer(self):
                 composer = QtWidgets.QFrame()
                 composer.setObjectName("composerFrame")
                 composer_layout = QtWidgets.QVBoxLayout(composer)
-                composer_layout.setContentsMargins(8, 8, 8, 8)
-                composer_layout.setSpacing(6)
+                composer_layout.setContentsMargins(10, 10, 10, 8)
+                composer_layout.setSpacing(8)
 
-                # 1) AI 执行状态 — 文本框上方（带动画）
+                # 状态条 + 收起态「快捷命令」按钮（同行）
                 status_row = QtWidgets.QHBoxLayout()
                 status_row.setContentsMargins(2, 0, 2, 0)
+                status_row.setSpacing(8)
+
                 self.status_label = create_animated_status(composer)
-                status_row.addWidget(self.status_label, 1)
+                self.status_label.setObjectName("composerStatus")
+                status_row.addWidget(self.status_label, 1, QtCore.Qt.AlignVCenter)
+
+                self._quick_toggle = QtWidgets.QPushButton("快捷命令")
+                self._quick_toggle.setObjectName("quickCmdBtn")
+                self._quick_toggle.setCursor(QtCore.Qt.PointingHandCursor)
+                self._quick_toggle.setCheckable(True)
+                self._quick_toggle.setChecked(False)
+                self._quick_toggle.setFixedHeight(24)
+                self._quick_toggle.toggled.connect(self._on_quick_commands_toggled)
+                status_row.addWidget(self._quick_toggle, 0, QtCore.Qt.AlignVCenter)
                 composer_layout.addLayout(status_row)
 
-                # 2) 输入框
-                self.input_edit = QtWidgets.QPlainTextEdit()
-                self.input_edit.setObjectName("composerInput")
-                self.input_edit.setPlaceholderText("描述你想做的事…  Enter 发送，Shift+Enter 换行")
-                self.input_edit.setFixedHeight(78)
-                self.input_edit.installEventFilter(self)
-                composer_layout.addWidget(self.input_edit)
-
-                # 3) 快捷按钮（可横向滚动） + 清空/停止/发送 — 同一行
-                action_row = QtWidgets.QHBoxLayout()
-                action_row.setSpacing(8)
-                action_row.setContentsMargins(0, 2, 0, 0)
+                # 展开后的快捷芯片
+                self._quick_body = QtWidgets.QWidget()
+                body_lay = QtWidgets.QVBoxLayout(self._quick_body)
+                body_lay.setContentsMargins(0, 0, 0, 0)
+                body_lay.setSpacing(0)
 
                 quick_scroll = QtWidgets.QScrollArea()
                 quick_scroll.setObjectName("quickScroll")
@@ -308,7 +328,7 @@ class MayaAgentWindow:
                 quick_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
                 quick_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
                 quick_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-                quick_scroll.setFixedHeight(42)
+                quick_scroll.setFixedHeight(34)
                 quick_scroll.setSizePolicy(
                     QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
                 )
@@ -338,28 +358,89 @@ class MayaAgentWindow:
                     b.clicked.connect(lambda checked=False, p=prompt: self._quick(p))
                     quick.addWidget(b)
                 quick_scroll.setWidget(quick_host)
-                action_row.addWidget(quick_scroll, 1)
+                body_lay.addWidget(quick_scroll)
+                self._quick_body.hide()
+                composer_layout.addWidget(self._quick_body)
+                self._sync_quick_toggle_label()
+
+                self._image_strip = QtWidgets.QScrollArea()
+                self._image_strip.setObjectName("imageStrip")
+                self._image_strip.setWidgetResizable(True)
+                self._image_strip.setFrameShape(QtWidgets.QFrame.NoFrame)
+                self._image_strip.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+                self._image_strip.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+                self._image_strip.setFixedHeight(72)
+                self._image_strip.hide()
+                strip_host = QtWidgets.QWidget()
+                strip_host.setObjectName("imageStripHost")
+                self._image_strip_lay = QtWidgets.QHBoxLayout(strip_host)
+                self._image_strip_lay.setContentsMargins(2, 2, 2, 2)
+                self._image_strip_lay.setSpacing(6)
+                self._image_strip_lay.addStretch(1)
+                self._image_strip.setWidget(strip_host)
+                composer_layout.addWidget(self._image_strip)
+
+                self.input_edit = QtWidgets.QPlainTextEdit()
+                self.input_edit.setObjectName("composerInput")
+                self.input_edit.setPlaceholderText(
+                    "描述你想做的事，可附带图片…  Enter 发送，Shift+Enter 换行"
+                )
+                self.input_edit.setFixedHeight(120)
+                self.input_edit.setAcceptDrops(True)
+                self.input_edit.installEventFilter(self)
+                self.input_edit.viewport().installEventFilter(self)
+                composer_layout.addWidget(self.input_edit)
+
+                action_row = QtWidgets.QHBoxLayout()
+                action_row.setSpacing(6)
+                action_row.setContentsMargins(0, 0, 0, 0)
+
+                self.image_btn = QtWidgets.QPushButton("+")
+                self.image_btn.setObjectName("attachBtn")
+                self.image_btn.setFixedSize(28, 28)
+                self.image_btn.setCursor(QtCore.Qt.PointingHandCursor)
+                self.image_btn.clicked.connect(self._on_pick_images)
 
                 clear_btn = QtWidgets.QPushButton("清空")
-                clear_btn.setObjectName("secondaryBtn")
-                clear_btn.setFixedWidth(56)
+                clear_btn.setObjectName("composerBtn")
+                clear_btn.setFixedSize(48, 28)
+                clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 clear_btn.clicked.connect(self._on_clear)
+
                 self.stop_btn = QtWidgets.QPushButton("停止")
-                self.stop_btn.setObjectName("secondaryBtn")
-                self.stop_btn.setFixedWidth(56)
+                self.stop_btn.setObjectName("composerBtn")
+                self.stop_btn.setFixedSize(48, 28)
                 self.stop_btn.setEnabled(False)
+                self.stop_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 self.stop_btn.clicked.connect(self._on_stop)
+
                 self.send_btn = QtWidgets.QPushButton("发送")
                 self.send_btn.setObjectName("sendBtn")
-                self.send_btn.setFixedWidth(72)
+                self.send_btn.setFixedSize(64, 28)
+                self.send_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 self.send_btn.clicked.connect(self._on_send)
-                action_row.addWidget(clear_btn, 0)
-                action_row.addWidget(self.stop_btn, 0)
-                action_row.addWidget(self.send_btn, 0)
-                composer_layout.addLayout(action_row)
 
-                chat_layout.addWidget(composer)
-                self.tabs.addTab(chat_page, "对话")
+                action_row.addWidget(self.image_btn, 0, QtCore.Qt.AlignVCenter)
+                action_row.addStretch(1)
+                action_row.addWidget(clear_btn, 0, QtCore.Qt.AlignVCenter)
+                action_row.addWidget(self.stop_btn, 0, QtCore.Qt.AlignVCenter)
+                action_row.addWidget(self.send_btn, 0, QtCore.Qt.AlignVCenter)
+                composer_layout.addLayout(action_row)
+                return composer
+
+            def _sync_quick_toggle_label(self) -> None:
+                if not getattr(self, "_quick_toggle", None):
+                    return
+                expanded = bool(self._quick_toggle.isChecked())
+                self._quick_toggle.setText("收起" if expanded else "快捷命令")
+                self._quick_toggle.setToolTip(
+                    "收起快捷命令" if expanded else "展开快捷命令"
+                )
+
+            def _on_quick_commands_toggled(self, checked: bool) -> None:
+                if hasattr(self, "_quick_body"):
+                    self._quick_body.setVisible(bool(checked))
+                self._sync_quick_toggle_label()
 
             def _build_settings_tab(self):
                 self.settings_panel = create_settings_panel(
@@ -394,7 +475,17 @@ class MayaAgentWindow:
                     bar.setValue(bar.value() - delta)
                     return True
 
-                if obj is self.input_edit and event.type() == QtCore.QEvent.KeyPress:
+                if self._is_composer_target(obj) and event.type() == QtCore.QEvent.KeyPress:
+                    mods = event.modifiers()
+                    ctrl_v = event.key() == QtCore.Qt.Key_V and bool(
+                        mods & QtCore.Qt.ControlModifier
+                    )
+                    try:
+                        is_paste = bool(event.matches(QtGui.QKeySequence.Paste))
+                    except Exception:
+                        is_paste = False
+                    if (is_paste or ctrl_v) and self._try_paste_images():
+                        return True
                     if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
                         mods = event.modifiers()
                         # Shift+Enter → 换行；Enter → 发送
@@ -408,7 +499,24 @@ class MayaAgentWindow:
                             return False
                         self._on_send()
                         return True
+                if self._is_composer_target(obj) and event.type() in (
+                    QtCore.QEvent.DragEnter,
+                    QtCore.QEvent.DragMove,
+                ):
+                    if self._drop_has_images(event):
+                        event.acceptProposedAction()
+                        return True
+                if self._is_composer_target(obj) and event.type() == QtCore.QEvent.Drop:
+                    if self._take_dropped_images(event):
+                        event.acceptProposedAction()
+                        return True
                 return super().eventFilter(obj, event)
+
+            def _is_composer_target(self, obj) -> bool:
+                edit = getattr(self, "input_edit", None)
+                if edit is None:
+                    return False
+                return obj is edit or obj is edit.viewport()
 
             def _show_welcome(self):
                 self.chat.clear()
@@ -677,6 +785,166 @@ class MayaAgentWindow:
                 model = cfg.get(f"providers.{pid}.default_model", "")
                 if pid:
                     self.agent.set_provider(pid, model or None)
+                self._refresh_image_input()
+
+            def _refresh_image_input(self):
+                cfg = get_config()
+                pid = cfg.get("llm.active_provider", "deepseek")
+                model = (cfg.get(f"providers.{pid}.default_model", "") or "").strip()
+                self._vision_enabled = model_supports_vision(pid, model)
+                busy = bool(self._worker and self._worker.isRunning())
+                if hasattr(self, "image_btn"):
+                    self.image_btn.setEnabled(self._vision_enabled and not busy)
+                    if self._vision_enabled:
+                        self.image_btn.setToolTip(
+                            "添加图片。也可把图片拖进输入框，或 Ctrl+V 粘贴截图。"
+                        )
+                        self.input_edit.setPlaceholderText(
+                            "描述你想做的事，可附带图片…  Enter 发送，Shift+Enter 换行"
+                        )
+                    else:
+                        self.image_btn.setToolTip(
+                            "当前模型不支持图片输入。可在「设置 → 模型与 API」把图片输入设为「开启」。"
+                        )
+                        self.input_edit.setPlaceholderText(
+                            "描述你想做的事…  Enter 发送，Shift+Enter 换行"
+                        )
+                if not self._vision_enabled and self._pending_images:
+                    self._pending_images = []
+                    self._rebuild_image_strip()
+
+            def _on_pick_images(self):
+                if not self._vision_enabled:
+                    return
+                paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
+                    self,
+                    "选择图片",
+                    "",
+                    "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp)",
+                )
+                if not paths:
+                    return
+                added = []
+                errors = []
+                for path in paths:
+                    try:
+                        added.append(attachment_from_path(path))
+                    except Exception as e:
+                        errors.append(str(e))
+                self._add_pending_images(added)
+                if errors:
+                    self.status_label.set_idle(errors[0])
+
+            def _try_paste_images(self) -> bool:
+                try:
+                    found = attachments_from_clipboard(QtWidgets.QApplication.clipboard())
+                except Exception:
+                    return False
+                if not found:
+                    return False
+                if not self._vision_enabled:
+                    self.status_label.set_idle("当前模型不支持图片输入")
+                    return True
+                self._add_pending_images(found)
+                return True
+
+            def _drop_has_images(self, event) -> bool:
+                mime = event.mimeData()
+                if mime is None or not mime.hasUrls():
+                    return False
+                for url in mime.urls():
+                    if url.isLocalFile() and is_image_path(url.toLocalFile()):
+                        return True
+                return False
+
+            def _take_dropped_images(self, event) -> bool:
+                if not self._drop_has_images(event):
+                    return False
+                if not self._vision_enabled:
+                    self.status_label.set_idle("当前模型不支持图片输入")
+                    return True
+                mime = event.mimeData()
+                if mime is None:
+                    return False
+                added = []
+                errors = []
+                for url in mime.urls() or []:
+                    if not url.isLocalFile():
+                        continue
+                    path = url.toLocalFile()
+                    if not is_image_path(path):
+                        continue
+                    try:
+                        added.append(attachment_from_path(path))
+                    except Exception as e:
+                        errors.append(str(e))
+                if not added and not errors:
+                    return False
+                self._add_pending_images(added)
+                if errors:
+                    self.status_label.set_idle(errors[0])
+                return True
+
+            def _add_pending_images(self, images) -> None:
+                if not images:
+                    return
+                room = MAX_IMAGES - len(self._pending_images)
+                if room <= 0:
+                    self.status_label.set_idle(f"最多添加 {MAX_IMAGES} 张图片")
+                    return
+                extra = list(images)
+                if len(extra) > room:
+                    self.status_label.set_idle(f"最多添加 {MAX_IMAGES} 张图片")
+                    extra = extra[:room]
+                self._pending_images.extend(extra)
+                self._rebuild_image_strip()
+
+            def _rebuild_image_strip(self) -> None:
+                lay = self._image_strip_lay
+                while lay.count() > 1:
+                    item = lay.takeAt(0)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.deleteLater()
+                if not self._pending_images:
+                    self._image_strip.hide()
+                    return
+                for idx, img in enumerate(self._pending_images):
+                    chip = QtWidgets.QFrame()
+                    chip.setFixedSize(68, 68)
+                    chip.setStyleSheet(
+                        "QFrame { background:#1a1b20; border:1px solid #3a3b44; border-radius:8px; }"
+                    )
+                    box = QtWidgets.QGridLayout(chip)
+                    box.setContentsMargins(2, 2, 2, 2)
+                    box.setSpacing(0)
+                    thumb = QtWidgets.QLabel()
+                    thumb.setAlignment(QtCore.Qt.AlignCenter)
+                    pix = pixmap_from_attachment(img, edge=60)
+                    if pix is not None and not pix.isNull():
+                        thumb.setPixmap(pix)
+                    else:
+                        thumb.setText("图片")
+                    thumb.setToolTip(img.name or img.mime)
+                    remove = QtWidgets.QPushButton("×")
+                    remove.setFixedSize(16, 16)
+                    remove.setCursor(QtCore.Qt.PointingHandCursor)
+                    remove.setStyleSheet(
+                        "QPushButton { background:#3a2424; color:#f0c0c0; border:none;"
+                        " border-radius:8px; font-size:11px; padding:0; min-height:16px; }"
+                    )
+                    remove.clicked.connect(
+                        lambda checked=False, i=idx: self._remove_pending_image(i)
+                    )
+                    box.addWidget(thumb, 0, 0)
+                    box.addWidget(remove, 0, 0, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
+                    lay.insertWidget(lay.count() - 1, chip)
+                self._image_strip.show()
+
+            def _remove_pending_image(self, index: int) -> None:
+                if 0 <= index < len(self._pending_images):
+                    del self._pending_images[index]
+                    self._rebuild_image_strip()
 
             def _confirm_destructive(self, name: str, args: dict) -> bool:
                 # 「允许本轮对话执行」后，本轮内后续危险工具不再弹窗
@@ -759,12 +1027,18 @@ class MayaAgentWindow:
                 self.send_btn.setEnabled(not busy)
                 self.stop_btn.setEnabled(busy)
                 self.input_edit.setReadOnly(busy)
+                if hasattr(self, "image_btn"):
+                    self.image_btn.setEnabled(self._vision_enabled and not busy)
 
             def _on_send(self):
                 text = self.input_edit.toPlainText().strip()
-                if not text:
+                images = list(self._pending_images)
+                if not text and not images:
                     return
                 if self._worker and self._worker.isRunning():
+                    return
+                if images and not self._vision_enabled:
+                    self.status_label.set_idle("当前模型不支持图片输入")
                     return
 
                 pid = get_config().get("llm.active_provider", "deepseek")
@@ -773,19 +1047,29 @@ class MayaAgentWindow:
                 ).strip()
                 if pid:
                     self.agent.set_provider(pid, model or None)
+                self._vision_enabled = model_supports_vision(pid, model)
+                if images and not self._vision_enabled:
+                    self.status_label.set_idle("当前模型不支持图片输入")
+                    self._refresh_image_input()
+                    return
 
-                self.chat.add_user(text)
+                display = text or "请查看附图。"
+                self.chat.add_user(display, images=images or None)
                 self.chat.begin_assistant()
                 self._stream_buf = ""
                 self._thinking_buf = ""
                 self._skip_confirm_this_turn = False
                 self._stopped_by_user = False
                 self.input_edit.clear()
+                self._pending_images = []
+                self._rebuild_image_strip()
                 self._set_busy(True)
                 self.status_label.set_thinking()
 
                 stream = bool(get_config().get("agent.stream", True))
-                self._worker = _create_worker(QtCore, self.agent, text, stream)
+                self._worker = _create_worker(
+                    QtCore, self.agent, display, stream, images or None
+                )
                 self._worker.signals.event.connect(self._on_event)
                 self._worker.signals.finished.connect(self._on_finished)
                 self._worker.signals.failed.connect(self._on_failed)
@@ -820,8 +1104,17 @@ class MayaAgentWindow:
                     self._flush_stream()
                     if show_tools:
                         self.chat.tool_end(
-                            event.get("name", ""), event.get("result") or ""
+                            event.get("name", ""),
+                            event.get("result") or "",
+                            images=event.get("images"),
                         )
+                    if self._worker and self._worker.isRunning():
+                        self.status_label.set_thinking()
+
+                elif et == "vision_context":
+                    count = int(event.get("count") or 0)
+                    if count:
+                        self.status_label.set_idle(f"已附带 {count} 张视口截图供分析")
                     if self._worker and self._worker.isRunning():
                         self.status_label.set_thinking()
 

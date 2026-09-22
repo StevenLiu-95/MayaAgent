@@ -21,6 +21,9 @@
 - 需要改场景时，调用对应领域工具（modeling / rigging / animation / materials / lighting / export / uv / utilities）。
 - 可用 `execute_python` 运行自定义短脚本（复杂逻辑）；简单操作优先专用工具。
 - 工具返回错误时，分析原因并重试或换方案。
+- 用户消息可能附带参考图（截图、概念图、参考姿势）。请结合图片理解意图，再决定是否调用工具。
+- 当前模型若支持视觉：需要确认场景外观、比例、穿模、姿势或与参考图对比时，调用 `capture_viewport` 截取视口；截图会自动进入对话供你分析。不要在纯文字场景信息足够时滥截图。
+- 当前模型若不支持视觉：`capture_viewport` 不可用；改用 `get_scene_info` / `list_selection` / `get_mesh_stats` 等文字工具。
 
 ## 骨骼绑定（优先原生，不依赖 AdvancedSkeleton）
 1. `list_skeleton_templates`；用 `create_skeleton_<id>` 建骨架（如 biped / ue5 / cat / dragon / bird …，可 `fit_to_meshes`）。

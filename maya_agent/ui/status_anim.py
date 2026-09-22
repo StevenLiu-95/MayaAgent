@@ -68,11 +68,11 @@ def create_animated_status(parent=None):
 
             outer = QtWidgets.QVBoxLayout(self)
             outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(4)
+            outer.setSpacing(2)
 
             row = QtWidgets.QHBoxLayout()
-            row.setContentsMargins(2, 0, 2, 0)
-            row.setSpacing(6)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
 
             self.spinner = QtWidgets.QLabel("")
             self.spinner.setObjectName("statusSpinner")
@@ -82,13 +82,27 @@ def create_animated_status(parent=None):
 
             self.text_label = QtWidgets.QLabel("就绪")
             self.text_label.setObjectName("statusLabel")
+            self.text_label.setAlignment(
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+            )
+            self.text_label.setMinimumWidth(0)
+            try:
+                self.text_label.setTextInteractionFlags(
+                    QtCore.Qt.TextSelectableByMouse
+                )
+            except Exception:
+                pass
 
-            row.addWidget(self.spinner, 0)
-            row.addWidget(self.text_label, 1)
+            row.addWidget(self.spinner, 0, QtCore.Qt.AlignVCenter)
+            row.addWidget(self.text_label, 1, QtCore.Qt.AlignVCenter)
             outer.addLayout(row)
 
             self.progress = IndeterminateBar(self)
             outer.addWidget(self.progress)
+
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+            )
 
             self._timer = QtCore.QTimer(self)
             self._timer.setInterval(120)

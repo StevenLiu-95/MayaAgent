@@ -13,6 +13,29 @@ from maya_agent.llm.base import format_turn_meta
 _SPINNER = SPINNER_FRAMES
 
 
+def _image_b64(img: Any) -> str:
+    if isinstance(img, dict):
+        return str(img.get("data_b64") or "")
+    return str(getattr(img, "data_b64", "") or "")
+
+
+def _image_dicts(images: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for img in images or []:
+        if isinstance(img, dict):
+            if img.get("data_b64"):
+                out.append(
+                    {
+                        "mime": img.get("mime") or "image/png",
+                        "data_b64": img["data_b64"],
+                        "name": img.get("name") or "",
+                    }
+                )
+        elif getattr(img, "data_b64", ""):
+            out.append(img.to_dict())
+    return out
+
+
 def create_chat_panel(parent=None):
     """Build ChatPanel bound to the current Qt binding and return an instance."""
     QtCore, QtGui, QtWidgets, _ = import_qt()
@@ -214,6 +237,14 @@ def create_chat_panel(parent=None):
             self.expand_btn.hide()
             lay.addWidget(self.title)
             lay.addWidget(self.detail)
+            self._image_host = QtWidgets.QWidget()
+            self._image_host.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self._image_lay = QtWidgets.QHBoxLayout(self._image_host)
+            self._image_lay.setContentsMargins(0, 2, 0, 0)
+            self._image_lay.setSpacing(6)
+            self._image_lay.addStretch(1)
+            self._image_host.hide()
+            lay.addWidget(self._image_host)
             lay.addWidget(self.expand_btn, 0, QtCore.Qt.AlignLeft)
             self._running_name = ""
             self._anim_frame = 0
@@ -223,6 +254,42 @@ def create_chat_panel(parent=None):
             self._preview_html = ""
             self._full_html = ""
             self._expanded = False
+
+        def set_images(self, images: Optional[List[Any]]) -> None:
+            from maya_agent.llm.base import ImageAttachment
+            from maya_agent.ui.image_attach import pixmap_from_attachment
+
+            while self._image_lay.count() > 1:
+                item = self._image_lay.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            shown = 0
+            for img in images or []:
+                if isinstance(img, dict):
+                    if not img.get("data_b64"):
+                        continue
+                    att = ImageAttachment.from_dict(img)
+                elif getattr(img, "data_b64", ""):
+                    att = img
+                else:
+                    continue
+                pix = pixmap_from_attachment(att, edge=96)
+                label = QtWidgets.QLabel(self._image_host)
+                label.setFixedSize(96, 72)
+                label.setAlignment(QtCore.Qt.AlignCenter)
+                label.setStyleSheet(
+                    "QLabel { background:#1a1b20; border:1px solid #5a4a30;"
+                    " border-radius:6px; }"
+                )
+                if pix is not None and not pix.isNull():
+                    label.setPixmap(pix)
+                else:
+                    label.setText("截图")
+                label.setToolTip(att.name or "视口截图")
+                self._image_lay.insertWidget(self._image_lay.count() - 1, label)
+                shown += 1
+            self._image_host.setVisible(shown > 0)
 
         def _running_stylesheet(self, pulse: bool) -> str:
             bg = "#403828" if pulse else "#3a3428"
@@ -691,6 +758,7 @@ def create_chat_panel(parent=None):
             self.setSizePolicy(
                 QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
             )
+            self._image_host = None
             self._tools: List[ToolRow] = []
             self._thinking_row: Optional[ThinkingRow] = None
             self._body_view: Optional[BodyView] = None
@@ -809,6 +877,55 @@ def create_chat_panel(parent=None):
                 self._body_view = view
             return self._body_view
 
+        def set_images(self, images: Optional[List[Any]]) -> None:
+            """Show thumbnails for user-attached images above the text."""
+            images = [img for img in (images or []) if _image_b64(img)]
+            if not images:
+                if self._image_host is not None:
+                    self._image_host.hide()
+                return
+            from maya_agent.llm.base import ImageAttachment
+            from maya_agent.ui.image_attach import pixmap_from_attachment
+
+            if self._image_host is None:
+                host = QtWidgets.QWidget(self.bubble)
+                host.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+                lay = QtWidgets.QHBoxLayout(host)
+                lay.setContentsMargins(0, 0, 0, 0)
+                lay.setSpacing(6)
+                lay.addStretch(1)
+                self.content.insertWidget(0, host)
+                self._image_host = host
+                self._image_lay = lay
+            else:
+                lay = self._image_lay
+                while lay.count() > 1:
+                    item = lay.takeAt(0)
+                    w = item.widget()
+                    if w is not None:
+                        w.deleteLater()
+            for img in images:
+                if isinstance(img, ImageAttachment):
+                    att = img
+                else:
+                    att = ImageAttachment.from_dict(img)
+                pix = pixmap_from_attachment(att, edge=88)
+                label = QtWidgets.QLabel(self._image_host)
+                label.setFixedSize(88, 88)
+                label.setAlignment(QtCore.Qt.AlignCenter)
+                label.setStyleSheet(
+                    "QLabel { background:#1a1b20; border:1px solid #4a5d78;"
+                    " border-radius:8px; }"
+                )
+                if pix is not None and not pix.isNull():
+                    label.setPixmap(pix)
+                else:
+                    label.setText("图片")
+                tip = att.name or att.mime or "图片"
+                label.setToolTip(tip)
+                lay.insertWidget(lay.count() - 1, label)
+            self._image_host.show()
+
         def set_plain_text(self, text: str):
             view = self._ensure_body()
             view.set_plain(text or "")
@@ -926,13 +1043,17 @@ def create_chat_panel(parent=None):
             self._set_typing(False)
             return row
 
-        def finish_last_tool(self, name: str, result: str):
+        def finish_last_tool(self, name: str, result: str, images: Optional[List[Any]] = None):
             for row in reversed(self._tools):
                 if row._anim_timer.isActive() and name in row.title.text():
                     row.set_done(name, result)
+                    if images:
+                        row.set_images(images)
                     return
             row = ToolRow(self.bubble)
             row.set_done(name, result)
+            if images:
+                row.set_images(images)
             self.content.addWidget(row)
             self._tools.append(row)
 
@@ -1068,15 +1189,21 @@ def create_chat_panel(parent=None):
             self._scroll_pending = False
             self._scroll_to_bottom(force=False)
 
-        def add_user(self, text: str):
+        def add_user(self, text: str, images: Optional[List[Any]] = None):
             self.disable_active_choices()
             if self._pending_separator:
                 self._insert_before_stretch(TurnSeparator())
             self._pending_separator = True
             block = MessageBlock("user")
+            stored = _image_dicts(images)
+            if stored:
+                block.set_images(stored)
             block.set_plain_text(text)
             self._insert_before_stretch(block)
-            self._blocks.append({"type": "user", "text": text})
+            payload = {"type": "user", "text": text}
+            if stored:
+                payload["images"] = stored
+            self._blocks.append(payload)
             self._current = None
             self._scroll_to_bottom(force=True)
 
@@ -1174,16 +1301,19 @@ def create_chat_panel(parent=None):
                 )
             self._scroll_to_bottom()
 
-        def tool_end(self, name: str, result: str):
+        def tool_end(self, name: str, result: str, images: Optional[List[Any]] = None):
             if self._current is None:
                 self.begin_assistant()
-            self._current.finish_last_tool(name, result)
+            self._current.finish_last_tool(name, result, images=images)
             block = self._assistant_block()
             if block is not None:
+                stored = _image_dicts(images)
                 for t in reversed(block.setdefault("tools", [])):
                     if t.get("name") == name and t.get("status") == "running":
                         t["status"] = "done"
                         t["result"] = result
+                        if stored:
+                            t["images"] = stored
                         break
                 for p in reversed(self._parts()):
                     if (
@@ -1193,6 +1323,8 @@ def create_chat_panel(parent=None):
                     ):
                         p["status"] = "done"
                         p["result"] = result
+                        if stored:
+                            p["images"] = stored
                         break
             self._scroll_to_bottom()
 
@@ -1287,7 +1419,11 @@ def create_chat_panel(parent=None):
                         name = part.get("name") or "tool"
                         mb.add_tool_running(name)
                         if part.get("status") == "done":
-                            mb.finish_last_tool(name, part.get("result") or "")
+                            mb.finish_last_tool(
+                                name,
+                                part.get("result") or "",
+                                images=part.get("images"),
+                            )
             else:
                 # Legacy sessions: thinking → tools → text (order was lossy)
                 thinking = block.get("thinking") or ""
@@ -1297,7 +1433,11 @@ def create_chat_panel(parent=None):
                     name = tool.get("name") or "tool"
                     mb.add_tool_running(name)
                     if tool.get("status") == "done":
-                        mb.finish_last_tool(name, tool.get("result") or "")
+                        mb.finish_last_tool(
+                            name,
+                            tool.get("result") or "",
+                            images=tool.get("images"),
+                        )
                 text = block.get("text") or ""
                 if text:
                     mb.add_text_segment(text)
@@ -1333,6 +1473,9 @@ def create_chat_panel(parent=None):
 
                 if btype == "user":
                     mb = MessageBlock("user")
+                    imgs = block.get("images") or []
+                    if imgs:
+                        mb.set_images(imgs)
                     mb.set_plain_text(block.get("text") or "")
                     self._insert_before_stretch(mb)
                 elif btype == "error":

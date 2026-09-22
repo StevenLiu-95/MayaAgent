@@ -119,6 +119,7 @@ class Config:
                 "default_model": conf.get("default_model", ""),
                 "models": conf.get("models", []),
                 "api_version": conf.get("api_version", ""),
+                "vision_policy": conf.get("vision_policy", "auto"),
             }
         with open(user_config_path(), "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)

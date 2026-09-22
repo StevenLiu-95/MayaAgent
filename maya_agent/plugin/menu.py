@@ -470,20 +470,10 @@ def _deferred_install(force: bool = False) -> None:
 
 
 def _schedule_retry() -> None:
-    py = "import maya_agent.plugin.menu as m; m._deferred_install()"
-    try:
-        import maya.cmds as cmds
+    from maya_agent.utils.maya_compat import defer_idle_lowest
 
-        cmds.evalDeferred(py, lowestPriority=True)
-        return
-    except Exception:
-        pass
-    try:
-        import maya.utils
-
-        maya.utils.executeDeferred(_deferred_install)
-    except Exception as e:
-        print("[Maya Agent] retry schedule failed:", e)
+    if not defer_idle_lowest(_deferred_install):
+        print("[Maya Agent] retry schedule failed")
 
 
 def bootstrap() -> None:
@@ -493,27 +483,16 @@ def bootstrap() -> None:
     global _INSTALL_ATTEMPTS
     _INSTALL_ATTEMPTS = 0
 
-    # Prefer string form: more reliable across Maya versions than callables.
-    _deferred_py = "import maya_agent.plugin.menu as m; m._deferred_install()"
-    scheduled = False
-    try:
-        import maya.cmds as cmds
+    # CRITICAL: cmds.evalDeferred(string) runs MEL, not Python.
+    # Use maya.utils.executeDeferred(callable) via defer_idle helpers.
+    from maya_agent.utils.maya_compat import defer_idle_lowest
 
-        cmds.evalDeferred(_deferred_py)
-        cmds.evalDeferred(_deferred_py, lowestPriority=True)
-        scheduled = True
-    except Exception as e:
-        log.warning("cmds.evalDeferred failed: %s", e)
-
-    if not scheduled:
-        try:
-            import maya.utils
-
-            maya.utils.executeDeferred(_deferred_install)
-            scheduled = True
-        except Exception as e:
-            log.error("bootstrap schedule failed: %s", e)
-            print("[Maya Agent] bootstrap failed:", e)
-
-    if scheduled:
+    if defer_idle_lowest(_deferred_install):
         print("[Maya Agent] bootstrap scheduled")
+    else:
+        print("[Maya Agent] bootstrap schedule failed — trying immediate install")
+        try:
+            _deferred_install(force=True)
+        except Exception as e:
+            log.error("bootstrap failed: %s", e)
+            print("[Maya Agent] bootstrap failed:", e)

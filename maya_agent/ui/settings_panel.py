@@ -162,6 +162,15 @@ def create_settings_panel(
             self.provider_combo.setMinimumHeight(30)
             self.model_combo = create_toolbar_combo(editable=True)
             self.model_combo.setMinimumHeight(30)
+            self.vision_policy = create_toolbar_combo()
+            self.vision_policy.setMinimumHeight(30)
+            self.vision_policy.addItem("自动识别", "auto")
+            self.vision_policy.addItem("开启", "on")
+            self.vision_policy.addItem("关闭", "off")
+            self.vision_policy.setToolTip(
+                "自动识别：按模型名判断能否看图（gpt-4o、Claude、Gemini，或名称含 vision / vl）。\n"
+                "自定义接口识别不到时，可改为「开启」。"
+            )
             self.api_key_edit = QtWidgets.QLineEdit()
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
             self.api_key_edit.setPlaceholderText("sk-… 或对应厂商的密钥")
@@ -176,6 +185,7 @@ def create_settings_panel(
 
             form.addRow(self._field_label("服务商"), self.provider_combo)
             form.addRow(self._field_label("模型"), self.model_combo)
+            form.addRow(self._field_label("图片输入"), self.vision_policy)
             form.addRow(self._field_label("API Key"), self.api_key_edit)
             form.addRow(self._field_label("Base URL"), self.base_url_edit)
 
@@ -266,7 +276,7 @@ def create_settings_panel(
             )
             lform = self._form(lim_lay)
             self.max_rounds = create_toolbar_spin()
-            self.max_rounds.setRange(1, 30)
+            self.max_rounds.setRange(1, 50)
             self.max_rounds.setFixedHeight(30)
             self.max_rounds.setFixedWidth(100)
             lform.addRow(self._field_label("最大工具轮次"), self.max_rounds)
@@ -304,6 +314,7 @@ def create_settings_panel(
             return (
                 self.provider_combo.currentData(),
                 self.model_combo.currentText().strip(),
+                self.vision_policy.currentData(),
                 self.api_key_edit.text(),
                 self.base_url_edit.text().strip(),
                 round(float(self.temp_spin.value()), 4),
@@ -336,6 +347,7 @@ def create_settings_panel(
             self.provider_combo.currentIndexChanged.connect(self._update_dirty)
             self.model_combo.currentIndexChanged.connect(self._update_dirty)
             self.model_combo.editTextChanged.connect(self._update_dirty)
+            self.vision_policy.currentIndexChanged.connect(self._update_dirty)
             self.api_key_edit.textChanged.connect(self._update_dirty)
             self.base_url_edit.textChanged.connect(self._update_dirty)
             self.temp_spin.valueChanged.connect(self._update_dirty)
@@ -356,6 +368,9 @@ def create_settings_panel(
             for m in pconf.get("models") or []:
                 self.model_combo.addItem(m)
             self.model_combo.setCurrentText(pconf.get("default_model", ""))
+            policy = str(pconf.get("vision_policy") or "auto")
+            pidx = self.vision_policy.findData(policy)
+            self.vision_policy.setCurrentIndex(pidx if pidx >= 0 else 0)
             self.base_url_edit.setText(pconf.get("base_url", ""))
             self.api_key_edit.setText(self.cfg.get_api_key(pid))
             self._update_dirty()
@@ -403,6 +418,10 @@ def create_settings_panel(
             self.cfg.set("llm.temperature", self.temp_spin.value())
             self.cfg.set("llm.max_tokens", self.max_tokens_spin.value())
             self.cfg.set(f"providers.{pid}.default_model", model)
+            self.cfg.set(
+                f"providers.{pid}.vision_policy",
+                self.vision_policy.currentData() or "auto",
+            )
             self.cfg.set(
                 f"providers.{pid}.base_url", self.base_url_edit.text().strip()
             )
@@ -633,7 +652,7 @@ def create_help_panel(parent=None):
         (
             "打开菜单「Maya Agent → 打开面板」，或点击工具架 Agent 按钮",
             "在「设置 → 模型与 API」选择服务商、填写 API Key，点「测试连接」通过后「保存设置」",
-            "切回「对话」，用自然语言描述任务；也可点底部快捷芯片快速试用",
+            "切回「对话」，用自然语言描述任务；也可展开「快捷命令」快速试用",
             "Agent 会自动调用工具改场景；危险操作会先确认，可用 Ctrl+Z 回退",
         ),
         numbered=True,
@@ -650,9 +669,11 @@ def create_help_panel(parent=None):
             "会话：新建 / 重命名 / 删除 / 下拉切换；同一场景可保留多组对话",
             "会话会随场景自动保存（sidecar：场景名.ma.mayaagent.json）；未命名场景先暂存本地，保存场景后迁移",
             "Enter 发送，Shift+Enter 换行；「停止」可中断进行中的任务",
+            "支持看图的模型可点「+」、拖入文件，或 Ctrl+V 粘贴截图；纯文本模型会禁用该按钮",
             "「清空」只清空当前会话聊天与记忆，不会清空 Maya 场景",
             "开启「自动 Undo 块」后，一轮场景修改可合并，便于用 Ctrl+Z 一次回退",
-            "快捷芯片：场景信息、网格统计、导出 FBX、三点光（栏过窄时可横向滚动）",
+            "快捷命令：输入框上方状态行右侧为「快捷命令」按钮，点按展开芯片（场景信息、网格统计、导出 FBX、三点光等）",
+            "视觉模型可调用 capture_viewport 自行截取视口并分析；纯文本模型不会暴露该工具",
             "意图不清时，助手会给出可点击选项按钮，点选即自动回复",
             "开启「显示工具调用详情」后，对话中会展示工具名与结果摘要",
             "开启「显示思考内容」后，支持思考链的模型会在回复前展示推理过程",
@@ -667,9 +688,9 @@ def create_help_panel(parent=None):
     _add_help_lines(
         settings_lay,
         (
-            "模型与 API：服务商、模型、API Key、Base URL、Temperature、Max Tokens；支持测试连接",
+            "模型与 API：服务商、模型、API Key、Base URL、图片输入、Temperature、Max Tokens；支持测试连接",
             "服务商包括 OpenAI、Azure、Anthropic、Gemini、DeepSeek、通义、智谱、Kimi、豆包、百川、SiliconFlow、Ollama、自定义 OpenAI 兼容接口等",
-            "Agent：自动 Undo 块、危险操作前确认、流式输出、显示思考内容、显示工具调用、最大工具轮次（1–30）",
+            "Agent：自动 Undo 块、危险操作前确认、流式输出、显示思考内容、显示工具调用、最大工具轮次（1–50）",
             "界面：字体与字号（部分控件需重新打开面板后完全生效）",
         ),
     )
@@ -683,7 +704,8 @@ def create_help_panel(parent=None):
         (
             "场景 scene",
             "get_scene_info、list_selection、select_objects、rename_object、batch_rename、"
-            "create_group、delete_objects、parent_objects、duplicate_objects、clean_scene、set_frame_range",
+            "create_group、delete_objects、parent_objects、duplicate_objects、clean_scene、"
+            "set_frame_range、capture_viewport（视觉模型截取视口分析）",
         ),
         (
             "建模 modeling",
