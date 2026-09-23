@@ -191,14 +191,25 @@ def create_settings_panel(
 
             actions = QtWidgets.QHBoxLayout()
             actions.setContentsMargins(0, 4, 0, 0)
-            actions.addStretch(1)
-            test_btn = QtWidgets.QPushButton("测试连接")
-            test_btn.setObjectName("secondaryBtn")
-            test_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            test_btn.setMinimumWidth(96)
-            test_btn.setMinimumHeight(30)
-            test_btn.clicked.connect(self._test_connection)
-            actions.addWidget(test_btn)
+            actions.setSpacing(10)
+            self.test_status = QtWidgets.QLabel("")
+            self.test_status.setObjectName("testConnStatus")
+            self.test_status.setWordWrap(True)
+            self.test_status.setMinimumWidth(0)
+            self.test_status.setAlignment(
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+            )
+            self.test_status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            actions.addWidget(self.test_status, 1)
+            self.test_btn = QtWidgets.QPushButton("测试连接")
+            self.test_btn.setObjectName("secondaryBtn")
+            self.test_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.test_btn.setMinimumWidth(96)
+            self.test_btn.setMinimumHeight(30)
+            self.test_btn.clicked.connect(self._test_connection)
+            actions.addWidget(self.test_btn, 0)
             conn_lay.addLayout(actions)
             root.addWidget(conn)
 
@@ -360,6 +371,18 @@ def create_settings_panel(
             self.max_rounds.valueChanged.connect(self._update_dirty)
             self.font_family.textChanged.connect(self._update_dirty)
             self.font_size.valueChanged.connect(self._update_dirty)
+            # Connection fields change → clear stale test result
+            for sig in (
+                self.provider_combo.currentIndexChanged,
+                self.model_combo.currentIndexChanged,
+                self.model_combo.editTextChanged,
+                self.api_key_edit.textChanged,
+                self.base_url_edit.textChanged,
+            ):
+                sig.connect(self._clear_test_status)
+
+        def _clear_test_status(self, *_args) -> None:
+            self._set_test_status("", "")
 
         def _on_provider_changed(self) -> None:
             pid = self.provider_combo.currentData()
@@ -442,26 +465,62 @@ def create_settings_panel(
                 self._on_saved()
             QtWidgets.QMessageBox.information(self, "已保存", "设置已保存并生效。")
 
+        def _set_test_status(self, text: str, kind: str = "") -> None:
+            """Inline connection test feedback. kind: ok | fail | info | ''."""
+            label = getattr(self, "test_status", None)
+            if label is None:
+                return
+            label.setText(text or "")
+            colors = {
+                "ok": "#5dca8a",
+                "fail": "#e07070",
+                "info": "#8a8a93",
+            }
+            color = colors.get(kind, "#8a8a93")
+            label.setStyleSheet(
+                f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+                f"background: transparent; border: none; padding: 0; }}"
+            )
+
         def _test_connection(self) -> None:
             pid = self.provider_combo.currentData()
             model = self.model_combo.currentText().strip()
             key = self.api_key_edit.text().strip()
             base = self.base_url_edit.text().strip()
+            self._set_test_status("正在测试…", "info")
+            btn = getattr(self, "test_btn", None)
+            if btn is not None:
+                btn.setEnabled(False)
             try:
+                # Let the label paint before a blocking network call
+                QtWidgets.QApplication.processEvents()
                 provider = create_provider(
                     pid, model=model, api_key=key or None, base_url=base or None
                 )
                 result = provider.test_connection()
                 if result.get("ok"):
-                    QtWidgets.QMessageBox.information(
-                        self, "成功", f"连接正常\n{result.get('preview', '')}"
-                    )
+                    preview = (result.get("preview") or "").strip()
+                    msg = "连接成功"
+                    if preview:
+                        one_line = " ".join(preview.split())
+                        if len(one_line) > 48:
+                            one_line = one_line[:48] + "…"
+                        msg = f"连接成功 · {one_line}"
+                    self._set_test_status(msg, "ok")
                 else:
-                    QtWidgets.QMessageBox.warning(
-                        self, "失败", result.get("error", "未知错误")
-                    )
+                    err = (result.get("error") or "未知错误").strip()
+                    one_line = " ".join(err.split())
+                    if len(one_line) > 72:
+                        one_line = one_line[:72] + "…"
+                    self._set_test_status(f"连接失败 · {one_line}", "fail")
             except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "错误", str(e))
+                err = " ".join(str(e).split())
+                if len(err) > 72:
+                    err = err[:72] + "…"
+                self._set_test_status(f"连接失败 · {err}", "fail")
+            finally:
+                if btn is not None:
+                    btn.setEnabled(True)
 
         def show_subtab(self, name: str) -> None:
             """Switch to a sub-tab by label, e.g. '模型与 API'."""
@@ -668,11 +727,11 @@ def create_help_panel(parent=None):
         (
             "会话：新建 / 重命名 / 删除 / 下拉切换；同一场景可保留多组对话",
             "会话会随场景自动保存（sidecar：场景名.ma.mayaagent.json）；未命名场景先暂存本地，保存场景后迁移",
-            "Enter 发送，Shift+Enter 换行；「停止」可中断进行中的任务",
+            "Enter 发送，Shift+Enter 换行；任务进行中同一按钮变为红色「停止」可中断",
             "支持看图的模型可点「+」、拖入文件，或 Ctrl+V 粘贴截图；纯文本模型会禁用该按钮",
             "「清空」只清空当前会话聊天与记忆，不会清空 Maya 场景",
             "开启「自动 Undo 块」后，一轮场景修改可合并，便于用 Ctrl+Z 一次回退",
-            "快捷命令：输入框上方状态行右侧为「快捷命令」按钮，点按展开芯片（场景信息、网格统计、导出 FBX、三点光等）",
+            "快捷命令：输入框下方工具栏的「快捷」按钮，点按展开芯片（场景信息、网格统计、导出 FBX、三点光等）",
             "视觉模型可调用 capture_viewport 自行截取视口并分析；纯文本模型不会暴露该工具",
             "意图不清时，助手会给出可点击选项按钮，点选即自动回复",
             "开启「显示工具调用详情」后，对话中会展示工具名与结果摘要",

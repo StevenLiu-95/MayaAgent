@@ -68,7 +68,7 @@ QPlainTextEdit#composerInput {
     background-color: #22232a;
     border: 1px solid #3a3b44;
     border-radius: 8px;
-    padding: 10px 12px;
+    padding: 6px 10px;
 }
 
 QPushButton {
@@ -111,10 +111,10 @@ QPushButton#dangerBtn {
 QPushButton#sendBtn {
     background-color: #2f7d5b;
     font-weight: 600;
-    min-width: 64px;
-    min-height: 28px;
-    max-height: 28px;
-    padding: 0 10px;
+    min-width: 56px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0 8px;
     border-radius: 6px;
 }
 
@@ -127,16 +127,35 @@ QPushButton#sendBtn:disabled {
     color: #7a9a8a;
 }
 
+QPushButton#stopBtn {
+    background-color: #a03a3a;
+    font-weight: 600;
+    min-width: 56px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0 8px;
+    border-radius: 6px;
+    color: #ffffff;
+}
+
+QPushButton#stopBtn:hover {
+    background-color: #b84848;
+}
+
+QPushButton#stopBtn:pressed {
+    background-color: #8b3030;
+}
+
 QPushButton#composerBtn {
     background-color: #2a2b32;
     border: 1px solid #3a3b44;
     border-radius: 6px;
     color: #c8c8d0;
     font-size: 12px;
-    min-width: 48px;
-    min-height: 28px;
-    max-height: 28px;
-    padding: 0 8px;
+    min-width: 44px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0 6px;
 }
 
 QPushButton#composerBtn:hover {
@@ -172,13 +191,13 @@ QPushButton#attachBtn {
     border: 1px solid #3a3b44;
     border-radius: 6px;
     color: #c8c8d0;
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 600;
     padding: 0;
-    min-width: 28px;
-    max-width: 28px;
-    min-height: 28px;
-    max-height: 28px;
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
 }
 
 QPushButton#attachBtn:hover {
@@ -199,9 +218,9 @@ QPushButton#quickCmdBtn {
     border-radius: 12px;
     color: #a8a8b0;
     font-size: 12px;
-    padding: 0 10px;
-    min-height: 24px;
-    max-height: 24px;
+    padding: 0 8px;
+    min-height: 26px;
+    max-height: 26px;
 }
 
 QPushButton#quickCmdBtn:hover {
@@ -238,8 +257,8 @@ QLabel#statusSpinner {
 QScrollArea#quickScroll {
     background: transparent;
     border: none;
-    min-height: 34px;
-    max-height: 36px;
+    min-height: 30px;
+    max-height: 32px;
 }
 
 QScrollArea#quickScroll QWidget#quickHost {

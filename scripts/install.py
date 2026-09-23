@@ -190,7 +190,7 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
         return
     root_fwd = str(root).replace("\\", "/")
     mod.write_text(
-        f"+ MayaAgent 1.3.0 {root_fwd}\n"
+        f"+ MayaAgent 1.3.1 {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",

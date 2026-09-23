@@ -87,6 +87,10 @@ def create_animated_status(parent=None):
             )
             self.text_label.setMinimumWidth(0)
             try:
+                self.text_label.setWordWrap(False)
+            except Exception:
+                pass
+            try:
                 self.text_label.setTextInteractionFlags(
                     QtCore.Qt.TextSelectableByMouse
                 )

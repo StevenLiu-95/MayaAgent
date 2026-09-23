@@ -286,7 +286,7 @@ class MayaAgentWindow:
                 self.chat.set_choice_handler(self._on_choice_reply)
                 chat_layout.addWidget(self.chat, 1)
 
-                # 对话区底部：状态行（含快捷命令按钮）+ 输入框
+                # 对话区底部：紧凑输入区（输入框 + 底栏状态/操作）
                 chat_layout.addWidget(self._build_composer())
                 self.tabs.addTab(chat_page, "对话")
 
@@ -294,29 +294,10 @@ class MayaAgentWindow:
                 composer = QtWidgets.QFrame()
                 composer.setObjectName("composerFrame")
                 composer_layout = QtWidgets.QVBoxLayout(composer)
-                composer_layout.setContentsMargins(10, 10, 10, 8)
-                composer_layout.setSpacing(8)
+                composer_layout.setContentsMargins(8, 6, 8, 6)
+                composer_layout.setSpacing(4)
 
-                # 状态条 + 收起态「快捷命令」按钮（同行）
-                status_row = QtWidgets.QHBoxLayout()
-                status_row.setContentsMargins(2, 0, 2, 0)
-                status_row.setSpacing(8)
-
-                self.status_label = create_animated_status(composer)
-                self.status_label.setObjectName("composerStatus")
-                status_row.addWidget(self.status_label, 1, QtCore.Qt.AlignVCenter)
-
-                self._quick_toggle = QtWidgets.QPushButton("快捷命令")
-                self._quick_toggle.setObjectName("quickCmdBtn")
-                self._quick_toggle.setCursor(QtCore.Qt.PointingHandCursor)
-                self._quick_toggle.setCheckable(True)
-                self._quick_toggle.setChecked(False)
-                self._quick_toggle.setFixedHeight(24)
-                self._quick_toggle.toggled.connect(self._on_quick_commands_toggled)
-                status_row.addWidget(self._quick_toggle, 0, QtCore.Qt.AlignVCenter)
-                composer_layout.addLayout(status_row)
-
-                # 展开后的快捷芯片
+                # 展开后的快捷芯片（默认收起）
                 self._quick_body = QtWidgets.QWidget()
                 body_lay = QtWidgets.QVBoxLayout(self._quick_body)
                 body_lay.setContentsMargins(0, 0, 0, 0)
@@ -328,7 +309,7 @@ class MayaAgentWindow:
                 quick_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
                 quick_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
                 quick_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-                quick_scroll.setFixedHeight(34)
+                quick_scroll.setFixedHeight(30)
                 quick_scroll.setSizePolicy(
                     QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
                 )
@@ -361,7 +342,6 @@ class MayaAgentWindow:
                 body_lay.addWidget(quick_scroll)
                 self._quick_body.hide()
                 composer_layout.addWidget(self._quick_body)
-                self._sync_quick_toggle_label()
 
                 self._image_strip = QtWidgets.QScrollArea()
                 self._image_strip.setObjectName("imageStrip")
@@ -369,7 +349,7 @@ class MayaAgentWindow:
                 self._image_strip.setFrameShape(QtWidgets.QFrame.NoFrame)
                 self._image_strip.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
                 self._image_strip.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-                self._image_strip.setFixedHeight(72)
+                self._image_strip.setFixedHeight(64)
                 self._image_strip.hide()
                 strip_host = QtWidgets.QWidget()
                 strip_host.setObjectName("imageStripHost")
@@ -385,54 +365,68 @@ class MayaAgentWindow:
                 self.input_edit.setPlaceholderText(
                     "描述你想做的事，可附带图片…  Enter 发送，Shift+Enter 换行"
                 )
-                self.input_edit.setFixedHeight(120)
+                self.input_edit.setFixedHeight(68)
                 self.input_edit.setAcceptDrops(True)
                 self.input_edit.installEventFilter(self)
                 self.input_edit.viewport().installEventFilter(self)
                 composer_layout.addWidget(self.input_edit)
 
+                # 底栏：附件 + 状态 + 快捷 / 清空 / 发送·停止（合并）
                 action_row = QtWidgets.QHBoxLayout()
                 action_row.setSpacing(6)
                 action_row.setContentsMargins(0, 0, 0, 0)
 
                 self.image_btn = QtWidgets.QPushButton("+")
                 self.image_btn.setObjectName("attachBtn")
-                self.image_btn.setFixedSize(28, 28)
+                self.image_btn.setFixedSize(26, 26)
                 self.image_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 self.image_btn.clicked.connect(self._on_pick_images)
 
+                self.status_label = create_animated_status(composer)
+                self.status_label.setObjectName("composerStatus")
+                self.status_label.setMinimumWidth(0)
+                self.status_label.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+                )
+
+                self._quick_toggle = QtWidgets.QPushButton("快捷")
+                self._quick_toggle.setObjectName("quickCmdBtn")
+                self._quick_toggle.setCursor(QtCore.Qt.PointingHandCursor)
+                self._quick_toggle.setCheckable(True)
+                self._quick_toggle.setChecked(False)
+                self._quick_toggle.setFixedHeight(26)
+                self._quick_toggle.setMinimumWidth(44)
+                self._quick_toggle.toggled.connect(self._on_quick_commands_toggled)
+
                 clear_btn = QtWidgets.QPushButton("清空")
                 clear_btn.setObjectName("composerBtn")
-                clear_btn.setFixedSize(48, 28)
+                clear_btn.setFixedSize(44, 26)
                 clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 clear_btn.clicked.connect(self._on_clear)
 
-                self.stop_btn = QtWidgets.QPushButton("停止")
-                self.stop_btn.setObjectName("composerBtn")
-                self.stop_btn.setFixedSize(48, 28)
-                self.stop_btn.setEnabled(False)
-                self.stop_btn.setCursor(QtCore.Qt.PointingHandCursor)
-                self.stop_btn.clicked.connect(self._on_stop)
-
+                # 发送 / 停止 合并：空闲绿「发送」，忙碌红「停止」
                 self.send_btn = QtWidgets.QPushButton("发送")
                 self.send_btn.setObjectName("sendBtn")
-                self.send_btn.setFixedSize(64, 28)
+                self.send_btn.setFixedSize(56, 26)
                 self.send_btn.setCursor(QtCore.Qt.PointingHandCursor)
-                self.send_btn.clicked.connect(self._on_send)
+                self.send_btn.clicked.connect(self._on_send_or_stop)
+                self._send_busy = False
 
                 action_row.addWidget(self.image_btn, 0, QtCore.Qt.AlignVCenter)
-                action_row.addStretch(1)
+                action_row.addWidget(self.status_label, 1, QtCore.Qt.AlignVCenter)
+                action_row.addWidget(self._quick_toggle, 0, QtCore.Qt.AlignVCenter)
                 action_row.addWidget(clear_btn, 0, QtCore.Qt.AlignVCenter)
-                action_row.addWidget(self.stop_btn, 0, QtCore.Qt.AlignVCenter)
                 action_row.addWidget(self.send_btn, 0, QtCore.Qt.AlignVCenter)
                 composer_layout.addLayout(action_row)
+
+                self._sync_quick_toggle_label()
                 return composer
 
             def _sync_quick_toggle_label(self) -> None:
                 if not getattr(self, "_quick_toggle", None):
                     return
                 expanded = bool(self._quick_toggle.isChecked())
-                self._quick_toggle.setText("收起" if expanded else "快捷命令")
+                self._quick_toggle.setText("收起" if expanded else "快捷")
                 self._quick_toggle.setToolTip(
                     "收起快捷命令" if expanded else "展开快捷命令"
                 )
@@ -1001,6 +995,12 @@ class MayaAgentWindow:
                 self._persist_active_session(refresh_combo=True)
                 self.status_label.set_idle("当前会话已清空")
 
+            def _on_send_or_stop(self):
+                if getattr(self, "_send_busy", False):
+                    self._on_stop()
+                else:
+                    self._on_send()
+
             def _on_stop(self):
                 self._stopped_by_user = True
                 if self._worker and self._worker.isRunning():
@@ -1023,9 +1023,30 @@ class MayaAgentWindow:
                 self.status_label.set_idle("已停止")
                 self._schedule_persist()
 
+            def _apply_send_stop_style(self, busy: bool) -> None:
+                """Toggle merged send/stop button label and QSS objectName."""
+                btn = getattr(self, "send_btn", None)
+                if btn is None:
+                    return
+                self._send_busy = bool(busy)
+                if busy:
+                    btn.setText("停止")
+                    btn.setObjectName("stopBtn")
+                    btn.setToolTip("停止当前任务")
+                else:
+                    btn.setText("发送")
+                    btn.setObjectName("sendBtn")
+                    btn.setToolTip("发送（Enter）")
+                # Force QSS re-apply after objectName change
+                try:
+                    btn.style().unpolish(btn)
+                    btn.style().polish(btn)
+                    btn.update()
+                except Exception:
+                    pass
+
             def _set_busy(self, busy: bool):
-                self.send_btn.setEnabled(not busy)
-                self.stop_btn.setEnabled(busy)
+                self._apply_send_stop_style(busy)
                 self.input_edit.setReadOnly(busy)
                 if hasattr(self, "image_btn"):
                     self.image_btn.setEnabled(self._vision_enabled and not busy)
