@@ -8,29 +8,21 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import yaml
+from maya_agent.utils.paths import (
+    default_config_json,
+    default_config_yaml,
+    user_config_dir,
+    user_config_path,
+    user_secrets_path,
+)
 
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-_PROJECT_ROOT = _PACKAGE_ROOT.parent
-_DEFAULT_CONFIG = _PROJECT_ROOT / "config" / "default_config.yaml"
-
-
-def user_config_dir() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    path = base / "MayaAgent"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def user_config_path() -> Path:
-    return user_config_dir() / "settings.json"
-
-
-def user_secrets_path() -> Path:
-    return user_config_dir() / "secrets.json"
+__all__ = [
+    "Config",
+    "get_config",
+    "user_config_dir",
+    "user_config_path",
+    "user_secrets_path",
+]
 
 
 class Config:
@@ -42,7 +34,7 @@ class Config:
         self.reload()
 
     def reload(self) -> None:
-        self._data = self._load_yaml(_DEFAULT_CONFIG)
+        self._data = self._load_default_config()
         # Keep app.version aligned with package
         try:
             from maya_agent import __version__
@@ -67,11 +59,28 @@ class Config:
                 self._secrets = {}
 
     @staticmethod
-    def _load_yaml(path: Path) -> Dict[str, Any]:
-        if not path.exists():
-            return {}
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+    def _load_default_config() -> Dict[str, Any]:
+        """Prefer JSON (no third-party deps). Fall back to YAML if PyYAML is present."""
+        json_path = default_config_json()
+        if json_path.exists():
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        yaml_path = default_config_yaml()
+        if yaml_path.exists():
+            try:
+                import yaml  # optional
+
+                with open(yaml_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+            except Exception:
+                pass
+        return {}
 
     @staticmethod
     def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> None:
@@ -108,7 +117,7 @@ class Config:
             "maya": {
                 "auto_undo": self.get("maya.auto_undo", True),
                 "confirm_destructive": self.get("maya.confirm_destructive", True),
-                "max_tool_rounds": self.get("maya.max_tool_rounds", 12),
+                "max_tool_rounds": self.get("maya.max_tool_rounds", 30),
             },
             "providers": {},
         }
@@ -123,6 +132,16 @@ class Config:
             }
         with open(user_config_path(), "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def reset_user_settings(self) -> None:
+        """Drop local settings.json and reload defaults. API keys (secrets.json) are kept."""
+        path = user_config_path()
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        self.reload()
 
     def get_api_key(self, provider: str) -> str:
         if provider in self._secrets and self._secrets[provider]:
@@ -139,7 +158,9 @@ class Config:
 
     def system_prompt(self) -> str:
         prompt_rel = self.get("llm.system_prompt_file", "prompts/system_zh.md")
-        path = _PROJECT_ROOT / "resources" / prompt_rel
+        from maya_agent.utils.paths import project_root
+
+        path = project_root() / "resources" / prompt_rel
         if path.exists():
             return path.read_text(encoding="utf-8")
         return "You are Maya Agent, an expert Autodesk Maya assistant for game development."

@@ -39,6 +39,15 @@ def _bootstrap() -> None:
 
         maya_agent.bootstrap()
         print("[Maya Agent] plug-in bootstrap OK")
+    except ModuleNotFoundError as exc:
+        import traceback
+
+        print("[Maya Agent] plug-in bootstrap failed:", exc)
+        traceback.print_exc()
+        print(
+            "[Maya Agent] Missing module. Re-run install.bat "
+            "(handles Windows proxy/SSL) or drag install_dragdrop.mel into the viewport."
+        )
     except Exception as exc:
         import traceback
 

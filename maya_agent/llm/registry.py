@@ -57,7 +57,7 @@ def create_provider(
     base_url = overrides.pop("base_url", None) or pconf.get("base_url", "")
     model_name = model or overrides.pop("model", None) or pconf.get("default_model", "")
     temperature = float(overrides.pop("temperature", cfg.get("llm.temperature", 0.3)))
-    max_tokens = int(overrides.pop("max_tokens", cfg.get("llm.max_tokens", 4096)))
+    max_tokens = int(overrides.pop("max_tokens", cfg.get("llm.max_tokens", 8192)))
     timeout = float(overrides.pop("timeout", cfg.get("llm.timeout", 120)))
 
     common = dict(

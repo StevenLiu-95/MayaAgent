@@ -26,9 +26,16 @@ if not exist "%CD%\scripts\install.py" (
   echo [错误] 未找到 scripts\install.py
   goto :END_FAIL
 )
+if not exist "%CD%\scripts\install_deps.py" (
+  echo [错误] 未找到 scripts\install_deps.py
+  goto :END_FAIL
+)
 if not exist "%CD%\requirements.txt" (
   echo [错误] 未找到 requirements.txt
   goto :END_FAIL
+)
+if not exist "%CD%\config\default_config.json" (
+  echo [警告] 缺少 config\default_config.json，将尝试继续…
 )
 
 REM ---- 找 Python（优先系统 python，其次 py launcher）----
@@ -54,6 +61,8 @@ if /I not "%TARGET_VER%"=="all" (
     set "HIT=0"
     if exist "%USERPROFILE%\Documents\maya\%%V" set "HIT=1"
     reg query "HKLM\SOFTWARE\Autodesk\Maya\%%V\Setup\InstallPath" >nul 2>&1 && set "HIT=1"
+    if exist "D:\LAS\LAD\Maya\Program\%%V\Maya%%V\bin\mayapy.exe" set "HIT=1"
+    if exist "C:\Program Files\Autodesk\Maya%%V\bin\mayapy.exe" set "HIT=1"
     if !HIT! EQU 1 set "VER_LIST=!VER_LIST! %%V"
   )
 )
@@ -66,13 +75,17 @@ if "%VER_LIST%"=="" (
 echo [2/4] 目标 Maya 版本:%VER_LIST%
 echo.
 
-REM ---- 为每个版本安装 mayapy 依赖 ----
+REM ---- 为每个版本安装 mayapy 依赖（自动处理 Windows 代理 / SSL）----
 echo [3/4] 安装 Python 依赖到各版本 mayapy ...
-set "REQ_TMP=%TEMP%\maya_agent_requirements.txt"
-copy /Y "%CD%\requirements.txt" "%REQ_TMP%" >nul
-
+set "DEP_ARGS="
 for %%V in (%VER_LIST%) do (
-  call :INSTALL_DEPS %%V
+  set "DEP_ARGS=!DEP_ARGS! --maya-version %%V"
+)
+%PYEXE% "%CD%\scripts\install_deps.py" !DEP_ARGS!
+if !ERRORLEVEL! NEQ 0 (
+  echo.
+  echo   [警告] 部分依赖安装失败。菜单/工具架仍可出现；
+  echo          对话功能需要 httpx，可稍后重新运行 install.bat。
 )
 
 echo.
@@ -91,60 +104,19 @@ echo.
 echo ============================================================
 echo   安装完成
 echo ============================================================
-echo   请重启 Maya，然后检查:
+echo   请完全退出并重启 Maya，然后检查:
 echo     1. 顶部菜单是否有「Maya Agent」
 echo     2. 工具架是否有「MayaAgent」页签
 echo.
 echo   若菜单仍未出现，任选其一:
 echo     A. 把项目根目录的 install_dragdrop.mel 拖进 Maya 视口
-echo     B. 在 Script Editor 执行:
+echo     B. 在 Script Editor ^(Python^) 执行:
 echo          import maya_agent
 echo          maya_agent.reload()
 echo.
 echo   卸载请双击: uninstall.bat
 echo ============================================================
 goto :END_OK
-
-
-:INSTALL_DEPS
-set "VER=%~1"
-set "MAYAPY="
-
-REM 1) 注册表
-for /f "tokens=2*" %%A in ('reg query "HKLM\SOFTWARE\Autodesk\Maya\%VER%\Setup\InstallPath" /v MAYA_INSTALL_LOCATION 2^>nul') do (
-  set "MAYAROOT=%%B"
-)
-if defined MAYAROOT (
-  if exist "!MAYAROOT!bin\mayapy.exe" set "MAYAPY=!MAYAROOT!bin\mayapy.exe"
-  if exist "!MAYAROOT!\bin\mayapy.exe" set "MAYAPY=!MAYAROOT!\bin\mayapy.exe"
-)
-
-REM 2) 常见路径兜底
-if not defined MAYAPY if exist "C:\Program Files\Autodesk\Maya%VER%\bin\mayapy.exe" (
-  set "MAYAPY=C:\Program Files\Autodesk\Maya%VER%\bin\mayapy.exe"
-)
-if not defined MAYAPY if exist "D:\Program Files\Autodesk\Maya%VER%\bin\mayapy.exe" (
-  set "MAYAPY=D:\Program Files\Autodesk\Maya%VER%\bin\mayapy.exe"
-)
-
-if not defined MAYAPY (
-  echo   [跳过] Maya %VER% 未找到 mayapy.exe，仅写入脚本挂钩。
-  set "MAYAROOT="
-  goto :EOF
-)
-
-echo   [依赖] Maya %VER%
-echo          %MAYAPY%
-"%MAYAPY%" -m pip install -r "%REQ_TMP%"
-if !ERRORLEVEL! NEQ 0 (
-  echo   [警告] Maya %VER% 依赖安装失败，可稍后手动执行:
-  echo          "%MAYAPY%" -m pip install -r requirements.txt
-) else (
-  echo   [成功] Maya %VER% 依赖已就绪
-)
-set "MAYAROOT="
-set "MAYAPY="
-goto :EOF
 
 
 :UNINSTALL

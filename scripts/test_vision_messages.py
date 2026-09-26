@@ -23,7 +23,7 @@ def test_vision_detect():
     cfg = _Cfg(
         {
             "providers.deepseek": {
-                "vision_models": ["deepseek-v4-flash-vision-exp"],
+                "vision_models": ["deepseek-flash"],
             },
             "providers.google": {"vision": True},
             "providers.custom": {"vision_policy": "on"},
@@ -32,7 +32,7 @@ def test_vision_detect():
         }
     )
     assert model_supports_vision("deepseek", "deepseek-v4-pro", cfg) is False
-    assert model_supports_vision("deepseek", "deepseek-v4-flash-vision-exp", cfg) is True
+    assert model_supports_vision("deepseek", "deepseek-flash", cfg) is True
     assert model_supports_vision("google", "gemini-2.0-flash", cfg) is True
     assert model_supports_vision("custom", "my-model", cfg) is True
     assert model_supports_vision("openai", "gpt-4o", cfg) is False

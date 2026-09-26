@@ -325,8 +325,9 @@ class MayaAgentWindow:
                 for label, prompt in (
                     ("场景信息", "请查看当前场景信息并简要汇总。"),
                     ("网格统计", "对当前选中的网格做拓扑统计。"),
-                    ("导出 FBX", "帮我把当前选择导出为 FBX，先询问保存路径建议。"),
+                    ("导出 FBX", "帮我把当前选择的网格导出为FBX文件。"),
                     ("三点光", "在场景中创建三点布光。"),
+                    ("生成建筑", "请你在当前场景中搭建一个现代建筑。要求：风格现代化，结构正确，细节丰富。"),
                     ("新建场景", "新建一个空场景。"),
                     ("清空场景", "清空当前场景。"),
                 ):
@@ -1099,7 +1100,7 @@ class MayaAgentWindow:
             def _on_event(self, event: dict):
                 et = event.get("type")
                 show_tools = get_config().get("agent.show_tool_calls", True)
-                show_thinking = get_config().get("agent.show_thinking", False)
+                show_thinking = get_config().get("agent.show_thinking", True)
 
                 if et == "thinking" and show_thinking:
                     self._thinking_buf += event.get("content", "")

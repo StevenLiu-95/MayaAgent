@@ -496,3 +496,13 @@ def bootstrap() -> None:
         except Exception as e:
             log.error("bootstrap failed: %s", e)
             print("[Maya Agent] bootstrap failed:", e)
+            _print_bootstrap_hint(e)
+
+
+def _print_bootstrap_hint(exc: BaseException) -> None:
+    msg = str(exc)
+    if "yaml" in msg.lower() or "httpx" in msg.lower() or "No module named" in msg:
+        print(
+            "[Maya Agent] 提示: 依赖可能未装入 mayapy。请重新运行 install.bat，\n"
+            "  或把 install_dragdrop.mel 拖进视口；菜单创建不依赖 PyYAML。"
+        )

@@ -99,6 +99,56 @@ def shared_plugins_dir() -> Path:
     return maya_app_dir() / "plug-ins"
 
 
+def _path_lexists(path: Path) -> bool:
+    """True if path exists as a directory entry, including broken junctions."""
+    import os
+
+    try:
+        return os.path.lexists(path)
+    except OSError:
+        return path.exists()
+
+
+def _is_usable_load_link(link: Path, root: Path) -> bool:
+    """Return True when link exists and points at (or contains) the project."""
+    if not link.exists():
+        return False
+    try:
+        resolved = link.resolve()
+        return resolved == root.resolve() or (resolved / "maya_agent" / "__init__.py").is_file()
+    except OSError:
+        return False
+
+
+def _remove_link_path(link: Path) -> None:
+    """Remove a junction/symlink without deleting the real project tree."""
+    import os
+    import subprocess
+
+    if platform.system() == "Windows":
+        try:
+            subprocess.run(
+                ["cmd", "/c", "rmdir", str(link)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            pass
+        if not _path_lexists(link):
+            return
+    try:
+        if link.is_symlink() or link.is_dir():
+            link.rmdir()
+        elif link.exists():
+            link.unlink()
+    except OSError:
+        try:
+            os.unlink(link)
+        except OSError as e:
+            print(f"Could not remove stale link {link}: {e}")
+
+
 def ensure_junction_or_copy(version: str, root: Path) -> Path:
     """
     Prefer an ASCII-friendly path under Documents/maya/<ver>/MayaAgent
@@ -108,8 +158,15 @@ def ensure_junction_or_copy(version: str, root: Path) -> Path:
     if platform.system() == "Darwin":
         link = documents_dir() / version / "MayaAgent"
     link.parent.mkdir(parents=True, exist_ok=True)
-    if link.exists():
+
+    if _is_usable_load_link(link, root):
         return link
+
+    # Broken / stale junction (target missing or wrong) — remove then recreate
+    if _path_lexists(link):
+        print(f"Removing stale load path link: {link}")
+        _remove_link_path(link)
+
     if platform.system() == "Windows":
         try:
             import subprocess
@@ -190,7 +247,7 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
         return
     root_fwd = str(root).replace("\\", "/")
     mod.write_text(
-        f"+ MayaAgent 1.3.1 {root_fwd}\n"
+        f"+ MayaAgent 1.3.2 {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",
@@ -418,17 +475,13 @@ def remove_project_junction(version: str) -> None:
     link = maya_app_dir() / version / "MayaAgent"
     if platform.system() == "Darwin":
         link = documents_dir() / version / "MayaAgent"
-    if not link.exists() and not link.is_symlink():
+    if not _path_lexists(link):
         return
-    try:
-        # Junction / symlink: rmdir removes the link, not the target tree
-        if link.is_dir():
-            link.rmdir()
-        else:
-            link.unlink()
+    _remove_link_path(link)
+    if not _path_lexists(link):
         print(f"Removed load path link {link}")
-    except OSError as e:
-        print(f"Could not remove {link}: {e} (safe to delete manually if it is only a junction)")
+    else:
+        print(f"Could not remove {link} (safe to delete manually if it is only a junction)")
 
 
 def install_version(

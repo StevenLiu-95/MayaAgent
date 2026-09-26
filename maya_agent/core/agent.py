@@ -119,7 +119,7 @@ class MayaAgent:
             ChatMessage(role="user", content=text, images=attached or None)
         )
         cfg = get_config()
-        max_rounds = int(cfg.get("maya.max_tool_rounds", 12))
+        max_rounds = int(cfg.get("maya.max_tool_rounds", 30))
         use_stream = stream and cfg.get("agent.stream", True)
         auto_undo = bool(cfg.get("maya.auto_undo", True)) and in_maya()
         final_text = ""

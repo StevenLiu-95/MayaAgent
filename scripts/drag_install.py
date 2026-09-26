@@ -90,6 +90,17 @@ def _load_or_reload_plugin() -> None:
         print("[Maya Agent] plug-in load skipped:", e)
 
 
+def _check_optional_runtime_deps() -> list:
+    """Return missing optional packages needed for chat (not for menu/shelf)."""
+    missing = []
+    for mod, label in (("httpx", "httpx"), ("requests", "requests")):
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(label)
+    return missing
+
+
 def run_install() -> dict:
     import maya.cmds as cmds
 
@@ -124,6 +135,15 @@ def run_install() -> dict:
         except Exception as e:
             print("[Maya Agent] scene hooks:", e)
 
+        missing = _check_optional_runtime_deps()
+        dep_note = ""
+        if missing:
+            dep_note = (
+                f"\n\n注意: 对话依赖未就绪（缺 {', '.join(missing)}）。\n"
+                f"请重新运行项目根目录 install.bat，或用 mayapy 安装 requirements.txt。"
+            )
+            print("[Maya Agent] 可选依赖缺失:", ", ".join(missing))
+
         result["ok"] = True
         result["message"] = (
             f"安装成功（Maya {ver}）\n\n"
@@ -132,6 +152,7 @@ def run_install() -> dict:
             f"· 已写入自动加载插件，重启后仍可用\n\n"
             f"项目: {root}\n"
             f"加载路径: {load_path}"
+            f"{dep_note}"
         )
         print("[Maya Agent] 拖入式安装完成")
     except Exception as e:

@@ -6,7 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
-from maya_agent.utils.config import user_config_dir
+from maya_agent.utils.paths import user_config_dir
 
 
 def get_logger(name: str = "maya_agent") -> logging.Logger:

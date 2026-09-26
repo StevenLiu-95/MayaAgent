@@ -20,7 +20,7 @@ _VISION_RE = re.compile(
     r"vision|"
     r"grok[\w.-]*vision|"
     r"moonshot[\w.-]*vision|"
-    r"deepseek[\w.-]*(?:vl|vision)"
+    r"deepseek[\w.-]*(?:vl|vision)|deepseek-flash"
     r")",
     re.IGNORECASE,
 )

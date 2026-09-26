@@ -3,29 +3,33 @@
 // ------------------------------------------------------------
 //  用法: 将本文件拖进 Maya 视口（或 Shelf / Script Editor）。
 //  会写入自动加载插件 / userSetup / module，并立即创建菜单与工具架。
+//
+//  注意: MEL 的 python() 不支持 Python 风格的相邻字符串拼接，
+//  必须用 MEL 的 + 连接，或写成单行。
 // ============================================================
 
 global proc MayaAgent_dragDropInstall()
 {
     string $info = `whatIs "MayaAgent_dragDropInstall"`;
-    // Pass path info to Python without fragile string escaping
     optionVar -sv "MayaAgent_dragInfo" $info;
 
-    python(
-"import re, os, runpy, sys\n"
-"import maya.cmds as cmds\n"
-"info = cmds.optionVar(q='MayaAgent_dragInfo') or ''\n"
-"m = re.search(r'found in:\\s*(.+)$', info)\n"
-"if not m:\n"
-"    cmds.error('[Maya Agent] 无法从 whatIs 解析脚本路径: ' + info)\n"
-"mel_path = m.group(1).strip().strip(chr(34))\n"
-"root = os.path.dirname(mel_path)\n"
-"script = os.path.join(root, 'scripts', 'drag_install.py')\n"
-"if not os.path.isfile(script):\n"
-"    cmds.error('[Maya Agent] 未找到 scripts/drag_install.py，请确认拖入的是项目根目录下的 install_dragdrop.mel')\n"
-"print('[Maya Agent] drag-drop root:', root)\n"
-"runpy.run_path(script, run_name='__main__')\n"
-    );
+    // Build Python source with MEL string concatenation (+)
+    string $py =
+        "import re, os, runpy\n"
+        + "import maya.cmds as cmds\n"
+        + "info = cmds.optionVar(q='MayaAgent_dragInfo') or ''\n"
+        + "m = re.search(r'found in:\\s*(.+)$', info)\n"
+        + "if not m:\n"
+        + "    cmds.error('[Maya Agent] 无法从 whatIs 解析脚本路径: ' + info)\n"
+        + "mel_path = m.group(1).strip().strip(chr(34))\n"
+        + "root = os.path.dirname(mel_path)\n"
+        + "script = os.path.join(root, 'scripts', 'drag_install.py')\n"
+        + "if not os.path.isfile(script):\n"
+        + "    cmds.error('[Maya Agent] 未找到 scripts/drag_install.py')\n"
+        + "print('[Maya Agent] drag-drop root:', root)\n"
+        + "runpy.run_path(script, run_name='__main__')\n";
+
+    python($py);
 }
 
 // Auto-run when this file is sourced / dragged into Maya

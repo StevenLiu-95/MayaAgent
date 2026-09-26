@@ -21,7 +21,7 @@ def create_settings_panel(
 ):
     """
     Build settings QWidget with sub-tabs (模型与 API / Agent / 界面).
-    on_saved() — refresh main window after save.
+    on_saved() — refresh main window after settings change.
     """
     QtCore, QtGui, QtWidgets, _ = import_qt()
 
@@ -132,21 +132,25 @@ def create_settings_panel(
             foot = QtWidgets.QHBoxLayout(footer)
             foot.setContentsMargins(0, 2, 0, 0)
             foot.setSpacing(10)
-            self.save_hint = QtWidgets.QLabel("修改后点击保存才会写入本地配置")
+            self.save_hint = QtWidgets.QLabel("修改后自动保存")
             self.save_hint.setObjectName("settingsSectionHint")
             foot.addWidget(self.save_hint, 1)
-            self.save_btn = QtWidgets.QPushButton("保存设置")
-            self.save_btn.setObjectName("sendBtn")
-            self.save_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self.save_btn.setMinimumWidth(108)
-            self.save_btn.setMinimumHeight(32)
-            self.save_btn.setEnabled(False)
-            self.save_btn.clicked.connect(self._save)
-            foot.addWidget(self.save_btn, 0, QtCore.Qt.AlignRight)
+            self.reset_btn = QtWidgets.QPushButton("恢复默认")
+            self.reset_btn.setObjectName("secondaryBtn")
+            self.reset_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.reset_btn.setMinimumWidth(108)
+            self.reset_btn.setMinimumHeight(32)
+            self.reset_btn.setToolTip("将界面与 Agent 参数恢复为出厂默认；API Key 不会删除")
+            self.reset_btn.clicked.connect(self._restore_defaults)
+            foot.addWidget(self.reset_btn, 0, QtCore.Qt.AlignRight)
             outer.addWidget(footer)
 
             self._baseline = None
             self._suppress_dirty = False
+            self._autosave_timer = QtCore.QTimer(self)
+            self._autosave_timer.setSingleShot(True)
+            self._autosave_timer.setInterval(400)
+            self._autosave_timer.timeout.connect(self._autosave_now)
             self._wire_dirty_tracking()
 
         def _build_api_tab(self) -> None:
@@ -233,7 +237,7 @@ def create_settings_panel(
             self.max_tokens_spin.setToolTip(
                 "单次回复最大输出 Token。\n"
                 "不同服务商上限不同，例如通义千问 DashScope 兼容模式常见为 1～8192。\n"
-                "若报 InvalidParameter / max_tokens range，请调低本项后保存重试。"
+                "若报 InvalidParameter / max_tokens range，请调低本项（会自动保存）。"
             )
             gform.addRow(self._field_label("Temperature"), self.temp_spin)
             gform.addRow(self._field_label("Max Tokens"), self.max_tokens_spin)
@@ -342,35 +346,46 @@ def create_settings_panel(
 
         def _mark_clean(self) -> None:
             self._baseline = self._snapshot()
-            self.save_btn.setEnabled(False)
-            self.save_hint.setText("修改后点击保存才会写入本地配置")
+            self.save_hint.setText("修改后自动保存")
 
-        def _update_dirty(self, *_args) -> None:
+        def _schedule_autosave(self, *_args) -> None:
             if self._suppress_dirty or self._baseline is None:
                 return
-            dirty = self._snapshot() != self._baseline
-            self.save_btn.setEnabled(dirty)
-            self.save_hint.setText(
-                "有未保存的修改" if dirty else "修改后点击保存才会写入本地配置"
-            )
+            if self._snapshot() == self._baseline:
+                self.save_hint.setText("修改后自动保存")
+                return
+            self.save_hint.setText("正在保存…")
+            self._autosave_timer.start()
+
+        def _autosave_now(self) -> None:
+            if self._suppress_dirty or self._baseline is None:
+                return
+            if self._snapshot() == self._baseline:
+                self.save_hint.setText("修改后自动保存")
+                return
+            self._save(silent=True)
 
         def _wire_dirty_tracking(self) -> None:
-            self.provider_combo.currentIndexChanged.connect(self._update_dirty)
-            self.model_combo.currentIndexChanged.connect(self._update_dirty)
-            self.model_combo.editTextChanged.connect(self._update_dirty)
-            self.vision_policy.currentIndexChanged.connect(self._update_dirty)
-            self.api_key_edit.textChanged.connect(self._update_dirty)
-            self.base_url_edit.textChanged.connect(self._update_dirty)
-            self.temp_spin.valueChanged.connect(self._update_dirty)
-            self.max_tokens_spin.valueChanged.connect(self._update_dirty)
-            self.auto_undo.toggled.connect(self._update_dirty)
-            self.confirm_destructive.toggled.connect(self._update_dirty)
-            self.stream_check.toggled.connect(self._update_dirty)
-            self.show_thinking.toggled.connect(self._update_dirty)
-            self.show_tools.toggled.connect(self._update_dirty)
-            self.max_rounds.valueChanged.connect(self._update_dirty)
-            self.font_family.textChanged.connect(self._update_dirty)
-            self.font_size.valueChanged.connect(self._update_dirty)
+            # Combos / spins / checks: debounce via same timer (short delay is fine)
+            for sig in (
+                self.provider_combo.currentIndexChanged,
+                self.model_combo.currentIndexChanged,
+                self.model_combo.editTextChanged,
+                self.vision_policy.currentIndexChanged,
+                self.api_key_edit.textChanged,
+                self.base_url_edit.textChanged,
+                self.temp_spin.valueChanged,
+                self.max_tokens_spin.valueChanged,
+                self.auto_undo.toggled,
+                self.confirm_destructive.toggled,
+                self.stream_check.toggled,
+                self.show_thinking.toggled,
+                self.show_tools.toggled,
+                self.max_rounds.valueChanged,
+                self.font_family.textChanged,
+                self.font_size.valueChanged,
+            ):
+                sig.connect(self._schedule_autosave)
             # Connection fields change → clear stale test result
             for sig in (
                 self.provider_combo.currentIndexChanged,
@@ -396,30 +411,32 @@ def create_settings_panel(
             self.vision_policy.setCurrentIndex(pidx if pidx >= 0 else 0)
             self.base_url_edit.setText(pconf.get("base_url", ""))
             self.api_key_edit.setText(self.cfg.get_api_key(pid))
-            self._update_dirty()
+            self._schedule_autosave()
 
         def _load(self) -> None:
             self._suppress_dirty = True
             try:
+                if self._autosave_timer.isActive():
+                    self._autosave_timer.stop()
                 active = self.cfg.get("llm.active_provider", "deepseek")
                 idx = self.provider_combo.findData(active)
                 if idx >= 0:
                     self.provider_combo.setCurrentIndex(idx)
                 self._on_provider_changed()
                 self.temp_spin.setValue(float(self.cfg.get("llm.temperature", 0.3)))
-                self.max_tokens_spin.setValue(int(self.cfg.get("llm.max_tokens", 4096)))
+                self.max_tokens_spin.setValue(int(self.cfg.get("llm.max_tokens", 8192)))
                 self.auto_undo.setChecked(bool(self.cfg.get("maya.auto_undo", True)))
                 self.confirm_destructive.setChecked(
                     bool(self.cfg.get("maya.confirm_destructive", True))
                 )
                 self.stream_check.setChecked(bool(self.cfg.get("agent.stream", True)))
                 self.show_thinking.setChecked(
-                    bool(self.cfg.get("agent.show_thinking", False))
+                    bool(self.cfg.get("agent.show_thinking", True))
                 )
                 self.show_tools.setChecked(
                     bool(self.cfg.get("agent.show_tool_calls", True))
                 )
-                self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 12)))
+                self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 30)))
                 self.font_family.setText(
                     self.cfg.get("ui.font_family", "Microsoft YaHei UI")
                 )
@@ -432,9 +449,7 @@ def create_settings_panel(
             self.cfg.reload()
             self._load()
 
-        def _save(self) -> None:
-            if not self.save_btn.isEnabled():
-                return
+        def _save(self, *, silent: bool = False) -> None:
             pid = self.provider_combo.currentData()
             model = self.model_combo.currentText().strip()
             self.cfg.set("llm.active_provider", pid)
@@ -463,7 +478,30 @@ def create_settings_panel(
             self._mark_clean()
             if self._on_saved:
                 self._on_saved()
-            QtWidgets.QMessageBox.information(self, "已保存", "设置已保存并生效。")
+            if silent:
+                self.save_hint.setText("已自动保存")
+            else:
+                QtWidgets.QMessageBox.information(self, "已保存", "设置已保存并生效。")
+
+        def _restore_defaults(self) -> None:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "恢复默认",
+                "确定将设置恢复为出厂默认？\n\n"
+                "· 模型 / Agent / 界面参数会重置\n"
+                "· API Key 不会删除",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+            if self._autosave_timer.isActive():
+                self._autosave_timer.stop()
+            self.cfg.reset_user_settings()
+            self._load()
+            if self._on_saved:
+                self._on_saved()
+            self.save_hint.setText("已恢复默认")
 
         def _set_test_status(self, text: str, kind: str = "") -> None:
             """Inline connection test feedback. kind: ok | fail | info | ''."""
@@ -710,7 +748,7 @@ def create_help_panel(parent=None):
         quick_lay,
         (
             "打开菜单「Maya Agent → 打开面板」，或点击工具架 Agent 按钮",
-            "在「设置 → 模型与 API」选择服务商、填写 API Key，点「测试连接」通过后「保存设置」",
+            "在「设置 → 模型与 API」选择服务商、填写 API Key，点「测试连接」验证（修改会自动保存）",
             "切回「对话」，用自然语言描述任务；也可展开「快捷命令」快速试用",
             "Agent 会自动调用工具改场景；危险操作会先确认，可用 Ctrl+Z 回退",
         ),
@@ -742,7 +780,7 @@ def create_help_panel(parent=None):
 
     settings, settings_lay = _section(
         "设置面板",
-        "模型、Agent 行为与界面均可在此配置，修改后需点「保存设置」。",
+        "模型、Agent 行为与界面均可在此配置，修改后自动保存；可随时「恢复默认」。",
     )
     _add_help_lines(
         settings_lay,
@@ -751,6 +789,7 @@ def create_help_panel(parent=None):
             "服务商包括 OpenAI、Azure、Anthropic、Gemini、DeepSeek、通义、智谱、Kimi、豆包、百川、SiliconFlow、Ollama、自定义 OpenAI 兼容接口等",
             "Agent：自动 Undo 块、危险操作前确认、流式输出、显示思考内容、显示工具调用、最大工具轮次（1–50）",
             "界面：字体与字号（部分控件需重新打开面板后完全生效）",
+            "底部「恢复默认」会重置参数为出厂值，但不会删除已保存的 API Key",
         ),
     )
     root.addWidget(settings)
