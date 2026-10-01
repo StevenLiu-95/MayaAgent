@@ -6,6 +6,7 @@ from typing import Optional
 
 from maya_agent.ui.palette import SPINNER_FRAMES
 from maya_agent.utils.maya_compat import import_qt
+from maya_agent.i18n import t
 
 _SPINNER = SPINNER_FRAMES
 
@@ -62,7 +63,7 @@ def create_animated_status(parent=None):
             super().__init__(parent)
             self.setObjectName("statusBar")
             self._mode = "idle"
-            self._base_text = "就绪"
+            self._base_text = t("status.ready")
             self._tool_name = ""
             self._frame = 0
 
@@ -80,7 +81,7 @@ def create_animated_status(parent=None):
             self.spinner.setAlignment(QtCore.Qt.AlignCenter)
             self.spinner.hide()
 
-            self.text_label = QtWidgets.QLabel("就绪")
+            self.text_label = QtWidgets.QLabel(t("status.ready"))
             self.text_label.setObjectName("statusLabel")
             self.text_label.setAlignment(
                 QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
@@ -120,23 +121,23 @@ def create_animated_status(parent=None):
         def text(self) -> str:
             return self.text_label.text()
 
-        def set_idle(self, text: str = "就绪") -> None:
+        def set_idle(self, text: str = "") -> None:
             self.stop_animation()
-            self.text_label.setText(text)
+            self.text_label.setText(text or t("status.ready"))
 
         def set_thinking(self) -> None:
-            self._start_mode("thinking", "思考中")
+            self._start_mode("thinking", t("status.thinking"))
 
         def set_tool(self, name: str) -> None:
             self._tool_name = name or "tool"
-            self._start_mode("tool", f"执行工具: {self._tool_name}")
+            self._start_mode("tool", t("status.tool", name=self._tool_name))
 
-        def set_error(self, text: str = "出错") -> None:
+        def set_error(self, text: str = "") -> None:
             self.stop_animation()
             self.spinner.setText("✕")
             self.spinner.setStyleSheet("color: #e09090; font-size: 12px;")
             self.spinner.show()
-            self.text_label.setText(text)
+            self.text_label.setText(text or t("status.error"))
 
         def stop_animation(self) -> None:
             self._timer.stop()
@@ -205,7 +206,7 @@ def create_typing_indicator(parent=None):
 
         def _tick(self) -> None:
             dots = "." * (self._frame % 4)
-            self.setText(f"正在思考{dots}")
+            self.setText(f"{t('status.thinking_dots')}{dots}")
             self._frame += 1
 
     return TypingIndicator(parent)

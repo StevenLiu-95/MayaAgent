@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from maya_agent.utils.logger import get_logger
 from maya_agent.utils.maya_compat import in_maya
+from maya_agent.i18n import init_from_config, t
 
 log = get_logger("maya_agent.plugin")
 
@@ -137,6 +138,7 @@ def _menu_item_cmd(dotted: str) -> str:
 def install_menu() -> None:
     if not in_maya():
         return
+    init_from_config()
     import maya.cmds as cmds
 
     g_main = _main_window_name()
@@ -172,20 +174,20 @@ def install_menu() -> None:
         menu_parent = fallback
 
     cmds.menuItem(
-        label="打开面板",
+        label=t("menu.open"),
         parent=menu_parent,
         command=_menu_item_cmd("open_ui"),
         sourceType="python",
     )
     cmds.menuItem(
-        label="重新加载",
+        label=t("menu.reload"),
         parent=menu_parent,
         command=_menu_item_cmd("reload_plugin"),
         sourceType="python",
     )
     cmds.menuItem(divider=True, parent=menu_parent)
     cmds.menuItem(
-        label="关于 Maya Agent",
+        label=t("menu.about"),
         parent=menu_parent,
         command=_menu_item_cmd("show_about"),
         sourceType="python",
@@ -205,6 +207,7 @@ def install_menu() -> None:
 def install_shelf() -> None:
     if not in_maya():
         return
+    init_from_config()
     import maya.cmds as cmds
     import maya.mel as mel
 
@@ -243,7 +246,7 @@ def install_shelf() -> None:
     cmds.shelfButton(
         parent=SHELF_NAME,
         label=SHELF_BUTTON_LABEL,
-        annotation="Maya Agent — 打开 AI 助手面板",
+        annotation=t("menu.shelf_annotation"),
         image="pythonFamily.png",
         image1="pythonFamily.png",
         style="iconAndTextVertical",
@@ -302,7 +305,7 @@ def _ensure_button_on_shelf(shelf: str, cmd: str) -> None:
     cmds.shelfButton(
         parent=shelf,
         label=SHELF_BUTTON_LABEL,
-        annotation="Maya Agent — 打开 AI 助手面板",
+        annotation=t("menu.shelf_annotation"),
         image="pythonFamily.png",
         image1="pythonFamily.png",
         style="iconAndTextVertical",
@@ -414,9 +417,10 @@ def show_about(*_args) -> None:
     import maya.cmds as cmds
     from maya_agent import __app_name__, __version__
 
+    init_from_config()
     cmds.confirmDialog(
-        title="关于",
-        message=f"{__app_name__} v{__version__}\nAI Assistant for Maya game pipelines.",
+        title=t("about.title"),
+        message=t("about.body", version=__version__),
         button=["OK"],
     )
 

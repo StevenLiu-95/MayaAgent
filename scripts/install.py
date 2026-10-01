@@ -5,6 +5,8 @@ Usage:
   python scripts/install.py
   python scripts/install.py --maya-version 2025
   python scripts/install.py --uninstall
+  python scripts/install.py --skip-deps
+  python scripts/install.py --force-deps
 """
 
 from __future__ import annotations
@@ -247,7 +249,7 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
         return
     root_fwd = str(root).replace("\\", "/")
     mod.write_text(
-        f"+ MayaAgent 1.3.2 {root_fwd}\n"
+        f"+ MayaAgent 1.3.3 {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",
@@ -561,24 +563,78 @@ def install_all(
     return shared_root or root
 
 
+def install_python_deps(
+    versions: list[str] | None = None,
+    *,
+    force: bool = False,
+) -> int:
+    """
+    Install httpx / requests / PyYAML into each Maya mayapy (and .vendor fallback).
+
+    Returns number of version failures (0 = all ok).
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "install_deps.py"
+    spec = importlib.util.spec_from_file_location("maya_agent_install_deps", path)
+    if spec is None or spec.loader is None:
+        print(f"[警告] 无法加载 {path}")
+        return 1
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    vers = list(versions or [])
+    if not vers:
+        vers = maya_versions_on_disk() or ["2022", "2023", "2024", "2025", "2026"]
+    print("\n---------- Python 依赖 (mayapy / .vendor) ----------")
+    return int(mod.install_versions(vers, force=force, allow_vendor=True))
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Install Maya Agent into Maya")
     parser.add_argument("--maya-version", default="", help="e.g. 2025; default=all detected")
     parser.add_argument("--uninstall", action="store_true")
+    parser.add_argument(
+        "--skip-deps",
+        action="store_true",
+        help="Skip mayapy dependency install (hooks only)",
+    )
+    parser.add_argument(
+        "--force-deps",
+        action="store_true",
+        help="Force reinstall Python deps even if already present",
+    )
     args = parser.parse_args(argv)
 
     versions = [args.maya_version] if args.maya_version else None
+
+    dep_failures = 0
+    if not args.uninstall and not args.skip_deps:
+        try:
+            dep_failures = install_python_deps(versions, force=args.force_deps)
+        except Exception as e:
+            dep_failures = 1
+            print(f"[警告] 依赖安装异常: {e}")
+
     install_all(versions, PROJECT_ROOT, uninstall=args.uninstall)
 
     if not args.uninstall:
+        dep_hint = ""
+        if dep_failures:
+            dep_hint = (
+                "\n⚠ 部分 mayapy 依赖未装好。对话需要 httpx。\n"
+                "  请重新运行 install.bat，或:\n"
+                "  python scripts/install_deps.py --force\n"
+                "  若仍失败，脚本会写入项目 .vendor 目录作为兜底。\n"
+            )
         print(
             "\n安装完成。请完全退出并重启 Maya。\n"
             "启动后 Script Editor 应出现:\n"
             "  [Maya Agent] plug-in loading…\n"
             "  [Maya Agent] menu OK: …\n"
             "顶部菜单应有「Maya Agent」，工具架有「MayaAgent」。\n"
-            "若仍没有，可把项目根目录的 install_dragdrop.mel 拖进 Maya 视口，\n"
-            "或在 Script Editor 执行:\n"
+            f"{dep_hint}"
+            "若仍没有菜单，可把项目根目录的 install_dragdrop.mel 拖进 Maya 视口，\n"
+            "或在 Script Editor（Python）执行:\n"
             "  import maya_agent; maya_agent.reload()\n"
             "并检查 Plug-in Manager 中 MayaAgent.py 是否勾选 Loaded/Auto load。\n"
         )
@@ -589,7 +645,7 @@ def main(argv=None) -> int:
             "  import maya_agent; maya_agent.plugin.menu.uninstall_ui()\n"
             "或在 Plug-in Manager 中卸载 MayaAgent.py，然后重启 Maya。\n"
         )
-    return 0
+    return 1 if (not args.uninstall and dep_failures) else 0
 
 
 if __name__ == "__main__":

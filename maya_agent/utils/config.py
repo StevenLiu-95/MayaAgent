@@ -48,6 +48,7 @@ class Config:
                 with open(user_file, "r", encoding="utf-8") as f:
                     user = json.load(f)
                 self._deep_merge(self._data, user)
+                self._migrate_ui_scale(user)
             except (json.JSONDecodeError, OSError):
                 pass
         secrets_file = user_secrets_path()
@@ -57,6 +58,21 @@ class Config:
                     self._secrets = json.load(f)
             except (json.JSONDecodeError, OSError):
                 self._secrets = {}
+
+    def _migrate_ui_scale(self, user: Dict[str, Any]) -> None:
+        """Convert legacy ui.font_size to ui.ui_scale when user never saved ui_scale."""
+        user_ui = user.get("ui") if isinstance(user, dict) else None
+        if not isinstance(user_ui, dict):
+            return
+        if "ui_scale" in user_ui or "font_size" not in user_ui:
+            return
+        try:
+            scale = int(round(float(user_ui["font_size"]) / 13 * 100))
+        except (TypeError, ValueError):
+            return
+        ui = self._data.setdefault("ui", {})
+        ui["ui_scale"] = max(75, min(175, scale))
+        ui.pop("font_size", None)
 
     @staticmethod
     def _load_default_config() -> Dict[str, Any]:
@@ -111,6 +127,9 @@ class Config:
     def save_user(self) -> None:
         # Persist only user-overridable slices
         payload = {
+            "app": {
+                "language": self.get("app.language", "zh-CN"),
+            },
             "llm": self._data.get("llm", {}),
             "ui": self._data.get("ui", {}),
             "agent": self._data.get("agent", {}),
@@ -157,13 +176,59 @@ class Config:
             json.dump(self._secrets, f, ensure_ascii=False, indent=2)
 
     def system_prompt(self) -> str:
-        prompt_rel = self.get("llm.system_prompt_file", "prompts/system_zh.md")
+        from maya_agent.i18n import (
+            get_language,
+            reply_language_name,
+            system_prompt_relpath,
+        )
         from maya_agent.utils.paths import project_root
 
-        path = project_root() / "resources" / prompt_rel
+        lang = str(self.get("app.language") or get_language() or "zh-CN")
+        # Prefer language-matched prompt; keep override only when it still exists.
+        configured = self.get("llm.system_prompt_file", "")
+        rel = system_prompt_relpath(lang)
+        if configured and configured not in (
+            "prompts/system_zh.md",
+            "prompts/system_en.md",
+            "",
+        ):
+            # Custom prompt file from advanced users
+            rel = configured
+
+        path = project_root() / "resources" / rel
+        if not path.exists():
+            # Fallback chain
+            for candidate in (
+                system_prompt_relpath(lang),
+                "prompts/system_en.md",
+                "prompts/system_zh.md",
+            ):
+                alt = project_root() / "resources" / candidate
+                if alt.exists():
+                    path = alt
+                    break
         if path.exists():
-            return path.read_text(encoding="utf-8")
-        return "You are Maya Agent, an expert Autodesk Maya assistant for game development."
+            text = path.read_text(encoding="utf-8")
+        else:
+            text = (
+                "You are Maya Agent, an expert Autodesk Maya assistant "
+                "for game development."
+            )
+
+        reply_name = reply_language_name(lang)
+        if lang == "zh-CN":
+            return text
+        if lang == "zh-TW":
+            return (
+                text
+                + "\n\n## 輸出語言\n請使用繁體中文回覆使用者。"
+            )
+        if lang == "en-US":
+            return text
+        return (
+            text
+            + f"\n\n## Output language\nAlways reply to the user in {reply_name}."
+        )
 
 
 _CONFIG: Optional[Config] = None

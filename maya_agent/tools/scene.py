@@ -2,14 +2,131 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 from maya_agent.tools.registry import ToolResult, obj_schema, tool
 from maya_agent.tools._maya import cmds as _cmds, in_maya
 
+
+def _scene_bbox() -> Optional[Dict[str, Any]]:
+    c = _cmds()
+    meshes = c.ls(type="mesh", long=True) or []
+    if not meshes:
+        return None
+    transforms: List[str] = []
+    for m in meshes:
+        parents = c.listRelatives(m, parent=True, fullPath=True) or []
+        transforms.append(parents[0] if parents else m)
+    transforms = list(dict.fromkeys(transforms))
+    try:
+        bb = c.exactWorldBoundingBox(transforms)
+    except Exception:
+        return None
+    size = [float(bb[3] - bb[0]), float(bb[4] - bb[1]), float(bb[5] - bb[2])]
+    center = [
+        0.5 * (bb[0] + bb[3]),
+        0.5 * (bb[1] + bb[4]),
+        0.5 * (bb[2] + bb[5]),
+    ]
+    return {
+        "min": [float(bb[0]), float(bb[1]), float(bb[2])],
+        "max": [float(bb[3]), float(bb[4]), float(bb[5])],
+        "center": center,
+        "size": size,
+        "diagonal": float(math.sqrt(sum(s * s for s in size))),
+        "mesh_count": len(meshes),
+    }
+
+
+def _camera_clip_summary() -> List[Dict[str, Any]]:
+    c = _cmds()
+    shapes = c.ls(type="camera", long=True) or []
+    out: List[Dict[str, Any]] = []
+    for shape in shapes:
+        parents = c.listRelatives(shape, parent=True, fullPath=True) or []
+        cam = parents[0] if parents else shape
+        short = cam.split("|")[-1]
+        # Skip default startup cameras' shape-only noise; still include them
+        entry: Dict[str, Any] = {"camera": short, "shape": shape.split("|")[-1]}
+        try:
+            entry["position"] = [float(x) for x in c.xform(cam, q=True, ws=True, t=True)]
+        except Exception:
+            pass
+        for attr, key in (
+            ("nearClipPlane", "near_clip"),
+            ("farClipPlane", "far_clip"),
+            ("focalLength", "focal_length"),
+            ("orthographic", "orthographic"),
+            ("orthographicWidth", "orthographic_width"),
+        ):
+            try:
+                if c.attributeQuery(attr, node=shape, exists=True):
+                    val = c.getAttr(f"{shape}.{attr}")
+                    entry[key] = bool(val) if attr == "orthographic" else float(val)
+            except Exception:
+                pass
+        out.append(entry)
+    return out
+
+
+def _material_distribution(limit: int = 40) -> List[Dict[str, Any]]:
+    c = _cmds()
+    sgs = c.ls(type="shadingEngine") or []
+    rows: List[Dict[str, Any]] = []
+    for sg in sgs:
+        if sg in ("initialShadingGroup", "initialParticleSE"):
+            continue
+        try:
+            members = c.sets(sg, q=True) or []
+        except Exception:
+            members = []
+        if not members:
+            continue
+        shaders = c.listConnections(f"{sg}.surfaceShader") or []
+        rows.append(
+            {
+                "shading_group": sg,
+                "shader": shaders[0] if shaders else "",
+                "object_count": len(members),
+            }
+        )
+    rows.sort(key=lambda r: r["object_count"], reverse=True)
+    return rows[:limit]
+
+
+def _clip_coverage_hints(
+    bbox: Optional[Dict[str, Any]], cameras: List[Dict[str, Any]]
+) -> List[str]:
+    if not bbox:
+        return []
+    hints: List[str] = []
+    center = bbox["center"]
+    diag = float(bbox.get("diagonal") or 0)
+    for cam in cameras:
+        far = cam.get("far_clip")
+        pos = cam.get("position")
+        if far is None or not pos:
+            continue
+        dist = math.sqrt(
+            (pos[0] - center[0]) ** 2
+            + (pos[1] - center[1]) ** 2
+            + (pos[2] - center[2]) ** 2
+        )
+        if dist + diag * 0.5 > float(far) * 0.95:
+            hints.append(
+                f"{cam.get('camera')}: 场景可能超出 farClip"
+                f"（距中心≈{dist:.0f}，对角≈{diag:.0f}，far≈{far:.0f}）"
+            )
+    return hints
+
+
 @tool(
     name="get_scene_info",
-    description="获取当前场景摘要：文件路径、Maya版本、选中物体、对象统计。",
+    description=(
+        "获取场景体检摘要：文件/单位、对象统计、场景 bbox、"
+        "各相机 near/far/焦距/位置、材质→对象数量分布，以及裁剪面覆盖提示。"
+    ),
     parameters=obj_schema({}),
     category="scene",
 )
@@ -23,8 +140,12 @@ def get_scene_info() -> ToolResult:
     joints = c.ls(type="joint", long=True) or []
     cameras = c.ls(type="camera", long=True) or []
     lights = c.ls(type="light", long=True) or []
+    bbox = _scene_bbox()
+    cam_info = _camera_clip_summary()
+    mat_dist = _material_distribution()
+    clip_hints = _clip_coverage_hints(bbox, cam_info)
     data = {
-        "file": c.file(query=True, sceneName=True) or "(untitled)",
+        "file": (c.file(query=True, sceneName=True) or "(untitled)").replace("\\", "/"),
         "maya_version": c.about(version=True),
         "units": c.currentUnit(query=True, linear=True),
         "time_unit": c.currentUnit(query=True, time=True),
@@ -36,8 +157,15 @@ def get_scene_info() -> ToolResult:
             "cameras": len(cameras),
             "lights": len(lights),
         },
+        "scene_bbox": bbox,
+        "cameras": cam_info,
+        "materials": mat_dist,
+        "clip_warnings": clip_hints,
     }
-    return ToolResult(ok=True, data=data, message="场景信息已获取")
+    msg = "场景信息已获取"
+    if clip_hints:
+        msg = f"{msg} ⚠ " + "；".join(clip_hints[:3])
+    return ToolResult(ok=True, data=data, message=msg)
 
 @tool(
     name="list_selection",

@@ -14,6 +14,9 @@ def escape(text: str) -> str:
 
 _ZWSP = "\u200b"
 _LONG_RUN_RE = re.compile(r"\S{36,}")
+_URL_RE = re.compile(r"https?://[^\s<>'\"）\]}>]+", re.IGNORECASE)
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_URL_TRAIL = ".,;:!?。，、；：！？)]}\"'"
 
 
 def soft_break_long_runs(text: str, every: int = 36) -> str:
@@ -28,9 +31,46 @@ def soft_break_long_runs(text: str, every: int = 36) -> str:
     return _LONG_RUN_RE.sub(_split, text)
 
 
+def _trim_url(url: str) -> Tuple[str, str]:
+    """Split trailing punctuation from a matched URL → (url, trailer)."""
+    trail = ""
+    while url and url[-1] in _URL_TRAIL:
+        trail = url[-1] + trail
+        url = url[:-1]
+    return url, trail
+
+
+def _anchor(url: str, label: Optional[str] = None) -> str:
+    href = html.escape(url, quote=True)
+    text = escape(soft_break_long_runs(label if label is not None else url))
+    return (
+        f'<a href="{href}" style="color:#7ab4ef;text-decoration:underline;">{text}</a>'
+    )
+
+
+def linkify_plain(text: str) -> str:
+    """
+    Escape plain text, turn bare http(s) URLs into clickable anchors,
+    and soft-wrap long runs.
+    """
+    s = text or ""
+    out: List[str] = []
+    pos = 0
+    for m in _URL_RE.finditer(s):
+        out.append(escape(soft_break_long_runs(s[pos : m.start()])))
+        url, trail = _trim_url(m.group(0))
+        if url:
+            out.append(_anchor(url))
+        if trail:
+            out.append(escape(trail))
+        pos = m.end()
+    out.append(escape(soft_break_long_runs(s[pos:])))
+    return "".join(out)
+
+
 def escape_wrap(text: str) -> str:
-    """HTML-escape and soft-wrap long tokens for chat bubbles."""
-    return escape(soft_break_long_runs(text or ""))
+    """HTML-escape, linkify URLs, and soft-wrap long tokens for chat bubbles."""
+    return linkify_plain(text or "")
 
 
 # Opening / closing tags that models commonly emit (canonical + variants).
@@ -432,37 +472,50 @@ def markdown_to_html(text: str) -> str:
 
 
 def _inline(text: str) -> str:
-    """Inline markdown: code, bold, italic."""
-    s = escape(text)
-    # strip accidental leading pipe often seen in Maya long names pasted as `|node`
-    # keep content, soften code look
-    s = re.sub(
-        r"`([^`]+)`",
-        lambda m: (
-            '<span style="background-color:#32333c;color:#dcc9a0;padding:0 4px;'
-            f'font-family:Consolas,monospace;font-size:12px;">{_clean_code(m.group(1))}</span>'
-        ),
-        s,
-    )
-    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
-    s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", s)
-    # Soft-break remaining long runs (paths etc.) without touching HTML tags
-    parts = re.split(r"(<[^>]+>)", s)
-    for i, part in enumerate(parts):
-        if part.startswith("<"):
-            continue
-        parts[i] = soft_break_long_runs(part)
+    """Inline markdown: links, code, bold, italic + bare URL linkify."""
+    s = text or ""
+    parts: List[str] = []
+    pos = 0
+    for m in _MD_LINK_RE.finditer(s):
+        parts.append(_inline_segment(s[pos : m.start()]))
+        parts.append(_anchor(m.group(2), label=m.group(1)))
+        pos = m.end()
+    parts.append(_inline_segment(s[pos:]))
     return "".join(parts)
 
 
+def _inline_segment(text: str) -> str:
+    """Inline formatting for a span that has no markdown [text](url) links."""
+    s = text or ""
+    parts: List[str] = []
+    pos = 0
+    for m in re.finditer(r"`([^`]+)`", s):
+        parts.append(_format_text_with_style(s[pos : m.start()]))
+        parts.append(
+            '<span style="background-color:#32333c;color:#dcc9a0;padding:0 4px;'
+            f'font-family:Consolas,monospace;font-size:12px;">{_clean_code(m.group(1))}</span>'
+        )
+        pos = m.end()
+    parts.append(_format_text_with_style(s[pos:]))
+    return "".join(parts)
+
+
+def _format_text_with_style(text: str) -> str:
+    """Linkify + escape, then apply bold/italic on the HTML-safe result."""
+    s = linkify_plain(text)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", s)
+    return s
+
+
 def _clean_code(raw: str) -> str:
-    t = escape_wrap(raw.strip())
+    t = (raw or "").strip()
     # Maya DAG path often starts with | — keep last short name readable
     if t.startswith("|") and "|" in t[1:]:
         t = t.split("|")[-1]
     elif t.startswith("|"):
         t = t[1:]
-    return t
+    return escape(soft_break_long_runs(t))
 
 
 def summarize_tool_result_views(

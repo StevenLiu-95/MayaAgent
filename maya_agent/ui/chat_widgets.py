@@ -90,7 +90,12 @@ def create_chat_panel(parent=None):
             super().__init__(parent)
             self.setObjectName("bubbleBody")
             self.setFrameShape(QtWidgets.QFrame.NoFrame)
-            self.setOpenExternalLinks(True)
+            self.setOpenExternalLinks(False)
+            self.setOpenLinks(False)
+            try:
+                self.anchorClicked.connect(self._on_anchor)
+            except Exception:
+                self.setOpenExternalLinks(True)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.setMinimumWidth(0)
@@ -133,6 +138,11 @@ def create_chat_panel(parent=None):
             self.viewport().setPalette(pal)
             self._stream_cache = None
             self._stream_refit_n = 0
+
+        def _on_anchor(self, url):
+            from maya_agent.ui.image_viewer import open_external_url
+
+            open_external_url(url)
 
         def set_html(self, html: str):
             self._stream_cache = None
@@ -227,7 +237,10 @@ def create_chat_panel(parent=None):
             self.detail.setTextFormat(QtCore.Qt.RichText)
             self.detail.setObjectName("toolDetail")
             self.detail.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-            self.detail.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.detail.setTextInteractionFlags(
+                QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse
+            )
+            self.detail.setOpenExternalLinks(True)
             self.expand_btn = QtWidgets.QPushButton("展开全部")
             self.expand_btn.setObjectName("toolExpandBtn")
             self.expand_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -257,7 +270,7 @@ def create_chat_panel(parent=None):
 
         def set_images(self, images: Optional[List[Any]]) -> None:
             from maya_agent.llm.base import ImageAttachment
-            from maya_agent.ui.image_attach import pixmap_from_attachment
+            from maya_agent.ui.image_viewer import make_clickable_thumb
 
             while self._image_lay.count() > 1:
                 item = self._image_lay.takeAt(0)
@@ -265,28 +278,33 @@ def create_chat_panel(parent=None):
                 if w is not None:
                     w.deleteLater()
             shown = 0
+            gallery: List[Any] = []
             for img in images or []:
                 if isinstance(img, dict):
                     if not img.get("data_b64"):
                         continue
-                    att = ImageAttachment.from_dict(img)
+                    gallery.append(img)
                 elif getattr(img, "data_b64", ""):
+                    gallery.append(img)
+            for idx, img in enumerate(gallery):
+                if isinstance(img, dict):
+                    att = ImageAttachment.from_dict(img)
+                else:
                     att = img
-                else:
-                    continue
-                pix = pixmap_from_attachment(att, edge=96)
-                label = QtWidgets.QLabel(self._image_host)
-                label.setFixedSize(96, 72)
-                label.setAlignment(QtCore.Qt.AlignCenter)
-                label.setStyleSheet(
-                    "QLabel { background:#1a1b20; border:1px solid #5a4a30;"
-                    " border-radius:6px; }"
+                label = make_clickable_thumb(
+                    att,
+                    edge=96,
+                    fixed_w=96,
+                    fixed_h=72,
+                    parent=self._image_host,
+                    gallery=gallery,
+                    index=idx,
+                    tooltip=att.name or "视口截图",
+                    stylesheet=(
+                        "QLabel { background:#1a1b20; border:1px solid #5a4a30;"
+                        " border-radius:6px; }"
+                    ),
                 )
-                if pix is not None and not pix.isNull():
-                    label.setPixmap(pix)
-                else:
-                    label.setText("截图")
-                label.setToolTip(att.name or "视口截图")
                 self._image_lay.insertWidget(self._image_lay.count() - 1, label)
                 shown += 1
             self._image_host.setVisible(shown > 0)
@@ -885,7 +903,7 @@ def create_chat_panel(parent=None):
                     self._image_host.hide()
                 return
             from maya_agent.llm.base import ImageAttachment
-            from maya_agent.ui.image_attach import pixmap_from_attachment
+            from maya_agent.ui.image_viewer import make_clickable_thumb
 
             if self._image_host is None:
                 host = QtWidgets.QWidget(self.bubble)
@@ -904,25 +922,26 @@ def create_chat_panel(parent=None):
                     w = item.widget()
                     if w is not None:
                         w.deleteLater()
-            for img in images:
+            for idx, img in enumerate(images):
                 if isinstance(img, ImageAttachment):
                     att = img
                 else:
                     att = ImageAttachment.from_dict(img)
-                pix = pixmap_from_attachment(att, edge=88)
-                label = QtWidgets.QLabel(self._image_host)
-                label.setFixedSize(88, 88)
-                label.setAlignment(QtCore.Qt.AlignCenter)
-                label.setStyleSheet(
-                    "QLabel { background:#1a1b20; border:1px solid #4a5d78;"
-                    " border-radius:8px; }"
-                )
-                if pix is not None and not pix.isNull():
-                    label.setPixmap(pix)
-                else:
-                    label.setText("图片")
                 tip = att.name or att.mime or "图片"
-                label.setToolTip(tip)
+                label = make_clickable_thumb(
+                    att,
+                    edge=88,
+                    fixed_w=88,
+                    fixed_h=88,
+                    parent=self._image_host,
+                    gallery=images,
+                    index=idx,
+                    tooltip=tip,
+                    stylesheet=(
+                        "QLabel { background:#1a1b20; border:1px solid #4a5d78;"
+                        " border-radius:8px; }"
+                    ),
+                )
                 lay.insertWidget(lay.count() - 1, label)
             self._image_host.show()
 

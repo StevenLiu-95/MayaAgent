@@ -26,11 +26,13 @@ class ChatSession:
     ui_blocks: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def create(cls, title: str = "新对话") -> "ChatSession":
+    def create(cls, title: str = "") -> "ChatSession":
+        from maya_agent.i18n import t
+
         now = _now_iso()
         return cls(
             id=new_session_id(),
-            title=title,
+            title=(title or t("session.default_title")),
             created_at=now,
             updated_at=now,
         )

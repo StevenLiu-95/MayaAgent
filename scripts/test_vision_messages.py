@@ -90,7 +90,9 @@ def test_tool_specs_vision_filter():
     names_on = {t.name for t in tool_specs(vision=True)}
     names_off = {t.name for t in tool_specs(vision=False)}
     assert "capture_viewport" in names_on
+    assert "capture_viewport_views" in names_on
     assert "capture_viewport" not in names_off
+    assert "capture_viewport_views" not in names_off
     assert "get_scene_info" in names_off
 
 

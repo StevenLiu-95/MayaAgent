@@ -90,15 +90,76 @@ def _load_or_reload_plugin() -> None:
         print("[Maya Agent] plug-in load skipped:", e)
 
 
-def _check_optional_runtime_deps() -> list:
-    """Return missing optional packages needed for chat (not for menu/shelf)."""
-    missing = []
-    for mod, label in (("httpx", "httpx"), ("requests", "requests")):
+def _load_install_deps_module(root: Path):
+    path = root / "scripts" / "install_deps.py"
+    spec = importlib.util.spec_from_file_location("maya_agent_install_deps_mod", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _install_runtime_deps(root: Path, ver: str) -> tuple[bool, str]:
+    """
+    Install httpx/requests into this Maya's mayapy, with .vendor fallback.
+
+    Returns (ok, note_for_user).
+    """
+    try:
+        deps = _load_install_deps_module(root)
+    except Exception as e:
+        return False, f"无法加载 install_deps: {e}"
+
+    # Prefer mayapy next to the running Maya.exe
+    mayapy = None
+    try:
+        mayapy = deps.find_mayapy_beside_executable(sys.executable)
+    except Exception:
+        mayapy = None
+    if mayapy is None:
         try:
-            __import__(mod)
+            mayapy = deps.find_mayapy(ver)
+        except Exception:
+            mayapy = None
+
+    ok = False
+    try:
+        if mayapy is not None:
+            print(f"[Maya Agent] 安装依赖 → {mayapy}")
+            ok = bool(deps.install_for_mayapy(mayapy, allow_vendor=True))
+        else:
+            print("[Maya Agent] 未找到 mayapy，尝试 .vendor 兜底 …")
+            ok = bool(deps.install_to_vendor(deps.REQUIREMENTS))
+    except Exception as e:
+        print("[Maya Agent] 依赖安装异常:", e)
+        traceback.print_exc()
+        ok = False
+
+    # Ensure current Maya process can see .vendor immediately
+    try:
+        deps.ensure_vendor_on_sys_path()
+    except Exception:
+        vendor = root / ".vendor"
+        if vendor.is_dir() and str(vendor) not in sys.path:
+            sys.path.insert(0, str(vendor))
+
+    missing = []
+    for mod_name in ("httpx", "requests"):
+        try:
+            __import__(mod_name)
         except ImportError:
-            missing.append(label)
-    return missing
+            missing.append(mod_name)
+
+    if not missing:
+        return True, ""
+    note = (
+        f"\n\n注意: 对话依赖未就绪（缺 {', '.join(missing)}）。\n"
+        f"请在项目根目录运行 install.bat force，或:\n"
+        f"  python scripts/install_deps.py --maya-version {ver} --force\n"
+        f"  python scripts/install_deps.py --vendor-only"
+    )
+    return ok and not missing, note
 
 
 def run_install() -> dict:
@@ -112,6 +173,13 @@ def run_install() -> dict:
         result["version"] = ver
         print(f"[Maya Agent] 拖入式安装开始 — Maya {ver}")
         print(f"[Maya Agent] 项目路径: {root}")
+
+        # Deps first so subsequent maya_agent import can use .vendor
+        deps_ok, dep_note = _install_runtime_deps(root, ver)
+        if deps_ok:
+            print("[Maya Agent] 运行时依赖已就绪")
+        elif dep_note:
+            print("[Maya Agent] 运行时依赖未完全就绪")
 
         install_mod = _load_install_module(root)
         link_root = install_mod.install_version(ver, root, uninstall=False)
@@ -134,15 +202,6 @@ def run_install() -> dict:
             install_scene_hooks()
         except Exception as e:
             print("[Maya Agent] scene hooks:", e)
-
-        missing = _check_optional_runtime_deps()
-        dep_note = ""
-        if missing:
-            dep_note = (
-                f"\n\n注意: 对话依赖未就绪（缺 {', '.join(missing)}）。\n"
-                f"请重新运行项目根目录 install.bat，或用 mayapy 安装 requirements.txt。"
-            )
-            print("[Maya Agent] 可选依赖缺失:", ", ".join(missing))
 
         result["ok"] = True
         result["message"] = (

@@ -254,47 +254,8 @@ QLabel#statusSpinner {
     border: none;
 }
 
-QScrollArea#quickScroll {
+QWidget#quickHost {
     background: transparent;
-    border: none;
-    min-height: 30px;
-    max-height: 32px;
-}
-
-QScrollArea#quickScroll QWidget#quickHost {
-    background: transparent;
-}
-
-QScrollArea#quickScroll QScrollBar:horizontal {
-    background: #2a2b32;
-    height: 8px;
-    margin: 0px;
-    border: none;
-}
-
-QScrollArea#quickScroll QScrollBar::handle:horizontal {
-    background: #5a5b66;
-    border-radius: 4px;
-    min-width: 28px;
-}
-
-QScrollArea#quickScroll QScrollBar::handle:horizontal:hover {
-    background: #6e6f7a;
-}
-
-QScrollArea#quickScroll QScrollBar::add-line:horizontal,
-QScrollArea#quickScroll QScrollBar::sub-line:horizontal,
-QScrollArea#quickScroll QScrollBar::add-page:horizontal,
-QScrollArea#quickScroll QScrollBar::sub-page:horizontal {
-    width: 0;
-    height: 0;
-    background: transparent;
-    border: none;
-}
-
-QScrollArea#quickScroll QScrollBar:vertical {
-    width: 0;
-    height: 0;
     border: none;
 }
 
@@ -719,6 +680,18 @@ QListWidget::item:hover {
 
 QSplitter::handle {
     background: #3a3b44;
+}
+
+QSplitter#chatSplitter::handle {
+    background-color: #33343d;
+    border: none;
+    margin: 0;
+    border-radius: 0;
+    height: 1px;
+}
+
+QSplitter#chatSplitter::handle:hover {
+    background-color: #5b8fc7;
 }
 
 QGroupBox {

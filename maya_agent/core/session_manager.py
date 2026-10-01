@@ -11,6 +11,7 @@ from maya_agent.core.session_store import (
     load_project,
     save_project,
 )
+from maya_agent.i18n import t
 from maya_agent.llm.base import ChatMessage
 from maya_agent.utils.config import get_config
 from maya_agent.utils.logger import get_logger
@@ -30,7 +31,7 @@ class SessionManager:
         self.project = load_project(scene)
         self.project.scene_path = scene or self.project.scene_path
         if not self.project.sessions:
-            self.create_session("新对话", set_active=True, save_now=False)
+            self.create_session(t("session.default_title"), set_active=True, save_now=False)
             self.save()
         elif not self.project.active_session_id:
             self.project.active_session_id = self.project.sessions[0].id
@@ -50,10 +51,12 @@ class SessionManager:
 
     def create_session(
         self,
-        title: str = "新对话",
+        title: str = "",
         set_active: bool = True,
         save_now: bool = True,
     ) -> ChatSession:
+        if not (title or "").strip():
+            title = t("session.default_title")
         max_n = int(get_config().get("agent.max_sessions_per_project", 50))
         while len(self.project.sessions) >= max_n:
             oldest = min(self.project.sessions, key=lambda s: s.updated_at)
@@ -144,7 +147,14 @@ class SessionManager:
 
     @staticmethod
     def _maybe_auto_title(session: ChatSession, ui_blocks: List[dict]) -> None:
-        if session.title not in ("", "新对话", "对话"):
+        defaults = {
+            "",
+            "新对话",
+            "对话",
+            "New chat",
+            t("session.default_title"),
+        }
+        if session.title not in defaults:
             return
         for block in ui_blocks:
             if block.get("type") == "user":
@@ -162,14 +172,20 @@ class SessionManager:
     def save(self) -> None:
         if not get_config().get("agent.auto_save_sessions", True):
             return
-        save_project(self.project)
+        # Always write to the scene this ProjectChatData is bound to.
+        # Critical when Maya has already switched sceneName (AfterOpen) while
+        # we still hold the previous project's sessions in memory — otherwise
+        # we would overwrite the newly opened scene's sidecar with stale/empty
+        # chat data.
+        bound = (self.project.scene_path or "").strip()
+        save_project(self.project, bound if bound else None)
 
     def scene_label(self) -> str:
         path = get_maya_scene_path() or self.project.scene_path
         if not path:
-            return "未保存场景 · 会话暂存于用户目录"
+            return t("session.scene_untitled")
         name = path.replace("\\", "/").rsplit("/", 1)[-1]
-        return f"工程: {name}"
+        return t("session.scene_project", name=name)
 
     def storage_hint(self) -> str:
         from maya_agent.core.session_store import storage_path

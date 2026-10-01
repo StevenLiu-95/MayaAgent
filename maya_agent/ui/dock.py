@@ -35,7 +35,15 @@ def show_dockable():
         _create_workspace_control()
         _raise_workspace_control()
         return CONTROL_NAME
-    except Exception:
+    except Exception as exc:
+        print("[Maya Agent] dock create failed:", exc)
+        try:
+            import maya.cmds as cmds
+
+            if cmds.workspaceControl(CONTROL_NAME, exists=True):
+                cmds.deleteUI(CONTROL_NAME)
+        except Exception:
+            pass
         return _show_floating()
 
 
@@ -50,26 +58,22 @@ def _workspace_has_content() -> bool:
     try:
         import maya.OpenMayaUI as omui
 
-        import maya_agent.ui.main_window as mw
-
-        if mw._WINDOW_INSTANCE is not None:
-            try:
-                mw._WINDOW_INSTANCE.isVisible()
-                return True
-            except Exception:
-                mw._WINDOW_INSTANCE = None
-
         _, _, QtWidgets, _binding = import_qt()
         ctrl_ptr = omui.MQtUtil.findControl(CONTROL_NAME)
         if not ctrl_ptr:
             return False
         control_widget = wrap_maya_ptr(ctrl_ptr, QtWidgets.QWidget)
-        if getattr(control_widget, "_maya_agent_window", None) is not None:
+        if control_widget is None:
+            return False
+        # Real content is the reparented centralRoot, not an empty QMainWindow.
+        root = control_widget.findChild(QtWidgets.QWidget, "centralRoot")
+        if root is not None:
             return True
         layout = control_widget.layout()
-        if layout is None:
+        if layout is None or layout.count() == 0:
             return False
-        return layout.count() > 0
+        child = layout.itemAt(0).widget() if layout.itemAt(0) else None
+        return bool(child and child.objectName() == "centralRoot")
     except Exception:
         return False
 
@@ -150,7 +154,14 @@ def _create_workspace_control():
         ),
     )
 
-    _embed_window_into_control()
+    try:
+        _embed_window_into_control()
+    except Exception as exc:
+        import traceback
+
+        print("[Maya Agent] embed workspace UI failed:", exc)
+        traceback.print_exc()
+        raise
     return CONTROL_NAME
 
 

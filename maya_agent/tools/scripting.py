@@ -3,26 +3,55 @@
 from __future__ import annotations
 
 import io
+import re
 import traceback
+from typing import Optional
 from contextlib import redirect_stdout, redirect_stderr
 
 from maya_agent.tools.registry import ToolResult, obj_schema, tool
 from maya_agent.utils.maya_compat import in_maya
 
+
+def _guess_fail_line(tb_text: str) -> Optional[int]:
+    """Extract failing line number from traceback for <maya_agent> code."""
+    if not tb_text:
+        return None
+    matches = re.findall(r'File "<maya_agent>", line (\d+)', tb_text)
+    if not matches:
+        return None
+    try:
+        return int(matches[-1])
+    except ValueError:
+        return None
+
+
 @tool(
     name="execute_python",
-    description="在 Maya 中执行 Python 代码片段（可访问 maya.cmds）。用于复杂或尚未封装的操作。",
+    description=(
+        "在 Maya 中执行 Python 代码片段（可访问 maya.cmds）。"
+        "atomic=True（默认）时：异常会撤销本段 undo chunk，避免半改状态；"
+        "atomic=False 时保留已生效部分，并在返回中说明中止行号。"
+    ),
     parameters=obj_schema(
         {
             "code": {"type": "string", "description": "Python 源码"},
             "undo_chunk_name": {"type": "string", "default": "MayaAgentExec"},
+            "atomic": {
+                "type": "boolean",
+                "default": True,
+                "description": "异常时回滚本段 undo chunk（默认 True）",
+            },
         },
         required=["code"],
     ),
     category="scripting",
     destructive=True,
 )
-def execute_python(code: str, undo_chunk_name: str = "MayaAgentExec") -> ToolResult:
+def execute_python(
+    code: str,
+    undo_chunk_name: str = "MayaAgentExec",
+    atomic: bool = True,
+) -> ToolResult:
     if not in_maya():
         return ToolResult(ok=False, error="未在 Maya 中运行")
     import maya.cmds as cmds
@@ -30,36 +59,88 @@ def execute_python(code: str, undo_chunk_name: str = "MayaAgentExec") -> ToolRes
     stdout = io.StringIO()
     stderr = io.StringIO()
     local_ns = {"cmds": cmds, "__name__": "__maya_agent__"}
-    # If Agent turn already opened an undo chunk, avoid nested open/close here.
     own_chunk = True
     try:
-        # Heuristic: if undo is enabled we still open a chunk when running
-        # standalone; nested chunks inside MayaAgentTurn are OK but redundant.
         cmds.undoInfo(state=True)
         cmds.undoInfo(openChunk=True, chunkName=undo_chunk_name)
     except Exception:
         own_chunk = False
+
+    failed = False
+    fail_line = None
+    tb_text = ""
+    err_msg = ""
     try:
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exec(compile(code, "<maya_agent>", "exec"), local_ns, local_ns)
         result = local_ns.get("result", stdout.getvalue())
         return ToolResult(
             ok=True,
-            data={"result": result, "stdout": stdout.getvalue(), "stderr": stderr.getvalue()},
+            data={
+                "result": result,
+                "stdout": stdout.getvalue(),
+                "stderr": stderr.getvalue(),
+                "atomic": bool(atomic),
+            },
             message="脚本执行成功",
         )
     except Exception as e:
-        return ToolResult(
-            ok=False,
-            error=f"{type(e).__name__}: {e}",
-            data={"traceback": traceback.format_exc(), "stdout": stdout.getvalue()},
-        )
-    finally:
+        failed = True
+        tb_text = traceback.format_exc()
+        fail_line = _guess_fail_line(tb_text)
+        err_msg = f"{type(e).__name__}: {e}"
+        data = {
+            "traceback": tb_text,
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+            "atomic": bool(atomic),
+            "fail_line": fail_line,
+            "rolled_back": False,
+            "partial_applied": False,
+        }
+        # Close chunk first so undo can reverse the whole chunk
         if own_chunk:
             try:
                 cmds.undoInfo(closeChunk=True)
             except Exception:
                 pass
+            own_chunk = False
+
+        if atomic:
+            try:
+                cmds.undo()
+                data["rolled_back"] = True
+                note = "已回滚本段修改（atomic=True）"
+                if fail_line:
+                    note = f"第 {fail_line} 行中止；{note}"
+                return ToolResult(ok=False, error=f"{err_msg}。{note}", data=data)
+            except Exception as undo_err:
+                data["rolled_back"] = False
+                data["partial_applied"] = True
+                data["undo_error"] = str(undo_err)
+                note = "回滚失败，前序步骤可能已生效"
+                if fail_line:
+                    note = f"第 {fail_line} 行中止；{note}"
+                return ToolResult(ok=False, error=f"{err_msg}。{note}", data=data)
+
+        data["partial_applied"] = True
+        note = "前序步骤已生效（atomic=False，未回滚）"
+        if fail_line:
+            note = f"第 {fail_line} 行中止；{note}"
+        return ToolResult(ok=False, error=f"{err_msg}。{note}", data=data)
+    finally:
+        if own_chunk and not failed:
+            try:
+                cmds.undoInfo(closeChunk=True)
+            except Exception:
+                pass
+        elif own_chunk and failed:
+            # Safety: ensure chunk closed if error path didn't
+            try:
+                cmds.undoInfo(closeChunk=True)
+            except Exception:
+                pass
+
 
 @tool(
     name="execute_mel",
@@ -81,6 +162,7 @@ def execute_mel(command: str) -> ToolResult:
         return ToolResult(ok=True, data=result, message="MEL 执行成功")
     except Exception as e:
         return ToolResult(ok=False, error=str(e))
+
 
 @tool(
     name="generate_python_snippet",

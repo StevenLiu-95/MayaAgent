@@ -8,8 +8,10 @@ import traceback
 from maya_agent import __app_name__, __version__
 from maya_agent.core.agent import MayaAgent
 from maya_agent.core.session_manager import SessionManager
+from maya_agent.i18n import init_from_config, t
 from maya_agent.ui.chat_widgets import create_chat_panel
 from maya_agent.ui.combo_widgets import create_toolbar_combo
+from maya_agent.ui.flow_layout import create_flow_layout
 from maya_agent.ui.settings_panel import (
     create_help_panel,
     create_settings_panel,
@@ -32,7 +34,6 @@ from maya_agent.ui.image_attach import (
     attachment_from_path,
     attachments_from_clipboard,
     is_image_path,
-    pixmap_from_attachment,
 )
 
 _WINDOW_INSTANCE = None
@@ -79,20 +80,15 @@ def load_stylesheet_safe() -> str:
 
 def show_main_window():
     """Show Agent UI — docked in Maya when possible, otherwise floating."""
+    init_from_config()
     if in_maya():
         try:
             from maya_agent.ui.dock import show_dockable
 
             result = show_dockable()
-            # Fallback if dock reported OK but nothing usable is visible.
-            win = get_window_instance()
-            if win is not None:
-                try:
-                    win.show()
-                    win.raise_()
-                    win.activateWindow()
-                except Exception:
-                    pass
+            # Do not show() the QMainWindow after docking: its central widget
+            # is reparented into the workspaceControl; showing the empty shell
+            # hides the real UI.
             return result
         except Exception:
             pass
@@ -102,6 +98,7 @@ def show_main_window():
 def show_floating_window():
     """Show or raise a floating Maya Agent window."""
     global _WINDOW_INSTANCE
+    init_from_config()
     QtCore, QtGui, QtWidgets, binding = import_qt()
 
     if _WINDOW_INSTANCE is not None:
@@ -119,6 +116,53 @@ def show_floating_window():
     win.show()
     _WINDOW_INSTANCE = win
     return win
+
+
+def reopen_main_window():
+    """Close and recreate the panel (used after language change)."""
+    global _WINDOW_INSTANCE
+    win = get_window_instance()
+    if win is not None:
+        try:
+            win.persist_sessions()
+        except Exception:
+            pass
+
+    init_from_config()
+
+    if in_maya():
+        try:
+            import maya.cmds as cmds
+            from maya_agent.ui.dock import CONTROL_NAME
+
+            if cmds.workspaceControl(CONTROL_NAME, exists=True):
+                try:
+                    cmds.deleteUI(CONTROL_NAME)
+                except Exception:
+                    try:
+                        cmds.workspaceControl(CONTROL_NAME, edit=True, close=True)
+                    except Exception:
+                        pass
+            _WINDOW_INSTANCE = None
+            # Refresh Maya menu labels for the new language
+            try:
+                from maya_agent.plugin import menu as menu_mod
+
+                menu_mod.install_menu()
+                menu_mod.install_shelf()
+            except Exception:
+                pass
+            return show_main_window()
+        except Exception:
+            pass
+
+    if _WINDOW_INSTANCE is not None:
+        try:
+            _WINDOW_INSTANCE.close()
+        except Exception:
+            pass
+        _WINDOW_INSTANCE = None
+    return show_floating_window()
 
 
 class _WorkerSignals:
@@ -236,7 +280,7 @@ class MayaAgentWindow:
                 session_row.setContentsMargins(0, 0, 0, 0)
                 session_row.setSpacing(6)
 
-                session_lab = QtWidgets.QLabel("会话")
+                session_lab = QtWidgets.QLabel(t("session.label"))
                 session_lab.setObjectName("toolbarLabel")
                 session_lab.setFixedHeight(28)
 
@@ -249,19 +293,19 @@ class MayaAgentWindow:
                 )
                 self.session_combo.activated.connect(self._on_session_activated)
 
-                new_sess_btn = QtWidgets.QPushButton("新建")
+                new_sess_btn = QtWidgets.QPushButton(t("session.new"))
                 new_sess_btn.setObjectName("toolbarBtn")
                 new_sess_btn.setFixedSize(52, 28)
                 new_sess_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 new_sess_btn.clicked.connect(self._on_new_session)
 
-                rename_sess_btn = QtWidgets.QPushButton("重命名")
+                rename_sess_btn = QtWidgets.QPushButton(t("session.rename"))
                 rename_sess_btn.setObjectName("toolbarBtn")
                 rename_sess_btn.setFixedSize(64, 28)
                 rename_sess_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 rename_sess_btn.clicked.connect(self._on_rename_session)
 
-                del_sess_btn = QtWidgets.QPushButton("删除")
+                del_sess_btn = QtWidgets.QPushButton(t("session.delete"))
                 del_sess_btn.setObjectName("toolbarBtn")
                 del_sess_btn.setFixedSize(52, 28)
                 del_sess_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -282,54 +326,64 @@ class MayaAgentWindow:
 
                 chat_layout.addWidget(self._build_session_bar())
 
+                splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+                splitter.setObjectName("chatSplitter")
+                splitter.setChildrenCollapsible(False)
+                splitter.setHandleWidth(3)
+                try:
+                    splitter.setOpaqueResize(True)
+                except Exception:
+                    pass
+
                 self.chat = create_chat_panel(chat_page)
                 self.chat.set_choice_handler(self._on_choice_reply)
-                chat_layout.addWidget(self.chat, 1)
+                splitter.addWidget(self.chat)
 
-                # 对话区底部：紧凑输入区（输入框 + 底栏状态/操作）
-                chat_layout.addWidget(self._build_composer())
-                self.tabs.addTab(chat_page, "对话")
+                composer = self._build_composer()
+                splitter.addWidget(composer)
+                splitter.setStretchFactor(0, 1)
+                splitter.setStretchFactor(1, 0)
+                splitter.splitterMoved.connect(self._on_composer_splitter_moved)
+
+                self._chat_splitter = splitter
+                self._composer_save_timer = QtCore.QTimer(self)
+                self._composer_save_timer.setSingleShot(True)
+                self._composer_save_timer.setInterval(400)
+                self._composer_save_timer.timeout.connect(self._persist_composer_height)
+
+                chat_layout.addWidget(splitter, 1)
+                self.tabs.addTab(chat_page, t("tab.chat"))
+                self._chat_tab_index = self.tabs.count() - 1
+                QtCore.QTimer.singleShot(0, self._apply_composer_splitter_sizes)
 
             def _build_composer(self):
                 composer = QtWidgets.QFrame()
                 composer.setObjectName("composerFrame")
+                composer.setMinimumHeight(96)
+                composer.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+                )
                 composer_layout = QtWidgets.QVBoxLayout(composer)
                 composer_layout.setContentsMargins(8, 6, 8, 6)
                 composer_layout.setSpacing(4)
 
-                # 展开后的快捷芯片（默认收起）
+                # 展开后的快捷芯片（默认收起，超出宽度自动换行）
                 self._quick_body = QtWidgets.QWidget()
-                body_lay = QtWidgets.QVBoxLayout(self._quick_body)
-                body_lay.setContentsMargins(0, 0, 0, 0)
-                body_lay.setSpacing(0)
-
-                quick_scroll = QtWidgets.QScrollArea()
-                quick_scroll.setObjectName("quickScroll")
-                quick_scroll.setWidgetResizable(False)
-                quick_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-                quick_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-                quick_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-                quick_scroll.setFixedHeight(30)
-                quick_scroll.setSizePolicy(
-                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+                self._quick_body.setObjectName("quickHost")
+                self._quick_body.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
                 )
-                quick_scroll.viewport().installEventFilter(self)
-                self._quick_scroll = quick_scroll
-
-                quick_host = QtWidgets.QWidget()
-                quick_host.setObjectName("quickHost")
-                quick = QtWidgets.QHBoxLayout(quick_host)
-                quick.setContentsMargins(0, 0, 0, 0)
-                quick.setSpacing(6)
-                quick.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
+                quick = create_flow_layout(hspacing=6, vspacing=6)
+                self._quick_body.setLayout(quick)
+                self._quick_scroll = None
                 for label, prompt in (
-                    ("场景信息", "请查看当前场景信息并简要汇总。"),
-                    ("网格统计", "对当前选中的网格做拓扑统计。"),
-                    ("导出 FBX", "帮我把当前选择的网格导出为FBX文件。"),
-                    ("三点光", "在场景中创建三点布光。"),
-                    ("生成建筑", "请你在当前场景中搭建一个现代建筑。要求：风格现代化，结构正确，细节丰富。"),
-                    ("新建场景", "新建一个空场景。"),
-                    ("清空场景", "清空当前场景。"),
+                    (t("quick.scene"), t("quick.scene_prompt")),
+                    (t("quick.mesh"), t("quick.mesh_prompt")),
+                    (t("quick.fbx"), t("quick.fbx_prompt")),
+                    (t("quick.light"), t("quick.light_prompt")),
+                    (t("quick.building"), t("quick.building_prompt")),
+                    (t("quick.new_scene"), t("quick.new_scene_prompt")),
+                    (t("quick.clear_scene"), t("quick.clear_scene_prompt")),
                 ):
                     b = QtWidgets.QPushButton(label)
                     b.setObjectName("chipBtn")
@@ -339,8 +393,6 @@ class MayaAgentWindow:
                     )
                     b.clicked.connect(lambda checked=False, p=prompt: self._quick(p))
                     quick.addWidget(b)
-                quick_scroll.setWidget(quick_host)
-                body_lay.addWidget(quick_scroll)
                 self._quick_body.hide()
                 composer_layout.addWidget(self._quick_body)
 
@@ -363,14 +415,15 @@ class MayaAgentWindow:
 
                 self.input_edit = QtWidgets.QPlainTextEdit()
                 self.input_edit.setObjectName("composerInput")
-                self.input_edit.setPlaceholderText(
-                    "描述你想做的事，可附带图片…  Enter 发送，Shift+Enter 换行"
+                self.input_edit.setPlaceholderText(t("composer.placeholder_vision"))
+                self.input_edit.setMinimumHeight(48)
+                self.input_edit.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
                 )
-                self.input_edit.setFixedHeight(68)
                 self.input_edit.setAcceptDrops(True)
                 self.input_edit.installEventFilter(self)
                 self.input_edit.viewport().installEventFilter(self)
-                composer_layout.addWidget(self.input_edit)
+                composer_layout.addWidget(self.input_edit, 1)
 
                 # 底栏：附件 + 状态 + 快捷 / 清空 / 发送·停止（合并）
                 action_row = QtWidgets.QHBoxLayout()
@@ -390,7 +443,7 @@ class MayaAgentWindow:
                     QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
                 )
 
-                self._quick_toggle = QtWidgets.QPushButton("快捷")
+                self._quick_toggle = QtWidgets.QPushButton(t("composer.quick"))
                 self._quick_toggle.setObjectName("quickCmdBtn")
                 self._quick_toggle.setCursor(QtCore.Qt.PointingHandCursor)
                 self._quick_toggle.setCheckable(True)
@@ -399,14 +452,14 @@ class MayaAgentWindow:
                 self._quick_toggle.setMinimumWidth(44)
                 self._quick_toggle.toggled.connect(self._on_quick_commands_toggled)
 
-                clear_btn = QtWidgets.QPushButton("清空")
+                clear_btn = QtWidgets.QPushButton(t("composer.clear"))
                 clear_btn.setObjectName("composerBtn")
                 clear_btn.setFixedSize(44, 26)
                 clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
                 clear_btn.clicked.connect(self._on_clear)
 
                 # 发送 / 停止 合并：空闲绿「发送」，忙碌红「停止」
-                self.send_btn = QtWidgets.QPushButton("发送")
+                self.send_btn = QtWidgets.QPushButton(t("composer.send"))
                 self.send_btn.setObjectName("sendBtn")
                 self.send_btn.setFixedSize(56, 26)
                 self.send_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -423,13 +476,53 @@ class MayaAgentWindow:
                 self._sync_quick_toggle_label()
                 return composer
 
+            def _apply_composer_splitter_sizes(self) -> None:
+                splitter = getattr(self, "_chat_splitter", None)
+                if splitter is None:
+                    return
+                total = int(splitter.height() or 0)
+                if total <= 0:
+                    QtCore.QTimer.singleShot(50, self._apply_composer_splitter_sizes)
+                    return
+                desired = int(get_config().get("ui.composer_height", 120) or 120)
+                min_composer = max(96, int(splitter.widget(1).minimumHeight() or 96))
+                max_composer = max(min_composer, total // 2)
+                composer_h = max(min_composer, min(desired, max_composer))
+                chat_h = max(120, total - composer_h)
+                splitter.blockSignals(True)
+                splitter.setSizes([chat_h, composer_h])
+                splitter.blockSignals(False)
+
+            def _on_composer_splitter_moved(self, *_args) -> None:
+                timer = getattr(self, "_composer_save_timer", None)
+                if timer is not None:
+                    timer.start()
+
+            def _persist_composer_height(self) -> None:
+                splitter = getattr(self, "_chat_splitter", None)
+                if splitter is None:
+                    return
+                sizes = splitter.sizes()
+                if len(sizes) < 2 or sizes[1] <= 0:
+                    return
+                cfg = get_config()
+                cfg.set("ui.composer_height", int(sizes[1]))
+                try:
+                    cfg.save_user()
+                except Exception:
+                    pass
+
             def _sync_quick_toggle_label(self) -> None:
                 if not getattr(self, "_quick_toggle", None):
                     return
                 expanded = bool(self._quick_toggle.isChecked())
-                self._quick_toggle.setText("收起" if expanded else "快捷")
+                self._quick_toggle.setText(
+                    t("composer.collapse") if expanded else t("composer.quick")
+                )
                 self._quick_toggle.setToolTip(
-                    "收起快捷命令" if expanded else "展开快捷命令"
+                    t("composer.collapse_tip")
+                    if expanded
+                    else t("composer.quick_tip")
                 )
 
             def _on_quick_commands_toggled(self, checked: bool) -> None:
@@ -442,34 +535,20 @@ class MayaAgentWindow:
                     self,
                     on_saved=self._on_settings_saved,
                 )
-                self.tabs.addTab(self.settings_panel, "设置")
+                self.tabs.addTab(self.settings_panel, t("tab.settings"))
 
             def _build_tools_tab(self):
                 self.tools_panel = create_tools_panel(
                     self,
                     on_tool_use=self._use_tool_from_settings,
                 )
-                self.tabs.addTab(self.tools_panel, "工具")
+                self.tabs.addTab(self.tools_panel, t("tab.tools"))
 
             def _build_help_tab(self):
                 self.help_panel = create_help_panel(self)
-                self.tabs.addTab(self.help_panel, "帮助")
+                self.tabs.addTab(self.help_panel, t("tab.help"))
 
             def eventFilter(self, obj, event):
-                # 快捷栏：鼠标滚轮改为横向滑动
-                if (
-                    hasattr(self, "_quick_scroll")
-                    and self._quick_scroll is not None
-                    and obj is self._quick_scroll.viewport()
-                    and event.type() == QtCore.QEvent.Wheel
-                ):
-                    bar = self._quick_scroll.horizontalScrollBar()
-                    delta = event.angleDelta().y()
-                    if delta == 0:
-                        delta = event.angleDelta().x()
-                    bar.setValue(bar.value() - delta)
-                    return True
-
                 if self._is_composer_target(obj) and event.type() == QtCore.QEvent.KeyPress:
                     mods = event.modifiers()
                     ctrl_v = event.key() == QtCore.Qt.Key_V and bool(
@@ -640,11 +719,14 @@ class MayaAgentWindow:
                 if self._worker and self._worker.isRunning():
                     return
                 self._cancel_pending_save()
+                # Flush UI into the *currently bound* project and save to that
+                # project's sidecar first. Do NOT write into the newly opened
+                # scene path — get_maya_scene_path() already points there.
                 self._persist_active_session(refresh_combo=False)
                 self.sessions.reload_from_disk()
                 self._load_active_session()
                 if reload_only:
-                    self.status_label.setText("已切换工程会话")
+                    self.status_label.setText(t("session.project_switched"))
 
             def _on_session_activated(self, index: int):
                 if self._session_switching:
@@ -658,7 +740,7 @@ class MayaAgentWindow:
                     return
                 if self._worker and self._worker.isRunning():
                     QtWidgets.QMessageBox.information(
-                        self, "切换会话", "请等待当前回复完成后再切换会话。"
+                        self, t("session.switch_title"), t("session.switch_busy")
                     )
                     self._select_session_in_combo(self.sessions.active().id)
                     return
@@ -679,24 +761,24 @@ class MayaAgentWindow:
                     self._select_session_in_combo(session.id)
                 except KeyError:
                     self._refresh_session_combo()
-                    self.status_label.setText("切换失败：会话不存在")
+                    self.status_label.setText(t("session.switch_fail"))
                     return
                 except Exception:
                     self._refresh_session_combo()
-                    self.status_label.setText("切换会话出错")
+                    self.status_label.setText(t("session.switch_error"))
                     return
                 finally:
                     self._session_switching = False
 
                 if session is not None:
-                    self.status_label.setText(f"已切换: {session.title}")
+                    self.status_label.setText(t("session.switched", title=session.title))
 
             def _on_new_session(self):
                 if self._worker and self._worker.isRunning():
                     return
                 self._cancel_pending_save()
                 self._persist_active_session(refresh_combo=False)
-                session = self.sessions.create_session("新对话", set_active=True)
+                session = self.sessions.create_session(t("session.default_title"), set_active=True)
                 self._session_switching = True
                 try:
                     self.agent.reset()
@@ -705,7 +787,7 @@ class MayaAgentWindow:
                     self._select_session_in_combo(session.id)
                 finally:
                     self._session_switching = False
-                self.status_label.setText(f"新建会话: {session.title}")
+                self.status_label.setText(t("session.created", title=session.title))
 
             def _on_rename_session(self):
                 sid = self.session_combo.currentData() or self.sessions.active().id
@@ -714,8 +796,8 @@ class MayaAgentWindow:
                     return
                 text, ok = QtWidgets.QInputDialog.getText(
                     self,
-                    "重命名会话",
-                    "会话名称:",
+                    t("session.rename_title"),
+                    t("session.rename_prompt"),
                     QtWidgets.QLineEdit.Normal,
                     session.title,
                 )
@@ -726,28 +808,28 @@ class MayaAgentWindow:
             def _on_delete_session(self):
                 if len(self.sessions.project.sessions) <= 1:
                     QtWidgets.QMessageBox.information(
-                        self, "删除会话", "至少需要保留一个会话。"
+                        self, t("session.delete_title"), t("session.delete_keep_one")
                     )
                     return
                 sid = self.session_combo.currentData() or self.sessions.active().id
                 title = self.session_combo.currentText()
                 reply = QtWidgets.QMessageBox.question(
                     self,
-                    "删除会话",
-                    f"确定删除会话「{title}」？此操作不可恢复。",
+                    t("session.delete_title"),
+                    t("session.delete_confirm", title=title),
                     QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 )
                 if reply != QtWidgets.QMessageBox.Yes:
                     return
                 new_active = self.sessions.delete(sid)
                 if new_active is None:
-                    self.sessions.create_session("新对话", set_active=True)
+                    self.sessions.create_session(t("session.default_title"), set_active=True)
                 self._session_switching = True
                 try:
                     self._load_active_session()
                 finally:
                     self._session_switching = False
-                self.status_label.setText("会话已删除")
+                self.status_label.setText(t("session.deleted"))
 
             def _flush_stream(self):
                 if self._thinking_buf:
@@ -759,19 +841,21 @@ class MayaAgentWindow:
                     self._stream_buf = ""
                     self.chat.append_assistant_text(piece)
 
-            def _on_settings_saved(self):
+            def _on_settings_saved(self, language_changed: bool = False):
                 get_config().reload()
+                init_from_config()
+                if language_changed:
+                    # Rebuild UI so all labels pick up the new catalog
+                    QtCore.QTimer.singleShot(0, reopen_main_window)
+                    return
                 self.setStyleSheet(load_stylesheet_safe())
                 self._apply_provider_from_config()
+                QtCore.QTimer.singleShot(0, self._apply_composer_splitter_sizes)
 
             def _use_tool_from_settings(self, name: str):
-                self.input_edit.setPlainText(
-                    f"请调用工具 {name}，根据当前场景自动填参。"
-                )
-                for i in range(self.tabs.count()):
-                    if self.tabs.tabText(i) == "对话":
-                        self.tabs.setCurrentIndex(i)
-                        break
+                self.input_edit.setPlainText(t("composer.use_tool", name=name))
+                idx = getattr(self, "_chat_tab_index", 0)
+                self.tabs.setCurrentIndex(idx)
                 self.input_edit.setFocus()
 
             def _apply_provider_from_config(self):
@@ -791,19 +875,13 @@ class MayaAgentWindow:
                 if hasattr(self, "image_btn"):
                     self.image_btn.setEnabled(self._vision_enabled and not busy)
                     if self._vision_enabled:
-                        self.image_btn.setToolTip(
-                            "添加图片。也可把图片拖进输入框，或 Ctrl+V 粘贴截图。"
-                        )
+                        self.image_btn.setToolTip(t("composer.attach_tip"))
                         self.input_edit.setPlaceholderText(
-                            "描述你想做的事，可附带图片…  Enter 发送，Shift+Enter 换行"
+                            t("composer.placeholder_vision")
                         )
                     else:
-                        self.image_btn.setToolTip(
-                            "当前模型不支持图片输入。可在「设置 → 模型与 API」把图片输入设为「开启」。"
-                        )
-                        self.input_edit.setPlaceholderText(
-                            "描述你想做的事…  Enter 发送，Shift+Enter 换行"
-                        )
+                        self.image_btn.setToolTip(t("composer.attach_disabled_tip"))
+                        self.input_edit.setPlaceholderText(t("composer.placeholder"))
                 if not self._vision_enabled and self._pending_images:
                     self._pending_images = []
                     self._rebuild_image_strip()
@@ -813,9 +891,9 @@ class MayaAgentWindow:
                     return
                 paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
                     self,
-                    "选择图片",
+                    t("composer.pick_images"),
                     "",
-                    "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp)",
+                    t("composer.image_filter"),
                 )
                 if not paths:
                     return
@@ -838,7 +916,7 @@ class MayaAgentWindow:
                 if not found:
                     return False
                 if not self._vision_enabled:
-                    self.status_label.set_idle("当前模型不支持图片输入")
+                    self.status_label.set_idle(t("status.no_vision"))
                     return True
                 self._add_pending_images(found)
                 return True
@@ -856,7 +934,7 @@ class MayaAgentWindow:
                 if not self._drop_has_images(event):
                     return False
                 if not self._vision_enabled:
-                    self.status_label.set_idle("当前模型不支持图片输入")
+                    self.status_label.set_idle(t("status.no_vision"))
                     return True
                 mime = event.mimeData()
                 if mime is None:
@@ -885,11 +963,11 @@ class MayaAgentWindow:
                     return
                 room = MAX_IMAGES - len(self._pending_images)
                 if room <= 0:
-                    self.status_label.set_idle(f"最多添加 {MAX_IMAGES} 张图片")
+                    self.status_label.set_idle(t("status.max_images", n=MAX_IMAGES))
                     return
                 extra = list(images)
                 if len(extra) > room:
-                    self.status_label.set_idle(f"最多添加 {MAX_IMAGES} 张图片")
+                    self.status_label.set_idle(t("status.max_images", n=MAX_IMAGES))
                     extra = extra[:room]
                 self._pending_images.extend(extra)
                 self._rebuild_image_strip()
@@ -913,14 +991,21 @@ class MayaAgentWindow:
                     box = QtWidgets.QGridLayout(chip)
                     box.setContentsMargins(2, 2, 2, 2)
                     box.setSpacing(0)
-                    thumb = QtWidgets.QLabel()
-                    thumb.setAlignment(QtCore.Qt.AlignCenter)
-                    pix = pixmap_from_attachment(img, edge=60)
-                    if pix is not None and not pix.isNull():
-                        thumb.setPixmap(pix)
-                    else:
-                        thumb.setText("图片")
-                    thumb.setToolTip(img.name or img.mime)
+                    from maya_agent.ui.image_viewer import make_clickable_thumb
+
+                    thumb = make_clickable_thumb(
+                        img,
+                        edge=60,
+                        fixed_w=64,
+                        fixed_h=64,
+                        parent=chip,
+                        gallery=list(self._pending_images),
+                        index=idx,
+                        tooltip=img.name or img.mime or t("composer.image_alt"),
+                        stylesheet=(
+                            "QLabel { background:transparent; border:none; border-radius:6px; }"
+                        ),
+                    )
                     remove = QtWidgets.QPushButton("×")
                     remove.setFixedSize(16, 16)
                     remove.setCursor(QtCore.Qt.PointingHandCursor)
@@ -951,18 +1036,18 @@ class MayaAgentWindow:
                     args_text = args_text[:600] + "\n…"
 
                 box = QtWidgets.QMessageBox(self)
-                box.setWindowTitle("确认操作")
+                box.setWindowTitle(t("confirm.title"))
                 box.setIcon(QtWidgets.QMessageBox.Question)
-                box.setText(f"工具「{name}」可能修改/删除场景内容。")
-                box.setInformativeText(f"参数:\n{args_text}\n\n是否继续？")
+                box.setText(t("confirm.body", name=name))
+                box.setInformativeText(t("confirm.args", args=args_text))
 
                 btn_once = box.addButton(
-                    "允许本次执行", QtWidgets.QMessageBox.AcceptRole
+                    t("confirm.allow_once"), QtWidgets.QMessageBox.AcceptRole
                 )
                 btn_turn = box.addButton(
-                    "允许本轮对话执行", QtWidgets.QMessageBox.ActionRole
+                    t("confirm.allow_turn"), QtWidgets.QMessageBox.ActionRole
                 )
-                btn_no = box.addButton("取消执行", QtWidgets.QMessageBox.RejectRole)
+                btn_no = box.addButton(t("confirm.cancel"), QtWidgets.QMessageBox.RejectRole)
                 box.setDefaultButton(btn_once)
                 box.exec_()
 
@@ -994,7 +1079,7 @@ class MayaAgentWindow:
                 self.agent.reset()
                 self._show_welcome()
                 self._persist_active_session(refresh_combo=True)
-                self.status_label.set_idle("当前会话已清空")
+                self.status_label.set_idle(t("status.cleared"))
 
             def _on_send_or_stop(self):
                 if getattr(self, "_send_busy", False):
@@ -1021,7 +1106,7 @@ class MayaAgentWindow:
                 )
                 self._set_busy(False)
                 self._skip_confirm_this_turn = False
-                self.status_label.set_idle("已停止")
+                self.status_label.set_idle(t("status.stopped"))
                 self._schedule_persist()
 
             def _apply_send_stop_style(self, busy: bool) -> None:
@@ -1031,13 +1116,13 @@ class MayaAgentWindow:
                     return
                 self._send_busy = bool(busy)
                 if busy:
-                    btn.setText("停止")
+                    btn.setText(t("composer.stop"))
                     btn.setObjectName("stopBtn")
-                    btn.setToolTip("停止当前任务")
+                    btn.setToolTip(t("composer.stop_tip"))
                 else:
-                    btn.setText("发送")
+                    btn.setText(t("composer.send"))
                     btn.setObjectName("sendBtn")
-                    btn.setToolTip("发送（Enter）")
+                    btn.setToolTip(t("composer.send_tip"))
                 # Force QSS re-apply after objectName change
                 try:
                     btn.style().unpolish(btn)
@@ -1060,7 +1145,7 @@ class MayaAgentWindow:
                 if self._worker and self._worker.isRunning():
                     return
                 if images and not self._vision_enabled:
-                    self.status_label.set_idle("当前模型不支持图片输入")
+                    self.status_label.set_idle(t("status.no_vision"))
                     return
 
                 pid = get_config().get("llm.active_provider", "deepseek")
@@ -1071,11 +1156,11 @@ class MayaAgentWindow:
                     self.agent.set_provider(pid, model or None)
                 self._vision_enabled = model_supports_vision(pid, model)
                 if images and not self._vision_enabled:
-                    self.status_label.set_idle("当前模型不支持图片输入")
+                    self.status_label.set_idle(t("status.no_vision"))
                     self._refresh_image_input()
                     return
 
-                display = text or "请查看附图。"
+                display = text or t("composer.view_image")
                 self.chat.add_user(display, images=images or None)
                 self.chat.begin_assistant()
                 self._stream_buf = ""
@@ -1136,7 +1221,7 @@ class MayaAgentWindow:
                 elif et == "vision_context":
                     count = int(event.get("count") or 0)
                     if count:
-                        self.status_label.set_idle(f"已附带 {count} 张视口截图供分析")
+                        self.status_label.set_idle(t("status.vision_context", count=count))
                     if self._worker and self._worker.isRunning():
                         self.status_label.set_thinking()
 
@@ -1166,7 +1251,7 @@ class MayaAgentWindow:
                         llm_calls=int(event.get("llm_calls") or 0),
                         stop_notice=notice,
                     )
-                    self.status_label.set_idle("已停止")
+                    self.status_label.set_idle(t("status.stopped"))
 
                 elif et == "done":
                     self._flush_stream()
@@ -1183,8 +1268,8 @@ class MayaAgentWindow:
                 elif et == "undo_ready":
                     if event.get("can_undo"):
                         tip = self.status_label.text()
-                        if tip in ("就绪", "", "思考中", "思考中…"):
-                            self.status_label.set_idle("就绪 · 可用 Ctrl+Z 撤销")
+                        if tip in (t("status.ready"), "", t("status.thinking"), t("status.thinking") + "…"):
+                            self.status_label.set_idle(t("status.ready_undo"))
 
             def _on_finished(self):
                 if self._stopped_by_user:
@@ -1200,9 +1285,9 @@ class MayaAgentWindow:
                 self._skip_confirm_this_turn = False
                 self._set_busy(False)
                 if self.agent.undo.can_undo:
-                    self.status_label.set_idle("就绪 · 可用 Ctrl+Z 撤销")
+                    self.status_label.set_idle(t("status.ready_undo"))
                 else:
-                    self.status_label.set_idle("就绪")
+                    self.status_label.set_idle(t("status.ready"))
                 self._schedule_persist()
 
             def _on_failed(self, err: str):
@@ -1222,7 +1307,7 @@ class MayaAgentWindow:
                 self._stream_timer.stop()
                 self._skip_confirm_this_turn = False
                 self._set_busy(False)
-                self.status_label.set_error("出错")
+                self.status_label.set_error(t("status.error"))
                 self._schedule_persist()
 
             def closeEvent(self, event):

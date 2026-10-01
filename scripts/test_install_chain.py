@@ -121,7 +121,51 @@ def test_install_deps_proxy_detect() -> None:
         body.encode("ascii")
     except UnicodeEncodeError as e:
         _fail("ascii_requirements", str(e))
+    for name in (
+        "install_for_mayapy",
+        "install_to_vendor",
+        "ensure_pip",
+        "ensure_vendor_on_sys_path",
+        "package_names_from_req",
+        "CRITICAL_IMPORTS",
+    ):
+        if not hasattr(mod, name):
+            _fail("install_deps API", f"missing {name}")
+    pkgs = mod.package_names_from_req(ROOT / "requirements.txt")
+    if "httpx" not in pkgs:
+        _fail("package_names_from_req", pkgs)
     _ok("install_deps helpers")
+
+
+def test_vendor_path_injection() -> None:
+    """maya_agent.__init__ should prepend .vendor when the directory exists."""
+    vendor = ROOT / ".vendor"
+    created = False
+    if not vendor.is_dir():
+        vendor.mkdir(parents=True, exist_ok=True)
+        created = True
+    try:
+        for name in list(sys.modules):
+            if name == "maya_agent" or name.startswith("maya_agent."):
+                sys.modules.pop(name, None)
+        # Remove any prior injection so we can observe insert
+        vendor_s = str(vendor.resolve())
+        while vendor_s in sys.path:
+            sys.path.remove(vendor_s)
+        import maya_agent  # noqa: F401
+
+        if vendor_s not in sys.path:
+            _fail("vendor inject", f"{vendor_s} not in sys.path")
+        if sys.path.index(vendor_s) > 5:
+            # Should be near the front (index 0 after insert)
+            print(f"  info vendor path index={sys.path.index(vendor_s)}")
+        _ok("maya_agent vendor path injection")
+    finally:
+        if created:
+            try:
+                vendor.rmdir()
+            except OSError:
+                pass
 
 
 def test_smoke_config_tools() -> None:
@@ -143,6 +187,7 @@ def main() -> int:
     test_install_modules_syntax()
     test_install_dragdrop_mel()
     test_install_deps_proxy_detect()
+    test_vendor_path_injection()
     test_config_without_yaml()
     test_smoke_config_tools()
     print("ALL PASSED")

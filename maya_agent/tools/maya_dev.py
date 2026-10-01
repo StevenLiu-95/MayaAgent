@@ -345,8 +345,9 @@ def list_node_types(keyword: str = "", limit: int = 50) -> ToolResult:
 @tool(
     name="validate_python",
     description=(
-        "语法检查 Python 代码（ast.parse，不执行）。"
-        "写入文件或 execute_python 之前先验证，减少运行时 SyntaxError。"
+        "检查 Python 代码：默认做 ast 语法解析；"
+        "check_cmds=True 时额外静态检查 cmds.xxx(...) 的关键字参数是否出现在 help 旗标中"
+        "（仅提示可疑 flag，不能替代运行）。"
     ),
     parameters=obj_schema(
         {
@@ -356,12 +357,21 @@ def list_node_types(keyword: str = "", limit: int = 50) -> ToolResult:
                 "default": "<tool>",
                 "description": "报错时显示的文件名",
             },
+            "check_cmds": {
+                "type": "boolean",
+                "default": True,
+                "description": "是否静态校验 cmds 调用的关键字参数名",
+            },
         },
         required=["code"],
     ),
     category="maya_dev",
 )
-def validate_python(code: str, filename: str = "<tool>") -> ToolResult:
+def validate_python(
+    code: str,
+    filename: str = "<tool>",
+    check_cmds: bool = True,
+) -> ToolResult:
     try:
         tree = ast.parse(code, filename=filename or "<tool>")
     except SyntaxError as e:
@@ -387,17 +397,117 @@ def validate_python(code: str, filename: str = "<tool>") -> ToolResult:
             imports.extend(a.name for a in n.names)
         elif isinstance(n, ast.ImportFrom):
             imports.append(n.module or "")
+
+    cmds_issues: List[Dict[str, Any]] = []
+    cmds_checked = 0
+    if check_cmds and in_maya():
+        cmds_issues, cmds_checked = _static_check_cmds_calls(tree)
+
+    ok = True
+    msg = "语法通过"
+    if cmds_issues:
+        # Soft fail: syntax OK but suspicious flags — still ok=True with warnings,
+        # unless many unknown commands
+        msg = f"语法通过；发现 {len(cmds_issues)} 处可疑 cmds 用法（见 data.cmds_issues）"
+
     return ToolResult(
-        ok=True,
+        ok=ok,
         data={
             "filename": filename,
             "functions": funcs[:50],
             "classes": classes[:30],
             "imports": list(dict.fromkeys(imports))[:40],
             "lines": code.count("\n") + 1,
+            "cmds_checked": cmds_checked,
+            "cmds_issues": cmds_issues[:40],
         },
-        message="语法通过",
+        message=msg,
     )
+
+
+def _static_check_cmds_calls(tree: ast.AST):
+    """Return (issues, checked_count) for cmds.cmd(...) keyword args."""
+    c = _cmds()
+    issues: List[Dict[str, Any]] = []
+    checked = 0
+    flag_cache: Dict[str, set] = {}
+
+    def _flags_for(cmd: str) -> Optional[set]:
+        if cmd in flag_cache:
+            return flag_cache[cmd]
+        try:
+            help_text = c.help(cmd) or ""
+        except Exception:
+            flag_cache[cmd] = set()
+            return None
+        longs = set(re.findall(r"-([a-zA-Z][\w]*)\b", help_text))
+        flag_cache[cmd] = longs
+        return longs
+
+    always_ok = {
+        "query",
+        "edit",
+        "name",
+        "namespace",
+        "absoluteName",
+        "returnPartialResults",
+    }
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        cmd_name = None
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in ("cmds", "mc"):
+                cmd_name = func.attr
+        elif (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Attribute)
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "maya"
+            and func.value.attr == "cmds"
+        ):
+            cmd_name = func.attr
+        if not cmd_name:
+            continue
+        checked += 1
+        if not hasattr(c, cmd_name):
+            issues.append(
+                {
+                    "line": getattr(node, "lineno", None),
+                    "command": cmd_name,
+                    "problem": "unknown_command",
+                    "detail": f"cmds 上似乎没有 {cmd_name}",
+                }
+            )
+            continue
+        flags = _flags_for(cmd_name)
+        if not flags:
+            continue
+        for kw in node.keywords:
+            if kw.arg is None or kw.arg in always_ok:
+                continue
+            low = kw.arg.lower()
+            if low in {f.lower() for f in flags}:
+                continue
+            if any(
+                low.startswith(f.lower()) or f.lower().startswith(low)
+                for f in flags
+                if len(f) > 1
+            ):
+                continue
+            issues.append(
+                {
+                    "line": getattr(node, "lineno", None),
+                    "command": cmd_name,
+                    "problem": "unknown_flag",
+                    "flag": kw.arg,
+                    "detail": f"cmds.{cmd_name}(... {kw.arg}=) 未在 help 旗标中找到",
+                    "hint_flags": sorted(flags)[:20],
+                }
+            )
+    return issues, checked
 
 
 @tool(
@@ -485,6 +595,12 @@ def write_script_file(
         return ToolResult(
             ok=False,
             error=f"文件已存在，未覆盖: {resolved}（设 overwrite=true 可覆盖）",
+            data={
+                "path": resolved.replace("\\", "/"),
+                "exists": True,
+                "overwritten": False,
+                "hint": "请设 overwrite=true 后重试，或换路径",
+            },
         )
     parent = os.path.dirname(resolved)
     if create_dirs and parent and not os.path.isdir(parent):

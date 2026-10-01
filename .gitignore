@@ -7,7 +7,9 @@ dist/
 build/
 .venv/
 venv/
+.vendor/
 .env
+renders/
 *.log
 .idea/
 .vscode/

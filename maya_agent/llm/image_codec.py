@@ -91,6 +91,41 @@ def attachment_from_raw_file(path: str) -> ImageAttachment:
     )
 
 
+def attachment_from_bytes(
+    raw: bytes,
+    mime: str = "image/jpeg",
+    name: str = "",
+) -> ImageAttachment:
+    """
+    Encode raw image bytes. Prefer Qt recompression (size/edge limits);
+    fall back to capped base64 when Qt is unavailable.
+    """
+    if not raw:
+        raise ValueError("空图像数据")
+    mime = (mime or "image/jpeg").split(";")[0].strip().lower() or "image/jpeg"
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    try:
+        from maya_agent.utils.maya_compat import import_qt
+
+        _QtCore, QtGui, _QtWidgets, _name = import_qt()
+        image = QtGui.QImage()
+        if image.loadFromData(raw):
+            return qimage_to_attachment(image, name=name or "image")
+    except Exception:
+        pass
+    # Cap oversized payloads without Qt
+    if len(raw) > MAX_BYTES:
+        raise ValueError(
+            f"图像过大（{len(raw)} bytes），请换更小的图或在 Maya 内重试以启用压缩"
+        )
+    return ImageAttachment(
+        mime=mime if mime.startswith("image/") else "image/jpeg",
+        data_b64=base64.b64encode(raw).decode("ascii"),
+        name=name or "image",
+    )
+
+
 def is_image_path(path: str) -> bool:
     low = (path or "").lower()
     return low.endswith(_IMAGE_SUFFIXES)

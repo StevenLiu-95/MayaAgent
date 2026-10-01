@@ -76,9 +76,21 @@ def load_project(scene_path: Optional[str] = None) -> ProjectChatData:
 
 
 def save_project(project: ProjectChatData, scene_path: Optional[str] = None) -> Path:
-    scene = scene_path if scene_path is not None else get_maya_scene_path()
-    project.scene_path = scene or project.scene_path
-    path = storage_path(scene)
+    """
+    Persist ``project`` next to ``scene_path``.
+
+    When ``scene_path`` is explicitly provided (including ""), use it for the
+    sidecar location. Only fall back to the live Maya scene name when the
+    caller omits the argument — this avoids AfterOpen races where Maya has
+    already switched scenes but the in-memory project still belongs to the
+    previous file.
+    """
+    if scene_path is None:
+        scene = get_maya_scene_path()
+    else:
+        scene = scene_path
+    project.scene_path = (scene or project.scene_path or "").replace("\\", "/")
+    path = storage_path(scene or None)
     path.parent.mkdir(parents=True, exist_ok=True)
     from maya_agent.core.chat_session import _now_iso
 

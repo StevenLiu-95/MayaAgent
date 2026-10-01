@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from maya_agent import __app_name__, __version__
+from maya_agent.i18n import init_from_config, list_languages, t
 from maya_agent.llm.registry import create_provider, list_providers
 from maya_agent.tools.registry import ensure_tools_loaded, get_tool, tools_by_category
 from maya_agent.ui.combo_widgets import create_toolbar_combo
@@ -17,12 +18,13 @@ from maya_agent.utils.maya_compat import import_qt
 def create_settings_panel(
     parent=None,
     *,
-    on_saved: Optional[Callable[[], None]] = None,
+    on_saved: Optional[Callable[..., None]] = None,
 ):
     """
     Build settings QWidget with sub-tabs (模型与 API / Agent / 界面).
-    on_saved() — refresh main window after settings change.
+    on_saved(language_changed=False) — refresh main window after settings change.
     """
+    init_from_config()
     QtCore, QtGui, QtWidgets, _ = import_qt()
 
     class SettingsPanel(QtWidgets.QWidget):
@@ -132,15 +134,15 @@ def create_settings_panel(
             foot = QtWidgets.QHBoxLayout(footer)
             foot.setContentsMargins(0, 2, 0, 0)
             foot.setSpacing(10)
-            self.save_hint = QtWidgets.QLabel("修改后自动保存")
+            self.save_hint = QtWidgets.QLabel(t("settings.autosave_hint"))
             self.save_hint.setObjectName("settingsSectionHint")
             foot.addWidget(self.save_hint, 1)
-            self.reset_btn = QtWidgets.QPushButton("恢复默认")
+            self.reset_btn = QtWidgets.QPushButton(t("settings.reset"))
             self.reset_btn.setObjectName("secondaryBtn")
             self.reset_btn.setCursor(QtCore.Qt.PointingHandCursor)
             self.reset_btn.setMinimumWidth(108)
             self.reset_btn.setMinimumHeight(32)
-            self.reset_btn.setToolTip("将界面与 Agent 参数恢复为出厂默认；API Key 不会删除")
+            self.reset_btn.setToolTip(t("settings.reset_tip"))
             self.reset_btn.clicked.connect(self._restore_defaults)
             foot.addWidget(self.reset_btn, 0, QtCore.Qt.AlignRight)
             outer.addWidget(footer)
@@ -157,8 +159,8 @@ def create_settings_panel(
             scroll, root = self._scroll_page()
 
             conn, conn_lay = self._section(
-                "连接",
-                "选择服务商并填写 API Key。Base URL 一般无需修改。",
+                t("settings.section.connection"),
+                t("settings.section.connection_hint"),
             )
             form = self._form(conn_lay)
 
@@ -168,16 +170,13 @@ def create_settings_panel(
             self.model_combo.setMinimumHeight(30)
             self.vision_policy = create_toolbar_combo()
             self.vision_policy.setMinimumHeight(30)
-            self.vision_policy.addItem("自动识别", "auto")
-            self.vision_policy.addItem("开启", "on")
-            self.vision_policy.addItem("关闭", "off")
-            self.vision_policy.setToolTip(
-                "自动识别：按模型名判断能否看图（gpt-4o、Claude、Gemini，或名称含 vision / vl）。\n"
-                "自定义接口识别不到时，可改为「开启」。"
-            )
+            self.vision_policy.addItem(t("settings.vision_auto"), "auto")
+            self.vision_policy.addItem(t("settings.vision_on"), "on")
+            self.vision_policy.addItem(t("settings.vision_off"), "off")
+            self.vision_policy.setToolTip(t("settings.vision_tip"))
             self.api_key_edit = QtWidgets.QLineEdit()
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-            self.api_key_edit.setPlaceholderText("sk-… 或对应厂商的密钥")
+            self.api_key_edit.setPlaceholderText(t("settings.api_key_ph"))
             self.api_key_edit.setMinimumHeight(30)
             self.base_url_edit = QtWidgets.QLineEdit()
             self.base_url_edit.setMinimumHeight(30)
@@ -187,11 +186,11 @@ def create_settings_panel(
                 self.provider_combo.addItem(p["label"], p["id"])
             self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
 
-            form.addRow(self._field_label("服务商"), self.provider_combo)
-            form.addRow(self._field_label("模型"), self.model_combo)
-            form.addRow(self._field_label("图片输入"), self.vision_policy)
-            form.addRow(self._field_label("API Key"), self.api_key_edit)
-            form.addRow(self._field_label("Base URL"), self.base_url_edit)
+            form.addRow(self._field_label(t("settings.provider")), self.provider_combo)
+            form.addRow(self._field_label(t("settings.model")), self.model_combo)
+            form.addRow(self._field_label(t("settings.vision")), self.vision_policy)
+            form.addRow(self._field_label(t("settings.api_key")), self.api_key_edit)
+            form.addRow(self._field_label(t("settings.base_url")), self.base_url_edit)
 
             actions = QtWidgets.QHBoxLayout()
             actions.setContentsMargins(0, 4, 0, 0)
@@ -207,7 +206,7 @@ def create_settings_panel(
                 QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
             )
             actions.addWidget(self.test_status, 1)
-            self.test_btn = QtWidgets.QPushButton("测试连接")
+            self.test_btn = QtWidgets.QPushButton(t("settings.test"))
             self.test_btn.setObjectName("secondaryBtn")
             self.test_btn.setCursor(QtCore.Qt.PointingHandCursor)
             self.test_btn.setMinimumWidth(96)
@@ -218,9 +217,8 @@ def create_settings_panel(
             root.addWidget(conn)
 
             gen, gen_lay = self._section(
-                "生成参数",
-                "影响回复风格与长度。Agent 任务建议 Temperature 偏低。"
-                " Max Tokens 为各服务商共用：通义千问兼容接口通常上限 8192，设过大将直接报错。",
+                t("settings.section.gen"),
+                t("settings.section.gen_hint"),
             )
             gform = self._form(gen_lay)
             self.temp_spin = create_toolbar_spin(decimal=True)
@@ -234,93 +232,101 @@ def create_settings_panel(
             self.max_tokens_spin.setSingleStep(256)
             self.max_tokens_spin.setFixedHeight(30)
             self.max_tokens_spin.setFixedWidth(132)
-            self.max_tokens_spin.setToolTip(
-                "单次回复最大输出 Token。\n"
-                "不同服务商上限不同，例如通义千问 DashScope 兼容模式常见为 1～8192。\n"
-                "若报 InvalidParameter / max_tokens range，请调低本项（会自动保存）。"
-            )
+            self.max_tokens_spin.setToolTip(t("settings.max_tokens_tip"))
             gform.addRow(self._field_label("Temperature"), self.temp_spin)
             gform.addRow(self._field_label("Max Tokens"), self.max_tokens_spin)
             root.addWidget(gen)
 
             self._stretch_end(root)
-            self.tabs.addTab(scroll, "模型与 API")
+            self.tabs.addTab(scroll, t("settings.tab.api"))
 
         def _build_agent_tab(self) -> None:
             scroll, root = self._scroll_page()
 
             beh, beh_lay = self._section(
-                "行为",
-                "控制 Agent 执行方式与界面反馈。",
+                t("settings.section.behavior"),
+                t("settings.section.behavior_hint"),
             )
-            self.auto_undo = QtWidgets.QCheckBox("自动 Undo 块")
-            self.confirm_destructive = QtWidgets.QCheckBox("危险操作前确认")
-            self.stream_check = QtWidgets.QCheckBox("流式输出")
-            self.show_thinking = QtWidgets.QCheckBox("显示思考内容")
-            self.show_tools = QtWidgets.QCheckBox("显示工具调用详情")
+            self.auto_undo = QtWidgets.QCheckBox(t("settings.auto_undo"))
+            self.confirm_destructive = QtWidgets.QCheckBox(
+                t("settings.confirm_destructive")
+            )
+            self.stream_check = QtWidgets.QCheckBox(t("settings.stream"))
+            self.show_thinking = QtWidgets.QCheckBox(t("settings.show_thinking"))
+            self.show_tools = QtWidgets.QCheckBox(t("settings.show_tools"))
 
             beh_lay.addWidget(
-                self._option_row(
-                    self.auto_undo, "将一轮对话中的场景修改合并，便于一次撤销"
-                )
+                self._option_row(self.auto_undo, t("settings.auto_undo_hint"))
             )
             beh_lay.addWidget(
                 self._option_row(
-                    self.confirm_destructive, "删除、清空等操作前弹出确认对话框"
+                    self.confirm_destructive, t("settings.confirm_destructive_hint")
                 )
             )
             beh_lay.addWidget(
-                self._option_row(self.stream_check, "边生成边显示回复，响应更快")
-            )
-            beh_lay.addWidget(
-                self._option_row(
-                    self.show_thinking,
-                    "对支持思考链的模型，在回复前展示其推理过程",
-                )
+                self._option_row(self.stream_check, t("settings.stream_hint"))
             )
             beh_lay.addWidget(
                 self._option_row(
-                    self.show_tools, "在对话中展示工具名称与执行结果摘要"
+                    self.show_thinking, t("settings.show_thinking_hint")
                 )
+            )
+            beh_lay.addWidget(
+                self._option_row(self.show_tools, t("settings.show_tools_hint"))
             )
             root.addWidget(beh)
 
             lim, lim_lay = self._section(
-                "限制",
-                "防止单次任务调用工具过多导致卡顿。",
+                t("settings.section.limits"),
+                t("settings.section.limits_hint"),
             )
             lform = self._form(lim_lay)
             self.max_rounds = create_toolbar_spin()
             self.max_rounds.setRange(1, 50)
             self.max_rounds.setFixedHeight(30)
             self.max_rounds.setFixedWidth(100)
-            lform.addRow(self._field_label("最大工具轮次"), self.max_rounds)
+            lform.addRow(self._field_label(t("settings.max_rounds")), self.max_rounds)
             root.addWidget(lim)
 
             self._stretch_end(root)
-            self.tabs.addTab(scroll, "Agent")
+            self.tabs.addTab(scroll, t("settings.tab.agent"))
 
         def _build_ui_tab(self) -> None:
             scroll, root = self._scroll_page()
 
+            lang, lang_lay = self._section(
+                t("settings.section.language"),
+                t("settings.section.language_hint"),
+            )
+            lform = self._form(lang_lay)
+            self.language_combo = create_toolbar_combo()
+            self.language_combo.setMinimumHeight(30)
+            for code, label in list_languages():
+                self.language_combo.addItem(label, code)
+            lform.addRow(self._field_label(t("settings.language")), self.language_combo)
+            root.addWidget(lang)
+
             typo, typo_lay = self._section(
-                "字体",
-                "影响面板内文字显示。部分控件需重新打开窗口后完全生效。",
+                t("settings.section.appearance"),
+                t("settings.section.appearance_hint"),
             )
             form = self._form(typo_lay)
             self.font_family = QtWidgets.QLineEdit()
             self.font_family.setMinimumHeight(30)
-            self.font_family.setPlaceholderText("例如 Microsoft YaHei UI")
-            self.font_size = create_toolbar_spin()
-            self.font_size.setRange(10, 20)
-            self.font_size.setFixedHeight(30)
-            self.font_size.setFixedWidth(100)
-            form.addRow(self._field_label("字体"), self.font_family)
-            form.addRow(self._field_label("字号"), self.font_size)
+            self.font_family.setPlaceholderText(t("settings.font_ph"))
+            self.ui_scale = create_toolbar_spin()
+            self.ui_scale.setRange(75, 175)
+            self.ui_scale.setSingleStep(5)
+            self.ui_scale.setSuffix("%")
+            self.ui_scale.setFixedHeight(30)
+            self.ui_scale.setFixedWidth(110)
+            self.ui_scale.setToolTip(t("settings.ui_scale_tip"))
+            form.addRow(self._field_label(t("settings.font")), self.font_family)
+            form.addRow(self._field_label(t("settings.ui_scale")), self.ui_scale)
             root.addWidget(typo)
 
             self._stretch_end(root)
-            self.tabs.addTab(scroll, "界面")
+            self.tabs.addTab(scroll, t("settings.tab.ui"))
 
         # ---- data -----------------------------------------------------------
 
@@ -340,28 +346,29 @@ def create_settings_panel(
                 bool(self.show_thinking.isChecked()),
                 bool(self.show_tools.isChecked()),
                 int(self.max_rounds.value()),
+                self.language_combo.currentData(),
                 self.font_family.text().strip(),
-                int(self.font_size.value()),
+                int(self.ui_scale.value()),
             )
 
         def _mark_clean(self) -> None:
             self._baseline = self._snapshot()
-            self.save_hint.setText("修改后自动保存")
+            self.save_hint.setText(t("settings.autosave_hint"))
 
         def _schedule_autosave(self, *_args) -> None:
             if self._suppress_dirty or self._baseline is None:
                 return
             if self._snapshot() == self._baseline:
-                self.save_hint.setText("修改后自动保存")
+                self.save_hint.setText(t("settings.autosave_hint"))
                 return
-            self.save_hint.setText("正在保存…")
+            self.save_hint.setText(t("settings.saving"))
             self._autosave_timer.start()
 
         def _autosave_now(self) -> None:
             if self._suppress_dirty or self._baseline is None:
                 return
             if self._snapshot() == self._baseline:
-                self.save_hint.setText("修改后自动保存")
+                self.save_hint.setText(t("settings.autosave_hint"))
                 return
             self._save(silent=True)
 
@@ -382,8 +389,9 @@ def create_settings_panel(
                 self.show_thinking.toggled,
                 self.show_tools.toggled,
                 self.max_rounds.valueChanged,
+                self.language_combo.currentIndexChanged,
                 self.font_family.textChanged,
-                self.font_size.valueChanged,
+                self.ui_scale.valueChanged,
             ):
                 sig.connect(self._schedule_autosave)
             # Connection fields change → clear stale test result
@@ -437,10 +445,13 @@ def create_settings_panel(
                     bool(self.cfg.get("agent.show_tool_calls", True))
                 )
                 self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 30)))
+                lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
+                lidx = self.language_combo.findData(lang)
+                self.language_combo.setCurrentIndex(lidx if lidx >= 0 else 0)
                 self.font_family.setText(
                     self.cfg.get("ui.font_family", "Microsoft YaHei UI")
                 )
-                self.font_size.setValue(int(self.cfg.get("ui.font_size", 13)))
+                self.ui_scale.setValue(self._resolve_ui_scale_pct())
             finally:
                 self._suppress_dirty = False
             self._mark_clean()
@@ -472,24 +483,52 @@ def create_settings_panel(
             self.cfg.set("agent.show_thinking", self.show_thinking.isChecked())
             self.cfg.set("agent.show_tool_calls", self.show_tools.isChecked())
             self.cfg.set("maya.max_tool_rounds", self.max_rounds.value())
+            old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
+            new_lang = str(self.language_combo.currentData() or "zh-CN")
+            self.cfg.set("app.language", new_lang)
             self.cfg.set("ui.font_family", self.font_family.text().strip())
-            self.cfg.set("ui.font_size", self.font_size.value())
+            self.cfg.set("ui.ui_scale", int(self.ui_scale.value()))
+            # Drop legacy key so old font_size no longer affects scale migration
+            ui_data = self.cfg._data.get("ui")
+            if isinstance(ui_data, dict):
+                ui_data.pop("font_size", None)
             self.cfg.save_user()
             self._mark_clean()
+            language_changed = old_lang != new_lang
+            if language_changed:
+                init_from_config()
             if self._on_saved:
-                self._on_saved()
+                self._on_saved(language_changed=language_changed)
             if silent:
-                self.save_hint.setText("已自动保存")
+                self.save_hint.setText(t("settings.saved"))
             else:
-                QtWidgets.QMessageBox.information(self, "已保存", "设置已保存并生效。")
+                QtWidgets.QMessageBox.information(
+                    self,
+                    t("settings.saved_dialog_title"),
+                    t("settings.saved_dialog_body"),
+                )
+
+        def _resolve_ui_scale_pct(self) -> int:
+            """Prefer ui.ui_scale; migrate legacy ui.font_size (13px ≈ 100%)."""
+            raw = self.cfg.get("ui.ui_scale")
+            if raw is not None:
+                try:
+                    return max(75, min(175, int(raw)))
+                except (TypeError, ValueError):
+                    return 100
+            old = self.cfg.get("ui.font_size")
+            if old is not None:
+                try:
+                    return max(75, min(175, int(round(float(old) / 13 * 100))))
+                except (TypeError, ValueError):
+                    pass
+            return 100
 
         def _restore_defaults(self) -> None:
             reply = QtWidgets.QMessageBox.question(
                 self,
-                "恢复默认",
-                "确定将设置恢复为出厂默认？\n\n"
-                "· 模型 / Agent / 界面参数会重置\n"
-                "· API Key 不会删除",
+                t("settings.reset_title"),
+                t("settings.reset_body"),
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                 QtWidgets.QMessageBox.No,
             )
@@ -497,11 +536,14 @@ def create_settings_panel(
                 return
             if self._autosave_timer.isActive():
                 self._autosave_timer.stop()
+            old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
             self.cfg.reset_user_settings()
+            init_from_config()
             self._load()
+            new_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
             if self._on_saved:
-                self._on_saved()
-            self.save_hint.setText("已恢复默认")
+                self._on_saved(language_changed=(old_lang != new_lang))
+            self.save_hint.setText(t("settings.reset_done"))
 
         def _set_test_status(self, text: str, kind: str = "") -> None:
             """Inline connection test feedback. kind: ok | fail | info | ''."""
@@ -525,7 +567,7 @@ def create_settings_panel(
             model = self.model_combo.currentText().strip()
             key = self.api_key_edit.text().strip()
             base = self.base_url_edit.text().strip()
-            self._set_test_status("正在测试…", "info")
+            self._set_test_status(t("settings.test_running"), "info")
             btn = getattr(self, "test_btn", None)
             if btn is not None:
                 btn.setEnabled(False)
@@ -595,9 +637,9 @@ def create_tools_panel(
             head_lay = QtWidgets.QVBoxLayout(head)
             head_lay.setContentsMargins(14, 12, 14, 12)
             head_lay.setSpacing(3)
-            title = QtWidgets.QLabel("工具浏览")
+            title = QtWidgets.QLabel(t("tab.tools"))
             title.setObjectName("settingsSectionTitle")
-            tip = QtWidgets.QLabel("双击工具名可插入对话输入框，便于快速试用。")
+            tip = QtWidgets.QLabel(t("tools.hint"))
             tip.setObjectName("settingsSectionHint")
             tip.setWordWrap(True)
             head_lay.addWidget(title)
@@ -622,10 +664,10 @@ def create_tools_panel(
                 font.setBold(True)
                 parent_item.setFont(0, font)
                 parent_item.setForeground(0, QtGui.QColor("#b8c4d4"))
-                for t in sorted(cats[cat], key=lambda x: x.name):
-                    child = QtWidgets.QTreeWidgetItem([t.name])
-                    child.setToolTip(0, t.description)
-                    child.setData(0, QtCore.Qt.UserRole, t.name)
+                for reg in sorted(cats[cat], key=lambda x: x.name):
+                    child = QtWidgets.QTreeWidgetItem([reg.name])
+                    child.setToolTip(0, reg.description)
+                    child.setData(0, QtCore.Qt.UserRole, reg.name)
                     child.setForeground(0, QtGui.QColor(COLOR_TEXT))
                     parent_item.addChild(child)
                 self.tool_tree.addTopLevelItem(parent_item)
@@ -650,13 +692,15 @@ def create_tools_panel(
             if not name:
                 self.tool_desc.setPlainText("")
                 return
-            t = get_tool(name)
-            if t:
+            tool = get_tool(name)
+            if tool:
                 import json
 
                 self.tool_desc.setPlainText(
-                    f"{t.name}\n类别: {t.category}\n\n{t.description}\n\n"
-                    f"参数:\n{json.dumps(t.parameters, ensure_ascii=False, indent=2)}"
+                    f"{tool.name}\n{t('tools.category', category=tool.category)}\n\n"
+                    f"{tool.description}\n\n"
+                    f"{t('tools.params')}\n"
+                    f"{json.dumps(tool.parameters, ensure_ascii=False, indent=2)}"
                 )
 
         def _on_tool_double_click(self, item, _column) -> None:
@@ -733,82 +777,71 @@ def create_help_panel(parent=None):
     title_row.addStretch(1)
     intro_lay.addLayout(title_row)
 
-    blurb = QtWidgets.QLabel(
-        "面向游戏开发的 Maya AI 助手。用自然语言驱动建模、UV、绑骨、动画、"
-        "材质、灯光与导出；支持国内外主流大模型，兼容 Maya 2020–2026"
-        "（PySide2 / PySide6）。"
-    )
+    blurb = QtWidgets.QLabel(t("help.blurb"))
     blurb.setObjectName("settingsHelpBody")
     blurb.setWordWrap(True)
     intro_lay.addWidget(blurb)
     root.addWidget(intro)
 
-    quick, quick_lay = _section("快速上手", "首次使用按以下步骤即可开始。")
+    quick, quick_lay = _section(t("help.quick.title"), t("help.quick.hint"))
     _add_help_lines(
         quick_lay,
         (
-            "打开菜单「Maya Agent → 打开面板」，或点击工具架 Agent 按钮",
-            "在「设置 → 模型与 API」选择服务商、填写 API Key，点「测试连接」验证（修改会自动保存）",
-            "切回「对话」，用自然语言描述任务；也可展开「快捷命令」快速试用",
-            "Agent 会自动调用工具改场景；危险操作会先确认，可用 Ctrl+Z 回退",
+            t("help.quick.1"),
+            t("help.quick.2"),
+            t("help.quick.3"),
+            t("help.quick.4"),
         ),
         numbered=True,
     )
     root.addWidget(quick)
 
-    chat, chat_lay = _section(
-        "对话界面",
-        "主工作区：会话、输入、快捷操作与结果反馈。",
-    )
+    chat, chat_lay = _section(t("help.chat.title"), t("help.chat.hint"))
     _add_help_lines(
         chat_lay,
         (
-            "会话：新建 / 重命名 / 删除 / 下拉切换；同一场景可保留多组对话",
-            "会话会随场景自动保存（sidecar：场景名.ma.mayaagent.json）；未命名场景先暂存本地，保存场景后迁移",
-            "Enter 发送，Shift+Enter 换行；任务进行中同一按钮变为红色「停止」可中断",
-            "支持看图的模型可点「+」、拖入文件，或 Ctrl+V 粘贴截图；纯文本模型会禁用该按钮",
-            "「清空」只清空当前会话聊天与记忆，不会清空 Maya 场景",
-            "开启「自动 Undo 块」后，一轮场景修改可合并，便于用 Ctrl+Z 一次回退",
-            "快捷命令：输入框下方工具栏的「快捷」按钮，点按展开芯片（场景信息、网格统计、导出 FBX、三点光等）",
-            "视觉模型可调用 capture_viewport 自行截取视口并分析；纯文本模型不会暴露该工具",
-            "意图不清时，助手会给出可点击选项按钮，点选即自动回复",
-            "开启「显示工具调用详情」后，对话中会展示工具名与结果摘要",
-            "开启「显示思考内容」后，支持思考链的模型会在回复前展示推理过程",
+            t("help.chat.1"),
+            t("help.chat.2"),
+            t("help.chat.3"),
+            t("help.chat.4"),
+            t("help.chat.5"),
+            t("help.chat.6"),
+            t("help.chat.7"),
+            t("help.chat.8"),
+            t("help.chat.9"),
         ),
     )
     root.addWidget(chat)
 
     settings, settings_lay = _section(
-        "设置面板",
-        "模型、Agent 行为与界面均可在此配置，修改后自动保存；可随时「恢复默认」。",
+        t("help.settings.title"), t("help.settings.hint")
     )
     _add_help_lines(
         settings_lay,
         (
-            "模型与 API：服务商、模型、API Key、Base URL、图片输入、Temperature、Max Tokens；支持测试连接",
-            "服务商包括 OpenAI、Azure、Anthropic、Gemini、DeepSeek、通义、智谱、Kimi、豆包、百川、SiliconFlow、Ollama、自定义 OpenAI 兼容接口等",
-            "Agent：自动 Undo 块、危险操作前确认、流式输出、显示思考内容、显示工具调用、最大工具轮次（1–50）",
-            "界面：字体与字号（部分控件需重新打开面板后完全生效）",
-            "底部「恢复默认」会重置参数为出厂值，但不会删除已保存的 API Key",
+            t("help.settings.1"),
+            t("help.settings.2"),
+            t("help.settings.3"),
+            t("help.settings.4"),
         ),
     )
     root.addWidget(settings)
 
-    tools, tools_lay = _section(
-        "内置工具一览",
-        "约 60 个工具，按领域分类。用自然语言描述即可，也可在顶栏「工具」页签中双击试用。",
-    )
+    tools, tools_lay = _section(t("help.tools.title"), t("help.tools.hint"))
     tool_groups = (
         (
             "场景 scene",
-            "get_scene_info、list_selection、select_objects、rename_object、batch_rename、"
+            "get_scene_info（含 bbox/相机裁剪/材质分布）、list_selection、select_objects、rename_object、batch_rename、"
             "create_group、delete_objects、parent_objects、duplicate_objects、clean_scene、"
-            "set_frame_range、capture_viewport（视觉模型截取视口分析）",
+            "set_frame_range、capture_viewport（show_only/display_mode/look_at）、"
+            "capture_viewport_views（临时相机自动清理）、render_still（静帧展示图）",
         ),
         (
             "建模 modeling",
-            "create_primitive、combine_meshes、separate_meshes、boolean_meshes、extrude_faces、"
-            "bevel_edges、smooth_mesh、reduce_mesh、mirror_geometry、center_pivot、freeze_transform、get_mesh_stats",
+            "create_primitive、create_primitives（批量落位）、arrange_objects（stack/align/grid_array）、"
+            "combine_meshes、separate_meshes、boolean_meshes、extrude_faces、"
+            "bevel_edges、smooth_mesh、reduce_mesh、mirror_geometry、center_pivot、freeze_transform、"
+            "get_mesh_stats（支持组/层级聚合）、check_meshes（非流形等质量检查）",
         ),
         (
             "UV",
@@ -827,11 +860,11 @@ def create_help_panel(parent=None):
         ),
         (
             "材质 materials",
-            "create_material、assign_material、assign_texture、list_materials",
+            "create_material（返回 shader+shading_group）、assign_material、describe_material_attrs、assign_texture、list_materials",
         ),
         (
             "灯光 lighting",
-            "create_light、create_three_point_lighting",
+            "create_light、create_three_point_lighting、create_environment_light（天光/环境光）",
         ),
         (
             "导入导出 export",
@@ -842,8 +875,13 @@ def create_help_panel(parent=None):
             "set_transform、create_lod_group、create_collision_mesh、apply_game_naming、reset_transform",
         ),
         (
+            "网络检索 web",
+            "web_search、fetch_webpage、search_images、fetch_image、fetch_images"
+            "（按需查文档/规范与参考图；fetch_image* 仅视觉模型可用）",
+        ),
+        (
             "脚本 scripting",
-            "execute_python、execute_mel、generate_python_snippet",
+            "execute_python（atomic 默认回滚）、execute_mel、generate_python_snippet",
         ),
     )
     for cat, names in tool_groups:
