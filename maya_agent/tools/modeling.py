@@ -673,13 +673,29 @@ def _poly_stats(shape: str) -> Dict[str, Any]:
         stats["transform"] = parents[0] if parents else shape
     except Exception:
         stats["transform"] = shape
+    try:
+        tf = stats["transform"]
+        bb = c.exactWorldBoundingBox(tf)
+        size = [float(bb[3] - bb[0]), float(bb[4] - bb[1]), float(bb[5] - bb[2])]
+        stats["bbox"] = {
+            "min": [float(bb[0]), float(bb[1]), float(bb[2])],
+            "max": [float(bb[3]), float(bb[4]), float(bb[5])],
+            "center": [
+                0.5 * (bb[0] + bb[3]),
+                0.5 * (bb[1] + bb[4]),
+                0.5 * (bb[2] + bb[5]),
+            ],
+            "size": size,
+        }
+    except Exception:
+        stats["bbox"] = None
     return stats
 
 
 @tool(
     name="get_mesh_stats",
     description=(
-        "获取网格拓扑统计（顶点/边/面/三角/UV）。"
+        "获取网格拓扑统计（顶点/边/面/三角/UV）以及世界包围盒 bbox/size/center。"
         "支持传组名或层级：自动向下聚合所有 mesh shape。"
     ),
     parameters=obj_schema(
@@ -737,6 +753,24 @@ def get_mesh_stats(name: str = "", aggregate: bool = True) -> ToolResult:
         "uvs": sum(p["uvs"] for p in per_mesh),
         "mesh_count": len(per_mesh),
     }
+    try:
+        bb = c.exactWorldBoundingBox(list(roots))
+        totals["bbox"] = {
+            "min": [float(bb[0]), float(bb[1]), float(bb[2])],
+            "max": [float(bb[3]), float(bb[4]), float(bb[5])],
+            "center": [
+                0.5 * (bb[0] + bb[3]),
+                0.5 * (bb[1] + bb[4]),
+                0.5 * (bb[2] + bb[5]),
+            ],
+            "size": [
+                float(bb[3] - bb[0]),
+                float(bb[4] - bb[1]),
+                float(bb[5] - bb[2]),
+            ],
+        }
+    except Exception:
+        totals["bbox"] = None
     data: Dict[str, Any] = {
         "roots": root_types,
         "totals": totals,
@@ -754,6 +788,7 @@ def get_mesh_stats(name: str = "", aggregate: bool = True) -> ToolResult:
                 "faces": per_mesh[0]["faces"],
                 "triangles": per_mesh[0]["triangles"],
                 "uvs": per_mesh[0]["uvs"],
+                "bbox": per_mesh[0].get("bbox"),
             }
         )
     msg = (

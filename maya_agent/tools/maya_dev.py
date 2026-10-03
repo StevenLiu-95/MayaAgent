@@ -35,6 +35,13 @@ def _scripts_roots() -> List[str]:
                 roots.append(os.path.normpath(pref))
         except Exception:
             pass
+        try:
+            usd = c.internalVar(userScriptDir=True)
+            extra = os.path.join(usd, "MayaAgent_tools") if usd else ""
+            if extra and os.path.isdir(extra) and extra not in roots:
+                roots.append(os.path.normpath(extra))
+        except Exception:
+            pass
     # Always allow project-relative scripts/examples if present
     pkg_root = os.path.normpath(
         os.path.join(os.path.dirname(__file__), "..", "..")
@@ -223,6 +230,151 @@ def search_cmds(keyword: str, limit: int = 40) -> ToolResult:
         ok=True,
         data={"keyword": kw, "total": len(matches), "commands": matches[:limit]},
         message=f"找到 {len(matches)} 个命令（返回前 {min(limit, len(matches))}）",
+    )
+
+
+_API_MODULES = (
+    ("maya.api.OpenMaya", "OpenMaya"),
+    ("maya.api.OpenMayaAnim", "OpenMayaAnim"),
+    ("maya.api.OpenMayaUI", "OpenMayaUI"),
+    ("maya.api.OpenMayaRender", "OpenMayaRender"),
+    ("maya.OpenMaya", "OpenMaya.legacy"),
+    ("maya.OpenMayaAnim", "OpenMayaAnim.legacy"),
+)
+
+
+def _import_api_module(mod_name: str):
+    return importlib.import_module(mod_name)
+
+
+def _resolve_api_symbol(query: str):
+    raw = (query or "").strip().lstrip(".")
+    raw = re.sub(r"^maya\.api\.", "", raw)
+    raw = re.sub(r"^maya\.", "", raw)
+    parts = [p for p in re.split(r"[./]", raw) if p]
+    if not parts:
+        return None, None, None
+    # Drop module prefix if present
+    if parts[0] in ("OpenMaya", "OpenMayaAnim", "OpenMayaUI", "OpenMayaRender"):
+        prefer = parts[0]
+        parts = parts[1:] or parts
+    else:
+        prefer = ""
+    name = parts[0] if parts else raw
+    attr_path = parts[1:]
+
+    candidates = []
+    for mod_name, label in _API_MODULES:
+        if prefer and prefer not in label and prefer not in mod_name:
+            continue
+        try:
+            mod = _import_api_module(mod_name)
+        except Exception:
+            continue
+        obj = getattr(mod, name, None)
+        if obj is None:
+            continue
+        owner = obj
+        leaf = obj
+        failed = False
+        for a in attr_path:
+            nxt = getattr(leaf, a, None)
+            if nxt is None:
+                failed = True
+                break
+            owner = leaf
+            leaf = nxt
+        if failed:
+            continue
+        candidates.append((mod_name, label, owner, leaf, ".".join([name] + attr_path)))
+    return (candidates[0] if candidates else None), candidates, name
+
+
+@tool(
+    name="lookup_api_help",
+    description=(
+        "查询 Maya Python API 2.0（maya.api.OpenMaya / OpenMayaAnim 等）类与方法的文档。"
+        "写 MFnSkinCluster.setWeights 这类 OpenMaya 代码前用此确认签名，不要猜 list vs MIntArray。"
+        "query 例：MFnSkinCluster、MFnSkinCluster.setWeights、OpenMayaAnim.MFnSkinCluster.getWeights。"
+        "maya.cmds 请改用 lookup_cmds_help。"
+    ),
+    parameters=obj_schema(
+        {
+            "query": {
+                "type": "string",
+                "description": "类或 类.方法，如 MFnSkinCluster.setWeights",
+            }
+        },
+        required=["query"],
+    ),
+    category="maya_dev",
+)
+def lookup_api_help(query: str) -> ToolResult:
+    if not in_maya():
+        return ToolResult(ok=False, error="未在 Maya 中运行")
+    hit, all_hits, name = _resolve_api_symbol(query)
+    if not hit:
+        # fuzzy: list matching names in OpenMayaAnim/OpenMaya
+        matches = []
+        q = (query or "").lower()
+        for mod_name, label in _API_MODULES[:4]:
+            try:
+                mod = _import_api_module(mod_name)
+            except Exception:
+                continue
+            for n in dir(mod):
+                if n.startswith("_"):
+                    continue
+                if q and q.split(".")[-1] in n.lower():
+                    matches.append(f"{label}.{n}")
+            if len(matches) >= 40:
+                break
+        return ToolResult(
+            ok=False,
+            error=f"未找到 {query}。可试完整类名，如 MFnSkinCluster。",
+            data={"suggestions": matches[:40]},
+        )
+    mod_name, label, owner, leaf, dotted = hit
+    doc = (getattr(leaf, "__doc__", None) or "").strip()
+    owner_doc = (getattr(owner, "__doc__", None) or "").strip() if owner is not leaf else ""
+    members = []
+    if isinstance(leaf, type):
+        try:
+            members = [
+                m
+                for m in dir(leaf)
+                if not m.startswith("_") and callable(getattr(leaf, m, None))
+            ][:60]
+        except Exception:
+            members = []
+    # callable method: show __doc__ which Maya puts full overloads into
+    overloads = []
+    if doc:
+        for line in doc.splitlines():
+            if "->" in line or line.strip().startswith(dotted.split(".")[-1] + "("):
+                overloads.append(line.strip())
+    others = [
+        {"module": h[0], "symbol": h[4]}
+        for h in (all_hits or [])[1:6]
+    ]
+    return ToolResult(
+        ok=True,
+        data={
+            "query": query,
+            "module": mod_name,
+            "symbol": f"{label}.{dotted}",
+            "doc": _truncate(doc or owner_doc or "(无文档)", 8000),
+            "overload_lines": overloads[:20],
+            "methods": members,
+            "also_found": others,
+            "hint": (
+                "API 2.0 的 setWeights/getWeights 需要 MIntArray / MDoubleArray，"
+                "不要传 Python list 当 influence 索引。"
+                if "setWeights" in dotted or "getWeights" in dotted
+                else ""
+            ),
+        },
+        message=f"已获取 {label}.{dotted} 文档",
     )
 
 
@@ -512,7 +664,10 @@ def _static_check_cmds_calls(tree: ast.AST):
 
 @tool(
     name="read_script_file",
-    description="读取本地脚本文件内容（.py/.mel 等）。用于审阅或在已有工具上迭代。",
+    description=(
+        "读取本地脚本文件内容（.py/.mel 等）。用于审阅或在已有工具上迭代。"
+        "底层复用通用文件读取；相对路径优先相对 userScriptDir。"
+    ),
     parameters=obj_schema(
         {
             "path": {
@@ -526,28 +681,21 @@ def _static_check_cmds_calls(tree: ast.AST):
     category="maya_dev",
 )
 def read_script_file(path: str, max_chars: int = 20000) -> ToolResult:
+    from maya_agent.tools import fsutil
+
     try:
         resolved = _resolve_script_path(path, must_exist=True)
+        data = fsutil.read_text(resolved, max_chars=max_chars)
     except FileNotFoundError as e:
         return ToolResult(ok=False, error=str(e))
+    except fsutil.FsError as e:
+        return ToolResult(ok=False, error=str(e))
     except Exception as e:
         return ToolResult(ok=False, error=str(e))
-    max_chars = max(500, min(int(max_chars), 100000))
-    try:
-        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
-    except Exception as e:
-        return ToolResult(ok=False, error=f"读取失败: {e}")
-    truncated = len(text) > max_chars
     return ToolResult(
         ok=True,
-        data={
-            "path": resolved,
-            "size": len(text),
-            "truncated": truncated,
-            "content": text[:max_chars],
-        },
-        message=f"已读取 {resolved}" + ("（已截断）" if truncated else ""),
+        data=data,
+        message=f"已读取 {data['path']}" + ("（已截断）" if data.get("truncated") else ""),
     )
 
 
@@ -555,7 +703,7 @@ def read_script_file(path: str, max_chars: int = 20000) -> ToolResult:
     name="write_script_file",
     description=(
         "将 Python/MEL 脚本写入磁盘（默认 userScriptDir 或绝对路径）。"
-        "开发 Maya 工具时用于落盘；覆盖已有文件前请确认。"
+        "底层复用通用写文件；.py 写入前做语法检查。覆盖已有文件前请确认。"
     ),
     parameters=obj_schema(
         {
@@ -582,6 +730,8 @@ def write_script_file(
     overwrite: bool = False,
     create_dirs: bool = True,
 ) -> ToolResult:
+    from maya_agent.tools import fsutil
+
     try:
         resolved = _resolve_script_path(path, must_exist=False)
     except Exception as e:
@@ -591,23 +741,6 @@ def write_script_file(
             ok=False,
             error="路径不安全或不支持的扩展名（仅允许 .py/.mel/.json/.txt/.md）",
         )
-    if os.path.exists(resolved) and not overwrite:
-        return ToolResult(
-            ok=False,
-            error=f"文件已存在，未覆盖: {resolved}（设 overwrite=true 可覆盖）",
-            data={
-                "path": resolved.replace("\\", "/"),
-                "exists": True,
-                "overwritten": False,
-                "hint": "请设 overwrite=true 后重试，或换路径",
-            },
-        )
-    parent = os.path.dirname(resolved)
-    if create_dirs and parent and not os.path.isdir(parent):
-        try:
-            os.makedirs(parent, exist_ok=True)
-        except Exception as e:
-            return ToolResult(ok=False, error=f"创建目录失败: {e}")
     # Soft syntax gate for .py
     if resolved.lower().endswith(".py"):
         try:
@@ -619,20 +752,42 @@ def write_script_file(
                 data={"lineno": e.lineno, "offset": e.offset},
             )
     try:
-        with open(resolved, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
+        # Script tools keep absolute .py/.mel exception outside whitelist
+        data = fsutil.write_text(
+            resolved,
+            content,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            require_whitelist=False,
+        )
+    except fsutil.FsError as e:
+        if "已存在" in str(e):
+            return ToolResult(
+                ok=False,
+                error=str(e),
+                data={
+                    "path": resolved.replace("\\", "/"),
+                    "exists": True,
+                    "overwritten": False,
+                    "hint": "请设 overwrite=true 后重试，或换路径",
+                },
+            )
+        return ToolResult(ok=False, error=str(e))
     except Exception as e:
         return ToolResult(ok=False, error=f"写入失败: {e}")
     return ToolResult(
         ok=True,
-        data={"path": resolved, "bytes": len(content.encode("utf-8"))},
-        message=f"已写入 {resolved}",
+        data=data,
+        message=f"已写入 {data.get('path', resolved)}",
     )
 
 
 @tool(
     name="list_script_files",
-    description="列出脚本目录下的文件（默认 Maya userScriptDir）。",
+    description=(
+        "列出脚本目录下的文件（默认 Maya userScriptDir）。"
+        "通用目录浏览请用 list_directory。"
+    ),
     parameters=obj_schema(
         {
             "directory": {
@@ -657,54 +812,59 @@ def list_script_files(
     recursive: bool = False,
     limit: int = 80,
 ) -> ToolResult:
+    from maya_agent.tools import fsutil
+
     if directory.strip():
-        root = os.path.normpath(os.path.expanduser(directory.strip()))
+        root = directory.strip()
     elif in_maya():
-        root = os.path.normpath(_cmds().internalVar(userScriptDir=True) or "")
+        root = _cmds().internalVar(userScriptDir=True) or ""
     else:
         return ToolResult(ok=False, error="未指定 directory 且不在 Maya 中")
-    if not os.path.isdir(root):
-        return ToolResult(ok=False, error=f"目录不存在: {root}")
-    limit = max(1, min(int(limit), 500))
-    pat = (pattern or "").lower()
-    files: List[str] = []
-    if recursive:
-        for dirpath, _dirnames, filenames in os.walk(root):
-            for fn in filenames:
-                if pat and not fn.lower().endswith(pat):
-                    continue
-                files.append(os.path.join(dirpath, fn))
-                if len(files) >= limit:
-                    break
-            if len(files) >= limit:
-                break
-    else:
-        for fn in sorted(os.listdir(root)):
-            fp = os.path.join(root, fn)
-            if not os.path.isfile(fp):
-                continue
-            if pat and not fn.lower().endswith(pat):
-                continue
-            files.append(fp)
-            if len(files) >= limit:
-                break
-    return ToolResult(
-        ok=True,
-        data={"directory": root, "count": len(files), "files": files},
-        message=f"列出 {len(files)} 个文件",
-    )
+    try:
+        data = fsutil.list_dir(
+            root,
+            pattern=pattern or "",
+            recursive=recursive,
+            limit=limit,
+            files_only=True,
+        )
+        files = [e["path"] for e in data.get("entries") or [] if not e.get("is_dir")]
+        return ToolResult(
+            ok=True,
+            data={
+                "directory": data.get("directory"),
+                "count": len(files),
+                "files": files,
+            },
+            message=f"列出 {len(files)} 个文件",
+        )
+    except fsutil.FsError as e:
+        return ToolResult(ok=False, error=str(e))
+    except Exception as e:
+        return ToolResult(ok=False, error=str(e))
+
 
 
 @tool(
     name="run_python_file",
-    description="在 Maya 中执行磁盘上的 .py 文件（exec 文件内容）。用于测试已落盘的工具脚本。",
+    description="在 Maya 中执行磁盘上的 .py 文件。可用 args 作为 sys.argv[1:]，call 指定 exec 后调用的函数（如 run）。",
     parameters=obj_schema(
         {
-            "path": {"type": "string", "description": "脚本路径"},
+            "path": {"type": "string", "description": "脚本路径（相对 userScriptDir 或绝对路径）"},
             "as_main": {
                 "type": "boolean",
                 "default": True,
                 "description": "是否以 __name__=='__main__' 方式执行",
+            },
+            "args": {
+                "type": "array",
+                "items": {},
+                "description": "传入脚本的参数列表，写入 sys.argv[1:]；若 call 有值则作为位置参数",
+            },
+            "call": {
+                "type": "string",
+                "default": "",
+                "description": "exec 后调用的函数名，如 run；空则只执行文件",
             },
         },
         required=["path"],
@@ -712,7 +872,12 @@ def list_script_files(
     category="maya_dev",
     destructive=True,
 )
-def run_python_file(path: str, as_main: bool = True) -> ToolResult:
+def run_python_file(
+    path: str,
+    as_main: bool = True,
+    args: Optional[List[Any]] = None,
+    call: str = "",
+) -> ToolResult:
     if not in_maya():
         return ToolResult(ok=False, error="未在 Maya 中运行")
     try:
@@ -739,20 +904,33 @@ def run_python_file(path: str, as_main: bool = True) -> ToolResult:
     }
     # Ensure script directory is importable
     script_dir = os.path.dirname(resolved)
-    inserted = False
-    if script_dir and script_dir not in sys.path:
-        sys.path.insert(0, script_dir)
-        inserted = True
+    inserted_paths = []
+    for extra in (script_dir, os.path.dirname(script_dir) if script_dir else ""):
+        if extra and extra not in sys.path:
+            sys.path.insert(0, extra)
+            inserted_paths.append(extra)
+    argv_vals = [str(a) for a in (args or [])]
+    old_argv = list(sys.argv)
     try:
+        sys.argv = [resolved] + argv_vals
+        ns["__args__"] = list(args or [])
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exec(compile(code, resolved, "exec"), ns, ns)
+            call_name = (call or "").strip()
+            if call_name:
+                fn = ns.get(call_name)
+                if not callable(fn):
+                    raise RuntimeError(f"脚本中没有可调用的 {call_name}()")
+                ns["result"] = fn(*(args or []))
         return ToolResult(
             ok=True,
             data={
-                "path": resolved,
+                "path": resolved.replace("\\", "/"),
                 "stdout": stdout.getvalue(),
                 "stderr": stderr.getvalue(),
                 "result": ns.get("result"),
+                "args": argv_vals,
+                "call": (call or "").strip() or None,
             },
             message=f"已执行 {resolved}",
         )
@@ -761,15 +939,16 @@ def run_python_file(path: str, as_main: bool = True) -> ToolResult:
             ok=False,
             error=f"{type(e).__name__}: {e}",
             data={
-                "path": resolved,
+                "path": resolved.replace("\\", "/"),
                 "traceback": traceback.format_exc(),
                 "stdout": stdout.getvalue(),
             },
         )
     finally:
-        if inserted:
+        sys.argv = old_argv
+        for p in inserted_paths:
             try:
-                sys.path.remove(script_dir)
+                sys.path.remove(p)
             except ValueError:
                 pass
 

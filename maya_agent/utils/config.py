@@ -138,6 +138,15 @@ class Config:
                 "confirm_destructive": self.get("maya.confirm_destructive", True),
                 "max_tool_rounds": self.get("maya.max_tool_rounds", 30),
             },
+            "meshy": {
+                "enabled": self.get("meshy.enabled", True),
+                "base_url": self.get("meshy.base_url", "https://api.meshy.ai/openapi"),
+                "timeout": self.get("meshy.timeout", 60),
+                "poll_interval": self.get("meshy.poll_interval", 5),
+                "wait_timeout": self.get("meshy.wait_timeout", 600),
+                "download_dir": self.get("meshy.download_dir", ""),
+                "default_formats": self.get("meshy.default_formats", ["fbx", "glb"]),
+            },
             "providers": {},
         }
         for name, conf in (self._data.get("providers") or {}).items():
@@ -184,36 +193,34 @@ class Config:
         from maya_agent.utils.paths import project_root
 
         lang = str(self.get("app.language") or get_language() or "zh-CN")
-        # Prefer language-matched prompt; keep override only when it still exists.
         configured = self.get("llm.system_prompt_file", "")
-        rel = system_prompt_relpath(lang)
+        # Always use Chinese system prompt unless user set a custom file.
+        rel = "prompts/system_zh.md"
         if configured and configured not in (
             "prompts/system_zh.md",
             "prompts/system_en.md",
             "",
         ):
-            # Custom prompt file from advanced users
             rel = configured
+        else:
+            rel = system_prompt_relpath(lang)
 
         path = project_root() / "resources" / rel
         if not path.exists():
-            # Fallback chain
-            for candidate in (
-                system_prompt_relpath(lang),
-                "prompts/system_en.md",
-                "prompts/system_zh.md",
-            ):
-                alt = project_root() / "resources" / candidate
-                if alt.exists():
-                    path = alt
-                    break
+            path = project_root() / "resources" / "prompts" / "system_zh.md"
         if path.exists():
             text = path.read_text(encoding="utf-8")
         else:
             text = (
-                "You are Maya Agent, an expert Autodesk Maya assistant "
-                "for game development."
+                "你是 Maya Agent，面向 Autodesk Maya 游戏管线的 AI 助手。"
             )
+
+        try:
+            from maya_agent.tools.meshy_client import filter_system_prompt_meshy
+
+            text = filter_system_prompt_meshy(text)
+        except Exception:
+            pass
 
         reply_name = reply_language_name(lang)
         if lang == "zh-CN":
@@ -224,7 +231,10 @@ class Config:
                 + "\n\n## 輸出語言\n請使用繁體中文回覆使用者。"
             )
         if lang == "en-US":
-            return text
+            return (
+                text
+                + "\n\n## Output language\nAlways reply to the user in English."
+            )
         return (
             text
             + f"\n\n## Output language\nAlways reply to the user in {reply_name}."

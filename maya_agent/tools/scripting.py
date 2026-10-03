@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import os
 import re
+import sys
 import traceback
 from typing import Optional
 from contextlib import redirect_stdout, redirect_stderr
@@ -25,12 +27,47 @@ def _guess_fail_line(tb_text: str) -> Optional[int]:
         return None
 
 
+def _ensure_agent_import_paths() -> list:
+    """Put userScriptDir and MayaAgent_tools on sys.path so written scripts import."""
+    inserted = []
+    candidates = []
+    if in_maya():
+        try:
+            import maya.cmds as cmds
+
+            usd = cmds.internalVar(userScriptDir=True) or ""
+            if usd:
+                candidates.append(os.path.normpath(usd))
+                candidates.append(os.path.normpath(os.path.join(usd, "MayaAgent_tools")))
+        except Exception:
+            pass
+    for p in candidates:
+        if p and os.path.isdir(p) and p not in sys.path:
+            sys.path.insert(0, p)
+            inserted.append(p)
+    return inserted
+
+
+def _guess_fail_line(tb_text: str) -> Optional[int]:
+    """Extract failing line number from traceback for <maya_agent> code."""
+    if not tb_text:
+        return None
+    matches = re.findall(r'File "<maya_agent>", line (\d+)', tb_text)
+    if not matches:
+        return None
+    try:
+        return int(matches[-1])
+    except ValueError:
+        return None
+
+
 @tool(
     name="execute_python",
     description=(
         "在 Maya 中执行 Python 代码片段（可访问 maya.cmds）。"
-        "atomic=True（默认）时：异常会撤销本段 undo chunk，避免半改状态；"
-        "atomic=False 时保留已生效部分，并在返回中说明中止行号。"
+        "atomic=True（默认）时：异常会撤销本段 undo chunk（含中止前已成功的修改）；"
+        "返回 rolled_back=true 且 stdout_is_stale=true——stdout 是回滚前打印，不代表当前场景。"
+        "atomic=False 时保留已生效部分。userScriptDir 与 MayaAgent_tools 已在 sys.path 中，可直接 import。"
     ),
     parameters=obj_schema(
         {
@@ -56,6 +93,7 @@ def execute_python(
         return ToolResult(ok=False, error="未在 Maya 中运行")
     import maya.cmds as cmds
 
+    _ensure_agent_import_paths()
     stdout = io.StringIO()
     stderr = io.StringIO()
     local_ns = {"cmds": cmds, "__name__": "__maya_agent__"}
@@ -110,7 +148,16 @@ def execute_python(
             try:
                 cmds.undo()
                 data["rolled_back"] = True
-                note = "已回滚本段修改（atomic=True）"
+                data["stdout_is_stale"] = True
+                data["rolled_back_ops"] = (
+                    "本段 undo chunk 已全部撤销，包括中止前已成功的写权重/改属性等。"
+                    "stdout 仅反映回滚前的 print，不代表当前场景。"
+                )
+                stale = (
+                    "[注意] 下列 stdout 来自已回滚的执行，场景已还原为调用前状态。\n"
+                )
+                data["stdout"] = stale + (data.get("stdout") or "")
+                note = "已回滚本段全部修改（含中止前已成功步骤，atomic=True）"
                 if fail_line:
                     note = f"第 {fail_line} 行中止；{note}"
                 return ToolResult(ok=False, error=f"{err_msg}。{note}", data=data)

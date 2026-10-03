@@ -16,12 +16,13 @@ def create_animated_status(parent=None):
     QtCore, QtGui, QtWidgets, _ = import_qt()
 
     class IndeterminateBar(QtWidgets.QWidget):
-        """Thin sliding highlight bar shown while the agent is busy."""
+        """Thin progress strip: sliding (unknown) or filled (0–100%)."""
 
         def __init__(self, parent=None):
             super().__init__(parent)
-            self.setFixedHeight(2)
+            self.setFixedHeight(3)
             self._phase = 0
+            self._value = None  # None = indeterminate
             self._timer = QtCore.QTimer(self)
             self._timer.setInterval(40)
             self._timer.timeout.connect(self._tick)
@@ -29,15 +30,36 @@ def create_animated_status(parent=None):
 
         def start(self):
             self._phase = 0
+            if self._value is None:
+                self._timer.start()
             self.show()
-            self._timer.start()
+            self.update()
 
         def stop(self):
             self._timer.stop()
+            self._value = None
             self.hide()
             self.update()
 
+        def set_value(self, pct) -> None:
+            """Switch to determinate fill. Pass None to return to indeterminate."""
+            if pct is None:
+                self._value = None
+                if self.isVisible() and not self._timer.isActive():
+                    self._timer.start()
+                self.update()
+                return
+            try:
+                self._value = max(0, min(100, int(pct)))
+            except (TypeError, ValueError):
+                return
+            self._timer.stop()
+            self.show()
+            self.update()
+
         def _tick(self):
+            if self._value is not None:
+                return
             self._phase = (self._phase + 3) % 200
             self.update()
 
@@ -46,6 +68,15 @@ def create_animated_status(parent=None):
             painter.setRenderHint(QtGui.QPainter.Antialiasing)
             w, h = self.width(), self.height()
             painter.fillRect(0, 0, w, h, QtGui.QColor("#2e2f36"))
+
+            if self._value is not None:
+                fill_w = max(0, int(w * self._value / 100.0))
+                if fill_w > 0:
+                    grad = QtGui.QLinearGradient(0, 0, fill_w, 0)
+                    grad.setColorAt(0.0, QtGui.QColor("#5b8fc7"))
+                    grad.setColorAt(1.0, QtGui.QColor("#2f7d5b"))
+                    painter.fillRect(0, 0, fill_w, h, grad)
+                return
 
             bar_w = max(36, w // 5)
             x = int((w + bar_w) * self._phase / 200) - bar_w
@@ -65,6 +96,8 @@ def create_animated_status(parent=None):
             self._mode = "idle"
             self._base_text = t("status.ready")
             self._tool_name = ""
+            self._tool_progress = None
+            self._tool_status = ""
             self._frame = 0
 
             outer = QtWidgets.QVBoxLayout(self)
@@ -130,7 +163,43 @@ def create_animated_status(parent=None):
 
         def set_tool(self, name: str) -> None:
             self._tool_name = name or "tool"
+            self._tool_progress = None
+            self._tool_status = ""
+            self.progress.set_value(None)
             self._start_mode("tool", t("status.tool", name=self._tool_name))
+
+        def set_tool_progress(
+            self,
+            name: str = "",
+            progress=None,
+            status: str = "",
+        ) -> None:
+            if name:
+                self._tool_name = name
+            if progress is not None:
+                try:
+                    self._tool_progress = int(progress)
+                except (TypeError, ValueError):
+                    self._tool_progress = progress
+                self.progress.set_value(self._tool_progress)
+            if status:
+                self._tool_status = status
+            if self._mode != "tool":
+                self._start_mode("tool", self._tool_base_text())
+            else:
+                self._base_text = self._tool_base_text()
+                self._tick()
+
+        def _tool_base_text(self) -> str:
+            base = t("status.tool", name=self._tool_name or "tool")
+            bits = []
+            if self._tool_status:
+                bits.append(str(self._tool_status))
+            if self._tool_progress is not None:
+                bits.append(f"{self._tool_progress}%")
+            if bits:
+                return f"{base} · {' '.join(bits)}"
+            return base
 
         def set_error(self, text: str = "") -> None:
             self.stop_animation()
@@ -145,6 +214,8 @@ def create_animated_status(parent=None):
             self.spinner.hide()
             self.spinner.setStyleSheet("")
             self._mode = "idle"
+            self._tool_progress = None
+            self._tool_status = ""
 
         def _start_mode(self, mode: str, base_text: str) -> None:
             self._mode = mode
@@ -152,7 +223,11 @@ def create_animated_status(parent=None):
             self._frame = 0
             self.spinner.setStyleSheet("color: #8fd4a8; font-size: 13px;")
             self.spinner.show()
-            self.progress.start()
+            if mode == "tool" and self._tool_progress is not None:
+                self.progress.set_value(self._tool_progress)
+            else:
+                self.progress.set_value(None)
+                self.progress.start()
             if not self._timer.isActive():
                 self._timer.start()
             self._tick()

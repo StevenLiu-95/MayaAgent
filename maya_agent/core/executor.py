@@ -42,13 +42,18 @@ class ToolExecutor:
             if reg.destructive and cfg.get("maya.confirm_destructive", True):
                 if self.confirm_callback and not self.confirm_callback(name, args):
                     return ToolResult(ok=False, error="用户取消了危险操作")
+            # Off-main-thread tools (e.g. Meshy HTTP wait) skip Maya undo chunks.
+            if not getattr(reg, "main_thread", True):
+                return run_tool(name, args)
             use_undo = in_maya() and cfg.get("maya.auto_undo", True)
             turn_open = bool(self.turn_undo_active and self.turn_undo_active())
             if use_undo and not turn_open:
                 return self._with_undo(name, args)
             return run_tool(name, args)
 
-        return run_on_main_thread(_do)
+        if getattr(reg, "main_thread", True):
+            return run_on_main_thread(_do)
+        return _do()
 
     def _with_undo(self, name: str, args: Dict[str, Any]) -> ToolResult:
         import maya.cmds as cmds

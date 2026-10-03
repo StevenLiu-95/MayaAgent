@@ -1207,6 +1207,24 @@ class MayaAgentWindow:
                         self.chat.tool_start(event.get("name", ""))
                         self.status_label.set_tool(event.get("name", ""))
 
+                elif et == "tool_progress":
+                    name = event.get("name", "")
+                    progress = event.get("progress")
+                    status = event.get("status", "")
+                    message = event.get("message", "")
+                    if show_tools:
+                        self.chat.tool_progress(
+                            name=name,
+                            progress=progress,
+                            status=status,
+                            message=message,
+                        )
+                    self.status_label.set_tool_progress(
+                        name=name or getattr(self.status_label, "_tool_name", ""),
+                        progress=progress,
+                        status=status,
+                    )
+
                 elif et == "tool_end":
                     self._flush_stream()
                     if show_tools:
@@ -1222,6 +1240,15 @@ class MayaAgentWindow:
                     count = int(event.get("count") or 0)
                     if count:
                         self.status_label.set_idle(t("status.vision_context", count=count))
+                    if self._worker and self._worker.isRunning():
+                        self.status_label.set_thinking()
+
+                elif et == "chat_images_staged":
+                    count = int(event.get("count") or 0)
+                    if count:
+                        self.status_label.set_idle(
+                            f"已保存 {count} 张对话附图到本地"
+                        )
                     if self._worker and self._worker.isRunning():
                         self.status_label.set_thinking()
 

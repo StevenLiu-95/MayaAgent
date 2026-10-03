@@ -119,8 +119,5 @@ def reply_language_name(code: Optional[str] = None) -> str:
 
 
 def system_prompt_relpath(code: Optional[str] = None) -> str:
-    """Relative prompt path under resources/ for the given UI language."""
-    code = code or _lang
-    if code in ("zh-CN", "zh-TW"):
-        return "prompts/system_zh.md"
-    return "prompts/system_en.md"
+    """Relative prompt path under resources/ (always Chinese system prompt)."""
+    return "prompts/system_zh.md"

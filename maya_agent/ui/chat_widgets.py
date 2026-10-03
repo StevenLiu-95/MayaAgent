@@ -228,6 +228,18 @@ def create_chat_panel(parent=None):
             self.title.setWordWrap(True)
             self.title.setMinimumWidth(0)
             self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self.bar = QtWidgets.QProgressBar()
+            self.bar.setObjectName("toolProgress")
+            self.bar.setRange(0, 100)
+            self.bar.setValue(0)
+            self.bar.setTextVisible(True)
+            self.bar.setFormat("%p%")
+            self.bar.setFixedHeight(16)
+            self.bar.setMinimumWidth(0)
+            self.bar.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+            )
+            self.bar.hide()
             self.detail = QtWidgets.QLabel("")
             self.detail.setWordWrap(True)
             self.detail.setMinimumWidth(0)
@@ -249,6 +261,7 @@ def create_chat_panel(parent=None):
             self.expand_btn.clicked.connect(self._toggle_expand)
             self.expand_btn.hide()
             lay.addWidget(self.title)
+            lay.addWidget(self.bar)
             lay.addWidget(self.detail)
             self._image_host = QtWidgets.QWidget()
             self._image_host.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
@@ -260,6 +273,8 @@ def create_chat_panel(parent=None):
             lay.addWidget(self._image_host)
             lay.addWidget(self.expand_btn, 0, QtCore.Qt.AlignLeft)
             self._running_name = ""
+            self._progress_pct = None
+            self._progress_status = ""
             self._anim_frame = 0
             self._anim_timer = QtCore.QTimer(self)
             self._anim_timer.setInterval(130)
@@ -327,6 +342,24 @@ def create_chat_panel(parent=None):
                 QFrame#toolRow QLabel#toolDetail {{
                     color: #b0a080;
                     font-size: 11px;
+                }}
+                QFrame#toolRow QProgressBar#toolProgress {{
+                    background-color: #2a2618;
+                    border: 1px solid #6a5a38;
+                    border-radius: 5px;
+                    text-align: center;
+                    color: #f0e0b0;
+                    font-size: 10px;
+                    font-weight: 600;
+                    max-height: 16px;
+                    min-height: 14px;
+                }}
+                QFrame#toolRow QProgressBar#toolProgress::chunk {{
+                    background-color: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #8a7040, stop:0.5 #c9a84a, stop:1 #e0c868
+                    );
+                    border-radius: 4px;
                 }}
                 QFrame#toolRow QPushButton#toolExpandBtn {{
                     background: transparent;
@@ -417,14 +450,26 @@ def create_chat_panel(parent=None):
             self._anim_frame += 1
             spin = _SPINNER[self._anim_frame % len(_SPINNER)]
             dots = "." * (self._anim_frame % 4)
-            self.title.setText(f"{spin} 正在执行  {self._running_name}{dots}")
+            suffix = self._progress_suffix()
+            self.title.setText(
+                f"{spin} 正在执行  {self._running_name}{suffix}{dots}"
+            )
             self.setStyleSheet(self._running_stylesheet(self._anim_frame % 2 == 0))
+
+        def _progress_suffix(self) -> str:
+            if self._progress_status:
+                return " · " + str(self._progress_status)
+            return ""
 
         def set_running(self, name: str):
             self._running_name = name
+            self._progress_pct = None
+            self._progress_status = ""
             self._anim_frame = 0
             self.setStyleSheet(self._running_stylesheet(False))
             self.title.setText(f"◐ 正在执行  {name}")
+            self.bar.hide()
+            self.bar.setValue(0)
             self.detail.setText("")
             self.detail.hide()
             self.expand_btn.hide()
@@ -434,8 +479,42 @@ def create_chat_panel(parent=None):
             if not self._anim_timer.isActive():
                 self._anim_timer.start()
 
+        def set_progress(
+            self,
+            progress=None,
+            status: str = "",
+            message: str = "",
+        ) -> None:
+            if progress is not None:
+                try:
+                    self._progress_pct = max(0, min(100, int(progress)))
+                except (TypeError, ValueError):
+                    self._progress_pct = progress
+                try:
+                    self.bar.setValue(int(self._progress_pct))
+                except (TypeError, ValueError):
+                    pass
+                self.bar.show()
+            if status:
+                self._progress_status = status
+            # Prefer the bar over repeating the same progress text in detail
+            if self._progress_pct is not None:
+                self.detail.hide()
+            elif message:
+                self.detail.setText(message)
+                self.detail.show()
+            if self._anim_timer.isActive():
+                self._tick_running()
+            else:
+                suffix = self._progress_suffix()
+                self.title.setText(f"◐ 正在执行  {self._running_name}{suffix}")
+
         def set_done(self, name: str, result_json: str):
             self._anim_timer.stop()
+            self._progress_pct = None
+            self._progress_status = ""
+            self.bar.hide()
+            self.bar.setValue(0)
             title, preview, full, ok, needs_expand = (
                 chat_format.summarize_tool_result_views(name, result_json)
             )
@@ -1319,6 +1398,34 @@ def create_chat_panel(parent=None):
                     {"kind": "tool", "name": name, "status": "running"}
                 )
             self._scroll_to_bottom()
+
+        def tool_progress(
+            self,
+            name: str = "",
+            progress=None,
+            status: str = "",
+            message: str = "",
+        ):
+            if self._current is None:
+                return
+            for row in reversed(getattr(self._current, "_tools", []) or []):
+                if not getattr(row, "_anim_timer", None) or not row._anim_timer.isActive():
+                    continue
+                if name and name not in (row._running_name or "") and name not in row.title.text():
+                    continue
+                row.set_progress(progress=progress, status=status, message=message)
+                break
+            block = self._assistant_block()
+            if block is not None:
+                for t in reversed(block.setdefault("tools", [])):
+                    if t.get("status") == "running" and (
+                        not name or t.get("name") == name
+                    ):
+                        if progress is not None:
+                            t["progress"] = progress
+                        if status:
+                            t["task_status"] = status
+                        break
 
         def tool_end(self, name: str, result: str, images: Optional[List[Any]] = None):
             if self._current is None:

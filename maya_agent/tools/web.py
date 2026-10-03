@@ -60,9 +60,9 @@ def _web_cfg() -> Dict[str, Any]:
         "user_agent": str(
             cfg.get(
                 "web.user_agent",
-                "Mozilla/5.0 (compatible; MayaAgent/1.3; +https://localhost)",
+                "Mozilla/5.0 (compatible; MayaAgent/1.4; +https://localhost)",
             )
-            or "Mozilla/5.0 MayaAgent/1.3"
+            or "Mozilla/5.0 MayaAgent/1.4"
         ),
     }
 

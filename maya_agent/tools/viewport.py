@@ -21,6 +21,22 @@ _DEFAULT_H = 720
 _MULTI_W = 960
 _MULTI_H = 540
 _EMPTY_VARIANCE = 12.0  # below → mostly flat / empty frame
+_LOW_COVERAGE = 0.22  # subject angular/ortho size vs FOV; below → warn
+
+_MODEL_EDITOR_OVERLAYS = (
+    "joints",
+    "ikHandles",
+    "locators",
+    "nurbsCurves",
+    "cv",
+    "hulls",
+    "deformers",
+    "cameras",
+    "lights",
+    "grid",
+    "manipulators",
+    "selectionHiliteDisplay",
+)
 
 _VIEW_CAMERA_ALIASES: Dict[str, List[str]] = {
     "persp": ["persp"],
@@ -425,6 +441,66 @@ def _clip_warning(cam_meta: Dict[str, Any], bbox: Optional[Dict[str, Any]]) -> s
     return ""
 
 
+def _subject_coverage(cam_meta: Dict[str, Any], bbox: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Estimate how much of the frame the bbox occupies (0–1)."""
+    if not bbox or not cam_meta:
+        return None
+    pos = cam_meta.get("position")
+    center = bbox.get("center")
+    diag = float(bbox.get("diagonal") or 0)
+    if not pos or not center or diag <= 0:
+        return None
+    dist = math.sqrt(
+        (pos[0] - center[0]) ** 2
+        + (pos[1] - center[1]) ** 2
+        + (pos[2] - center[2]) ** 2
+    )
+    radius = 0.5 * diag
+    if cam_meta.get("orthographic"):
+        ow = float(cam_meta.get("orthographic_width") or 0) or 1.0
+        return max(0.0, min(1.0, (max(bbox.get("size") or [diag])) / ow))
+    if dist < 1e-6:
+        return 1.0
+    fl = float(cam_meta.get("focal_length") or 35.0)
+    h_ap = float(cam_meta.get("film_aperture_h") or 1.417)
+    h_mm = h_ap * 25.4
+    hfov = 2.0 * math.atan((h_mm * 0.5) / max(fl, 1e-3))
+    angular = 2.0 * math.atan(radius / dist)
+    if hfov <= 1e-6:
+        return None
+    return max(0.0, min(1.0, angular / hfov))
+
+
+def _coverage_warning(coverage: Optional[float]) -> str:
+    if coverage is None:
+        return ""
+    if coverage < _LOW_COVERAGE:
+        return (
+            f"主体偏小（估计占画面 {coverage:.0%}），透视距离可能过大；"
+            "可减小机位距离或只对目标物体取景"
+        )
+    return ""
+
+
+def _persp_fit_distance(bbox: Dict[str, Any], shape: str, margin: float) -> float:
+    """Distance so the bbox bounding-sphere fills the perspective FOV."""
+    c = _cmds()
+    radius = 0.5 * max(float(bbox.get("diagonal") or 1.0), 1.0)
+    fl = 35.0
+    h_ap = 1.417
+    try:
+        if c.attributeQuery("focalLength", node=shape, exists=True):
+            fl = float(c.getAttr(f"{shape}.focalLength") or 35.0)
+        if c.attributeQuery("horizontalFilmAperture", node=shape, exists=True):
+            h_ap = float(c.getAttr(f"{shape}.horizontalFilmAperture") or 1.417)
+    except Exception:
+        pass
+    hfov = 2.0 * math.atan((h_ap * 25.4 * 0.5) / max(fl, 1e-3))
+    half = max(hfov * 0.5, 1e-4)
+    dist = radius / math.sin(half)
+    return max(dist * (1.0 + max(margin, 0.0)), radius * 1.2)
+
+
 def _ensure_far_clip_covers(
     camera: str,
     bbox: Optional[Dict[str, Any]],
@@ -556,16 +632,23 @@ def _create_framed_view_camera(
     ox, oy, oz = ox / length, oy / length, oz / length
     center = bbox["center"]
     diag = max(float(bbox.get("diagonal") or 1.0), 1.0)
-    dist = diag * (2.4 if key == "persp" else 2.0)
+    cam_nodes = c.camera(name=f"MayaAgent_{key}_cam")
+    cam = cam_nodes[0] if isinstance(cam_nodes, (list, tuple)) else cam_nodes
+    shape = _camera_shape(cam)
+    if key == "persp":
+        try:
+            c.setAttr(f"{shape}.focalLength", 35.0)
+        except Exception:
+            pass
+        dist = _persp_fit_distance(bbox, shape, margin) if shape else diag * 1.6
+    else:
+        dist = diag * 2.0
     eye = (
         center[0] + ox * dist,
         center[1] + oy * dist,
         center[2] + oz * dist,
     )
-    cam_nodes = c.camera(name=f"MayaAgent_{key}_cam")
-    cam = cam_nodes[0] if isinstance(cam_nodes, (list, tuple)) else cam_nodes
     _aim_camera(cam, eye, center)
-    shape = _camera_shape(cam)
     far = dist + diag * 2.0
     near = max(0.01, dist * 0.001)
     if shape:
@@ -579,11 +662,6 @@ def _create_framed_view_camera(
             try:
                 c.setAttr(f"{shape}.orthographic", 1)
                 c.setAttr(f"{shape}.orthographicWidth", width)
-            except Exception:
-                pass
-        else:
-            try:
-                c.setAttr(f"{shape}.focalLength", 35.0)
             except Exception:
                 pass
     return cam
@@ -677,6 +755,9 @@ def _apply_viewport_display(
     display_mode: str = "",
     show_only: Optional[List[str]] = None,
     shadows: Optional[bool] = None,
+    hide_joints: bool = False,
+    hide_controls: bool = False,
+    mesh_only: bool = False,
 ) -> Callable[[], None]:
     """Temporarily change display appearance / isolate / shadows; returns restore fn."""
     c = _cmds()
@@ -684,6 +765,22 @@ def _apply_viewport_display(
     prev_sel = c.ls(selection=True, long=True) or []
     isolate_on = False
     vis_restore: List[Tuple[str, bool]] = []
+
+    overlay_off: List[str] = []
+    if mesh_only:
+        overlay_off = list(_MODEL_EDITOR_OVERLAYS)
+    else:
+        if hide_joints:
+            overlay_off.extend(["joints", "ikHandles"])
+        if hide_controls:
+            overlay_off.extend(["nurbsCurves", "cv", "hulls", "locators", "manipulators"])
+    for flag in dict.fromkeys(overlay_off):
+        try:
+            prev = c.modelEditor(panel, query=True, **{flag: True})
+            c.modelEditor(panel, edit=True, **{flag: False})
+            restore_editor.append((flag, prev))
+        except Exception as e:
+            log.debug("modelEditor %s skip: %s", flag, e)
 
     if display_mode:
         mode = _DISPLAY_MODE_MAP.get(str(display_mode).lower(), str(display_mode))
@@ -783,7 +880,8 @@ def _finish_capture(
         _cleanup_capture(image_path)
 
     bbox = _world_bbox(framed if framed else None)
-    cam_meta = _camera_meta(camera)
+    extra = extra or {}
+    cam_meta = extra.pop("camera_meta_at_capture", None) or _camera_meta(camera)
     warnings: List[str] = []
     if emptiness.get("mostly_empty"):
         warnings.append(
@@ -792,6 +890,13 @@ def _finish_capture(
     clip_w = _clip_warning(cam_meta, bbox)
     if clip_w:
         warnings.append(clip_w)
+    coverage = _subject_coverage(cam_meta, bbox)
+    cov_w = _coverage_warning(coverage)
+    if cov_w:
+        warnings.append(cov_w)
+    if isinstance(emptiness, dict) and coverage is not None:
+        emptiness = dict(emptiness)
+        emptiness["subject_coverage"] = round(coverage, 3)
 
     data: Dict[str, Any] = {
         "panel": panel,
@@ -808,6 +913,11 @@ def _finish_capture(
     }
     if extra:
         data.update(extra)
+    for item in data.get("ignored") or []:
+        text = str(item)
+        if text and text not in warnings:
+            warnings.append(text)
+    data["warnings"] = warnings
 
     msg = "视口截图已完成"
     if note:
@@ -831,10 +941,11 @@ def _finish_capture(
 @tool(
     name="capture_viewport",
     description=(
-        "截取当前 Maya 模型视口（单视角）。支持指定相机、look_at 取景、焦距。"
-        "可用 show_only 只显示指定组/物体，display_mode 切线框/着色，shadows 开阴影。"
-        "返回相机 near/far/位置与场景 bbox；若画面近乎空白会附带 warning。"
-        "临时相机（若创建）会在截图后自动删除。"
+        "截取当前 Maya 模型视口（单视角）。"
+        "机位优先级：camera_position/look_at 一定生效，此时不会再 viewFit（避免覆盖机位）；"
+        "frame_objects 在显式机位下只用于 bbox/远裁剪。"
+        "hide_joints / hide_controls / mesh_only 可关掉骨骼与控制器叠加（形变 QC 建议 mesh_only=true）。"
+        "返回 camera_meta（截图当时）、requested/applied 机位、subject_coverage；被忽略的参数会进 warnings。"
     ),
     parameters=obj_schema(
         {
@@ -903,6 +1014,21 @@ def _finish_capture(
                 "description": "若场景超出 farClip 则临时扩大远裁剪面（截完恢复）",
             },
             "show_ornaments": {"type": "boolean", "default": False},
+            "hide_joints": {
+                "type": "boolean",
+                "default": True,
+                "description": "截图时隐藏关节显示（不影响场景，截完恢复）",
+            },
+            "hide_controls": {
+                "type": "boolean",
+                "default": True,
+                "description": "截图时隐藏曲线控制器/locator",
+            },
+            "mesh_only": {
+                "type": "boolean",
+                "default": False,
+                "description": "只显示网格：关掉关节、IK、曲线、灯光等视口叠加",
+            },
             "note": {"type": "string", "default": ""},
         }
     ),
@@ -926,6 +1052,9 @@ def capture_viewport(
     margin: float = 0.08,
     auto_extend_far_clip: bool = True,
     show_ornaments: bool = False,
+    hide_joints: bool = True,
+    hide_controls: bool = True,
+    mesh_only: bool = False,
     note: str = "",
 ) -> ToolResult:
     c = _cmds()
@@ -1019,14 +1148,19 @@ def capture_viewport(
         display_mode=display_mode or "",
         show_only=show_only,
         shadows=shadows,
+        hide_joints=hide_joints,
+        hide_controls=hide_controls,
+        mesh_only=mesh_only,
     )
 
     image_path = ""
     capture_method = "playblast"
+    shot_meta: Dict[str, Any] = {}
     try:
         image_path, capture_method = _capture_panel_image(
             panel_name, width, height, show_ornaments=show_ornaments
         )
+        shot_meta = _camera_meta(active_cam)
     finally:
         restore_display()
         restore_sel()
@@ -1046,17 +1180,19 @@ def capture_viewport(
             except Exception:
                 pass
 
-    cam_now = active_cam
-    try:
-        cam_now = c.modelEditor(panel_name, query=True, camera=True) or cam_now
-    except Exception:
-        pass
+    ignored: List[str] = []
+    framing_mode = "explicit_pose" if pose_requested else ("viewFit" if did_frame else "none")
+    if pose_requested and (frame_objects or frame_selection):
+        ignored.append(
+            "frame_objects/viewFit：显式 camera_position/look_at 优先，未执行 viewFit，"
+            "以免覆盖机位；frame_objects 仅用于 bbox/远裁剪"
+        )
 
     return _finish_capture(
         image_path=image_path,
         attachment_name="viewport.jpg",
         panel=panel_name,
-        camera=cam_now or active_cam or "",
+        camera=shot_meta.get("camera") or active_cam or "",
         width=width,
         height=height,
         method=capture_method,
@@ -1069,6 +1205,22 @@ def capture_viewport(
             "show_only": list(show_only or []),
             "display_mode": display_mode or "",
             "shadows": shadows,
+            "hide_joints": hide_joints,
+            "hide_controls": hide_controls,
+            "mesh_only": mesh_only,
+            "framing_mode": framing_mode,
+            "requested": {
+                "camera_position": list(camera_position) if camera_position is not None else None,
+                "look_at": list(look_at) if look_at is not None else None,
+                "focal_length": focal_length,
+                "frame_objects": list(frame_objects or []),
+            },
+            "applied": {
+                "pose_applied": bool(pose_requested and active_cam),
+                "skipped_viewFit": bool(pose_requested),
+            },
+            "ignored": ignored,
+            "camera_meta_at_capture": shot_meta,
         },
     )
 
@@ -1077,9 +1229,10 @@ def capture_viewport(
     name="capture_viewport_views",
     description=(
         "多视角截图（默认透视+前+侧+顶，最多 4 张）。"
-        "使用临时相机并按场景 bbox 与画布宽高比设置正交宽度/远裁剪；"
+        "透视相机按 bbox 球径与焦距反算距离，避免主体过小；"
+        "image_stats.subject_coverage 低于约 22% 会 warning。"
+        "hide_joints 默认开；形变 QC 可用 mesh_only=true。"
         "截图结束后自动删除临时相机（temporary_cameras_cleaned=true）。"
-        "支持 show_only / display_mode / shadows。"
     ),
     parameters=obj_schema(
         {
@@ -1120,6 +1273,9 @@ def capture_viewport(
                 "description": "取景余量，默认 0.1（约 10%）",
             },
             "show_ornaments": {"type": "boolean", "default": False},
+            "hide_joints": {"type": "boolean", "default": True},
+            "hide_controls": {"type": "boolean", "default": True},
+            "mesh_only": {"type": "boolean", "default": False},
             "note": {"type": "string", "default": ""},
         }
     ),
@@ -1138,6 +1294,9 @@ def capture_viewport_views(
     shadows: Optional[bool] = None,
     margin: float = 0.1,
     show_ornaments: bool = False,
+    hide_joints: bool = True,
+    hide_controls: bool = True,
+    mesh_only: bool = False,
     note: str = "",
 ) -> ToolResult:
     c = _cmds()
@@ -1171,6 +1330,9 @@ def capture_viewport_views(
         display_mode=display_mode or "",
         show_only=show_only,
         shadows=shadows,
+        hide_joints=hide_joints,
+        hide_controls=hide_controls,
+        mesh_only=mesh_only,
     )
 
     def _restore_selection():
@@ -1207,6 +1369,12 @@ def capture_viewport_views(
                 clip_w = _clip_warning(cam_meta, bbox)
                 if clip_w:
                     view_warnings.append(f"{view}: {clip_w}")
+                coverage = _subject_coverage(cam_meta, bbox)
+                cov_w = _coverage_warning(coverage)
+                if cov_w:
+                    view_warnings.append(f"{view}: {cov_w}")
+                if coverage is not None:
+                    emptiness["subject_coverage"] = round(coverage, 3)
                 warnings_all.extend(view_warnings)
                 attachments.append(att)
                 captured.append(
@@ -1278,6 +1446,9 @@ def capture_viewport_views(
             "show_only": list(show_only or []),
             "display_mode": display_mode or "",
             "shadows": shadows,
+            "hide_joints": hide_joints,
+            "hide_controls": hide_controls,
+            "mesh_only": mesh_only,
             "temporary_cameras_cleaned": cleaned,
             "errors": errors,
             "warnings": warnings_all,

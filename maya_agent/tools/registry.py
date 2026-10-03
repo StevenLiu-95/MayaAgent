@@ -45,6 +45,9 @@ class RegisteredTool:
     category: str = "general"
     destructive: bool = False
     requires_vision: bool = False
+    # When False, ToolExecutor runs the handler on the worker thread
+    # (HTTP / long polls). Maya cmds tools must keep the default True.
+    main_thread: bool = True
 
 
 _REGISTRY: Dict[str, RegisteredTool] = {}
@@ -57,6 +60,7 @@ def tool(
     category: str = "general",
     destructive: bool = False,
     requires_vision: bool = False,
+    main_thread: bool = True,
 ):
     """Register a callable as an agent tool."""
 
@@ -69,6 +73,7 @@ def tool(
             category=category,
             destructive=destructive,
             requires_vision=requires_vision,
+            main_thread=main_thread,
         )
         return fn
 
@@ -84,10 +89,20 @@ def all_tools() -> List[RegisteredTool]:
 
 
 def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
-    """Return OpenAI-style tool schemas. Vision-only tools omitted when vision=False."""
+    """Return OpenAI-style tool schemas. Vision-only / unavailable Meshy tools omitted."""
+    meshy_ok = True
+    try:
+        from maya_agent.tools.meshy_client import meshy_tools_available
+
+        meshy_ok = meshy_tools_available()
+    except Exception:
+        meshy_ok = False
+
     specs = []
     for t in _REGISTRY.values():
         if t.requires_vision and not vision:
+            continue
+        if t.category == "meshy" and not meshy_ok:
             continue
         specs.append(
             ToolSpec(name=t.name, description=t.description, parameters=t.parameters)

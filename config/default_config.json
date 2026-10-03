@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.3.3",
+    "version": "1.4.0",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -225,7 +225,17 @@
     "max_search_results": 8,
     "max_images": 4,
     "max_download_bytes": 5000000,
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MayaAgent/1.3"
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MayaAgent/1.4"
+  },
+  "meshy": {
+    "enabled": true,
+    "base_url": "https://api.meshy.ai/openapi",
+    "api_key_env": "MESHY_API_KEY",
+    "timeout": 60,
+    "poll_interval": 5,
+    "wait_timeout": 600,
+    "download_dir": "",
+    "default_formats": ["fbx", "glb"]
   },
   "ui": {
     "dock_area": "right",

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import contextvars
+import queue
+import threading
 from typing import Any, Callable, Dict, Generator, List, Optional
 
 from maya_agent.core.executor import ToolExecutor
 from maya_agent.core.memory import ConversationMemory
+from maya_agent.core.tool_progress import (
+    push_progress_emitter,
+    reset_progress_emitter,
+)
 from maya_agent.core.undo import UndoTurnManager
 from maya_agent.llm.base import (
     ChatMessage,
@@ -55,14 +62,19 @@ class MayaAgent:
         self._ensure_system_prompt()
 
     def _ensure_system_prompt(self) -> None:
-        if any(m.role == "system" for m in self.memory.messages):
-            return
         prompt = get_config().system_prompt()
         env = (
             f"\n\n## 运行环境\n- Maya: {maya_version() if in_maya() else '未在 Maya 内'}\n"
             f"- 工具数量: {len(tool_specs())}\n"
         )
-        self.memory.add(ChatMessage(role="system", content=prompt + env))
+        full = prompt + env
+        for i, m in enumerate(self.memory.messages):
+            if m.role == "system":
+                # Refresh when Meshy availability / tool count changes mid-session
+                if m.content != full:
+                    self.memory.messages[i] = ChatMessage(role="system", content=full)
+                return
+        self.memory.add(ChatMessage(role="system", content=full))
 
     def reset(self) -> None:
         self.memory.clear()
@@ -103,8 +115,10 @@ class MayaAgent:
           {"type":"text","content":"..."}
           {"type":"thinking","content":"..."}
           {"type":"tool_start","name":"...","arguments":"..."}
+          {"type":"tool_progress","name":"...","progress":0-100,"status":"...","message":"..."}
           {"type":"tool_end","name":"...","result":"...","images":[...optional...]}
           {"type":"vision_context","count":N}
+          {"type":"chat_images_staged","count":N,"paths":[...]}
           {"type":"error","content":"...","stop_notice":"..."}
           {"type":"done","content":"...","model":"...","usage":{...},"stop_notice":"..."}
           {"type":"stopped","reason":"...","stop_notice":"..."}
@@ -115,9 +129,24 @@ class MayaAgent:
         text = (user_text or "").strip()
         if attached and not text:
             text = "请查看附图。"
+        self._ensure_system_prompt()
         self.memory.add(
             ChatMessage(role="user", content=text, images=attached or None)
         )
+        staged_chat_images: List[Dict[str, Any]] = []
+        if attached:
+            try:
+                from maya_agent.tools.fsutil import stage_chat_images
+
+                staged_chat_images = stage_chat_images(attached)
+            except Exception:
+                log.exception("stage chat images failed")
+        if staged_chat_images:
+            yield {
+                "type": "chat_images_staged",
+                "count": len(staged_chat_images),
+                "paths": [x.get("path") for x in staged_chat_images if x.get("path")],
+            }
         cfg = get_config()
         max_rounds = int(cfg.get("maya.max_tool_rounds", 30))
         use_stream = stream and cfg.get("agent.stream", True)
@@ -324,7 +353,51 @@ class MayaAgent:
         if self.on_tool_start:
             self.on_tool_start(tc.name, tc.arguments)
         yield {"type": "tool_start", "name": tc.name, "arguments": tc.arguments}
-        result = self.executor.execute(tc.name, tc.arguments)
+
+        # Run the handler on a side thread so progress events can be yielded
+        # while long polls (e.g. Meshy wait) are in flight.
+        progress_q: queue.Queue = queue.Queue()
+        box: Dict[str, Any] = {"result": None, "error": None}
+
+        def _emit_progress(event: Dict[str, Any]) -> None:
+            if not isinstance(event, dict):
+                return
+            payload = dict(event)
+            payload.setdefault("type", "tool_progress")
+            payload.setdefault("name", tc.name)
+            progress_q.put(payload)
+
+        token = push_progress_emitter(_emit_progress)
+
+        def _execute() -> None:
+            try:
+                box["result"] = self.executor.execute(tc.name, tc.arguments)
+            except BaseException as exc:
+                box["error"] = exc
+            finally:
+                progress_q.put(None)
+
+        ctx = contextvars.copy_context()
+        thread = threading.Thread(
+            target=ctx.run,
+            args=(_execute,),
+            name=f"maya_agent_tool:{tc.name}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            while True:
+                item = progress_q.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            thread.join()
+            reset_progress_emitter(token)
+
+        if box["error"] is not None:
+            raise box["error"]
+        result = box["result"]
         result = self._apply_vision_gate(result, vision_ok=vision_ok)
         text = result.to_str()
         image_dicts = []

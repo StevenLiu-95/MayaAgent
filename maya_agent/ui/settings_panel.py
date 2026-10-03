@@ -216,6 +216,48 @@ def create_settings_panel(
             conn_lay.addLayout(actions)
             root.addWidget(conn)
 
+            meshy, meshy_lay = self._section(
+                t("settings.section.meshy"),
+                t("settings.section.meshy_hint"),
+            )
+            self.meshy_enabled = QtWidgets.QCheckBox(t("settings.meshy_enabled"))
+            meshy_lay.addWidget(
+                self._option_row(
+                    self.meshy_enabled, t("settings.meshy_enabled_hint")
+                )
+            )
+            mform = self._form(meshy_lay)
+            self.meshy_api_key_edit = QtWidgets.QLineEdit()
+            self.meshy_api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+            self.meshy_api_key_edit.setPlaceholderText(t("settings.meshy_api_key_ph"))
+            self.meshy_api_key_edit.setMinimumHeight(30)
+            mform.addRow(
+                self._field_label(t("settings.meshy_api_key")),
+                self.meshy_api_key_edit,
+            )
+            meshy_actions = QtWidgets.QHBoxLayout()
+            meshy_actions.setContentsMargins(0, 4, 0, 0)
+            meshy_actions.setSpacing(10)
+            self.meshy_test_status = QtWidgets.QLabel("")
+            self.meshy_test_status.setObjectName("testConnStatus")
+            self.meshy_test_status.setWordWrap(True)
+            self.meshy_test_status.setAlignment(
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+            )
+            self.meshy_test_status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            meshy_actions.addWidget(self.meshy_test_status, 1)
+            self.meshy_test_btn = QtWidgets.QPushButton(t("settings.meshy_test"))
+            self.meshy_test_btn.setObjectName("secondaryBtn")
+            self.meshy_test_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.meshy_test_btn.setMinimumWidth(96)
+            self.meshy_test_btn.setMinimumHeight(30)
+            self.meshy_test_btn.clicked.connect(self._test_meshy)
+            meshy_actions.addWidget(self.meshy_test_btn, 0)
+            meshy_lay.addLayout(meshy_actions)
+            root.addWidget(meshy)
+
             gen, gen_lay = self._section(
                 t("settings.section.gen"),
                 t("settings.section.gen_hint"),
@@ -338,6 +380,8 @@ def create_settings_panel(
                 self.vision_policy.currentData(),
                 self.api_key_edit.text(),
                 self.base_url_edit.text().strip(),
+                bool(self.meshy_enabled.isChecked()),
+                self.meshy_api_key_edit.text(),
                 round(float(self.temp_spin.value()), 4),
                 int(self.max_tokens_spin.value()),
                 bool(self.auto_undo.isChecked()),
@@ -381,6 +425,8 @@ def create_settings_panel(
                 self.vision_policy.currentIndexChanged,
                 self.api_key_edit.textChanged,
                 self.base_url_edit.textChanged,
+                self.meshy_enabled.toggled,
+                self.meshy_api_key_edit.textChanged,
                 self.temp_spin.valueChanged,
                 self.max_tokens_spin.valueChanged,
                 self.auto_undo.toggled,
@@ -403,9 +449,14 @@ def create_settings_panel(
                 self.base_url_edit.textChanged,
             ):
                 sig.connect(self._clear_test_status)
+            self.meshy_api_key_edit.textChanged.connect(self._clear_meshy_test_status)
+            self.meshy_enabled.toggled.connect(self._clear_meshy_test_status)
 
         def _clear_test_status(self, *_args) -> None:
             self._set_test_status("", "")
+
+        def _clear_meshy_test_status(self, *_args) -> None:
+            self._set_meshy_test_status("", "")
 
         def _on_provider_changed(self) -> None:
             pid = self.provider_combo.currentData()
@@ -452,6 +503,8 @@ def create_settings_panel(
                     self.cfg.get("ui.font_family", "Microsoft YaHei UI")
                 )
                 self.ui_scale.setValue(self._resolve_ui_scale_pct())
+                self.meshy_enabled.setChecked(bool(self.cfg.get("meshy.enabled", True)))
+                self.meshy_api_key_edit.setText(self.cfg.get_api_key("meshy"))
             finally:
                 self._suppress_dirty = False
             self._mark_clean()
@@ -475,6 +528,17 @@ def create_settings_panel(
                 f"providers.{pid}.base_url", self.base_url_edit.text().strip()
             )
             self.cfg.set_api_key(pid, self.api_key_edit.text().strip())
+            old_meshy_key = self.cfg.get_api_key("meshy")
+            new_meshy_key = self.meshy_api_key_edit.text().strip()
+            self.cfg.set("meshy.enabled", self.meshy_enabled.isChecked())
+            self.cfg.set_api_key("meshy", new_meshy_key)
+            if new_meshy_key != old_meshy_key:
+                try:
+                    from maya_agent.tools.meshy_client import clear_meshy_key_validity
+
+                    clear_meshy_key_validity()
+                except Exception:
+                    pass
             self.cfg.set("maya.auto_undo", self.auto_undo.isChecked())
             self.cfg.set(
                 "maya.confirm_destructive", self.confirm_destructive.isChecked()
@@ -562,6 +626,22 @@ def create_settings_panel(
                 f"background: transparent; border: none; padding: 0; }}"
             )
 
+        def _set_meshy_test_status(self, text: str, kind: str = "") -> None:
+            label = getattr(self, "meshy_test_status", None)
+            if label is None:
+                return
+            label.setText(text or "")
+            colors = {
+                "ok": "#5dca8a",
+                "fail": "#e07070",
+                "info": "#8a8a93",
+            }
+            color = colors.get(kind, "#8a8a93")
+            label.setStyleSheet(
+                f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+                f"background: transparent; border: none; padding: 0; }}"
+            )
+
         def _test_connection(self) -> None:
             pid = self.provider_combo.currentData()
             model = self.model_combo.currentText().strip()
@@ -598,6 +678,71 @@ def create_settings_panel(
                 if len(err) > 72:
                     err = err[:72] + "…"
                 self._set_test_status(f"连接失败 · {err}", "fail")
+            finally:
+                if btn is not None:
+                    btn.setEnabled(True)
+
+        def _test_meshy(self) -> None:
+            key = self.meshy_api_key_edit.text().strip()
+            enabled = self.meshy_enabled.isChecked()
+            self._set_meshy_test_status(t("settings.meshy_test_running"), "info")
+            btn = getattr(self, "meshy_test_btn", None)
+            if btn is not None:
+                btn.setEnabled(False)
+            try:
+                QtWidgets.QApplication.processEvents()
+                if not enabled:
+                    self._set_meshy_test_status("Meshy 已关闭", "fail")
+                    return
+                # Persist key first so MeshyClient can read it
+                if key:
+                    self.cfg.set_api_key("meshy", key)
+                self.cfg.set("meshy.enabled", True)
+                from maya_agent.tools.meshy_client import MeshyClient, MeshyError
+
+                try:
+                    data = MeshyClient(api_key=key or None).balance()
+                except MeshyError as e:
+                    from maya_agent.tools.meshy_client import mark_meshy_key_invalid
+
+                    if getattr(e, "status_code", 0) == 401 or "401" in str(e):
+                        mark_meshy_key_invalid(key or None)
+                    err = " ".join(str(e).split())
+                    if len(err) > 72:
+                        err = err[:72] + "…"
+                    self._set_meshy_test_status(f"连接失败 · {err}", "fail")
+                    return
+                from maya_agent.tools.meshy_client import mark_meshy_key_valid
+
+                mark_meshy_key_valid(key or None)
+                # Balance payload varies; show a short summary
+                preview = ""
+                if isinstance(data, dict):
+                    for k in (
+                        "balance",
+                        "credits",
+                        "remaining_credits",
+                        "available_credits",
+                    ):
+                        if k in data and data[k] is not None:
+                            preview = f"{k}={data[k]}"
+                            break
+                    if not preview:
+                        preview = ", ".join(
+                            f"{k}={data[k]}" for k in list(data.keys())[:3]
+                        )
+                msg = "连接成功"
+                if preview:
+                    one = " ".join(str(preview).split())
+                    if len(one) > 48:
+                        one = one[:48] + "…"
+                    msg = f"连接成功 · {one}"
+                self._set_meshy_test_status(msg, "ok")
+            except Exception as e:
+                err = " ".join(str(e).split())
+                if len(err) > 72:
+                    err = err[:72] + "…"
+                self._set_meshy_test_status(f"连接失败 · {err}", "fail")
             finally:
                 if btn is not None:
                     btn.setEnabled(True)
@@ -875,9 +1020,23 @@ def create_help_panel(parent=None):
             "set_transform、create_lod_group、create_collision_mesh、apply_game_naming、reset_transform",
         ),
         (
+            "本地文件 files",
+            "get_workspace_info、list_directory、path_info、read_text_file、write_text_file、"
+            "copy_file、delete_path、list_chat_images、save_chat_images"
+            "（工作区 maya_agent_files 与 MayaAgent 同级；对话附图自动落盘到 chat_images）",
+        ),
+        (
             "网络检索 web",
             "web_search、fetch_webpage、search_images、fetch_image、fetch_images"
             "（按需查文档/规范与参考图；fetch_image* 仅视觉模型可用）",
+        ),
+        (
+            "Meshy AI meshy",
+            "meshy_text_to_3d（preview→refine）、meshy_image_to_3d（可用 use_latest_chat_image）、"
+            "meshy_multi_image_to_3d、meshy_retexture、meshy_remesh、meshy_convert、meshy_resize、"
+            "meshy_uv_unwrap、meshy_rig、meshy_animate、meshy_list_animations、meshy_get_task、"
+            "meshy_wait_task、meshy_download_model、meshy_import_to_maya、meshy_balance"
+            "（需在设置中配置 Meshy API Key；导入优先 FBX）",
         ),
         (
             "脚本 scripting",
