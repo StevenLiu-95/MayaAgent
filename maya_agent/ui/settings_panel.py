@@ -983,10 +983,11 @@ def create_help_panel(parent=None):
         ),
         (
             "建模 modeling",
-            "create_primitive、create_primitives（批量落位）、arrange_objects（stack/align/grid_array）、"
-            "combine_meshes、separate_meshes、boolean_meshes、extrude_faces、"
-            "bevel_edges、smooth_mesh、reduce_mesh、mirror_geometry、center_pivot、freeze_transform、"
-            "get_mesh_stats（支持组/层级聚合）、check_meshes（非流形等质量检查）",
+            "create_primitive（含 pipe/pyramid/helix 等）、create_primitives、arrange_objects（stack/align/grid/radial）、"
+            "select_mesh_components（按法线/索引/边界选面边点）、extrude_faces、extrude_edges、bevel_edges、"
+            "edit_mesh_topology、edit_mesh_normals、transform_components、boolean_meshes、combine_meshes、"
+            "create_curve、mesh_from_curve、create_text_mesh、thicken_mesh、cleanup_mesh、"
+            "get_mesh_stats、check_meshes",
         ),
         (
             "UV",
