@@ -137,7 +137,7 @@ def create_chat_panel(parent=None):
             self.setPalette(pal)
             self.viewport().setPalette(pal)
             self._stream_cache = None
-            self._stream_refit_n = 0
+            self._stream_height = 0
 
         def _on_anchor(self, url):
             from maya_agent.ui.image_viewer import open_external_url
@@ -146,15 +146,15 @@ def create_chat_panel(parent=None):
 
         def set_html(self, html: str):
             self._stream_cache = None
-            self._stream_refit_n = 0
+            self._stream_height = 0
             self.setHtml(html or "")
-            self._refit()
+            self._refit(monotonic=False)
 
         def set_plain(self, text: str):
             self._stream_cache = None
-            self._stream_refit_n = 0
+            self._stream_height = 0
             self.setPlainText(text or "")
-            self._refit()
+            self._refit(monotonic=False)
 
         def set_plain_streaming(self, text: str):
             """Fast live-update path: plain text + incremental insert when possible."""
@@ -177,41 +177,37 @@ def create_chat_panel(parent=None):
             else:
                 self.setPlainText(text)
             self._stream_cache = text
-            self._stream_refit_n = getattr(self, "_stream_refit_n", 0) + 1
-            self._refit_streaming(text, force=self._stream_refit_n % 5 == 0)
+            # Always measure from the document (no estimate/real oscillation).
+            # Height is monotonic while streaming so bubbles never bounce upward.
+            self._refit(monotonic=True)
 
-        def _refit(self):
-            width = max(self.viewport().width(), self.width() - 4, 160)
+        def _content_width(self) -> int:
+            return max(self.viewport().width(), self.width() - 4, 160)
+
+        def _refit(self, *, monotonic: bool = False):
+            width = self._content_width()
             self.document().setTextWidth(width)
             # Keep height tight — large pads here show as empty bottom margin in bubbles
-            h = int(self.document().size().height()) + 2
-            self.setFixedHeight(max(h, 16))
-
-        def _refit_streaming(self, text: str, force: bool = False):
-            """Cheaper height estimate while tokens are still arriving."""
-            width = max(self.viewport().width(), self.width() - 4, 160)
-            fm = self.fontMetrics()
-            line_h = max(fm.lineSpacing(), 14)
-            char_w = max(fm.averageCharWidth(), 6)
-            cols = max(int(width / char_w), 8)
-            wrapped = 0
-            for line in (text or "").splitlines() or [""]:
-                wrapped += max(1, (len(line) + cols - 1) // cols)
-            if force or wrapped <= 24:
-                self.document().setTextWidth(width)
-                h = int(self.document().size().height()) + 2
+            h = max(int(self.document().size().height()) + 2, 16)
+            if monotonic:
+                h = max(h, int(getattr(self, "_stream_height", 0) or 0))
+                self._stream_height = h
             else:
-                h = wrapped * line_h + 6
-            self.setFixedHeight(max(h, 16))
+                self._stream_height = 0
+            if self.height() != h:
+                self.setFixedHeight(h)
 
         def resizeEvent(self, event):
             super().resizeEvent(event)
-            self._refit()
+            # Width changes need a real reflow; keep streaming height monotonic
+            # so a temporary narrow/wide pass does not yank the bubble upward.
+            self._refit(monotonic=self._stream_cache is not None)
 
         def showEvent(self, event):
             super().showEvent(event)
-            QtCore.QTimer.singleShot(0, self._refit)
-
+            QtCore.QTimer.singleShot(
+                0, lambda: self._refit(monotonic=self._stream_cache is not None)
+            )
     class ToolRow(QtWidgets.QFrame):
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -1174,10 +1170,18 @@ def create_chat_panel(parent=None):
             outer = QtWidgets.QVBoxLayout(self)
             outer.setContentsMargins(0, 0, 0, 0)
 
+            # Rounded shell: chat body + integrated scroll rail (buttons + bar)
+            self._shell = QtWidgets.QFrame()
+            self._shell.setObjectName("chatScrollShell")
+            shell_lay = QtWidgets.QHBoxLayout(self._shell)
+            shell_lay.setContentsMargins(0, 0, 0, 0)
+            shell_lay.setSpacing(0)
+
             self.scroll = QtWidgets.QScrollArea()
             self.scroll.setObjectName("chatScroll")
             self.scroll.setWidgetResizable(True)
             self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
 
             self.container = QtWidgets.QWidget()
@@ -1192,9 +1196,52 @@ def create_chat_panel(parent=None):
             self.v.addStretch(1)
 
             self.scroll.setWidget(self.container)
-            # Prevent wide children from expanding the scroll content past viewport
             self.scroll.setWidgetResizable(True)
-            outer.addWidget(self.scroll)
+            shell_lay.addWidget(self.scroll, 1)
+
+            # Classic scrollbar chrome: continuous track + end arrows + pill thumb.
+            self._scroll_rail = QtWidgets.QFrame()
+            self._scroll_rail.setObjectName("chatScrollRail")
+            self._scroll_rail.setFixedWidth(14)
+            rail_lay = QtWidgets.QVBoxLayout(self._scroll_rail)
+            rail_lay.setContentsMargins(0, 0, 0, 0)
+            rail_lay.setSpacing(0)
+
+            self._jump_top_btn = self._make_jump_btn("▲", "chat.jump_top_tip")
+            self._jump_prev_btn = self._make_jump_btn(
+                "■", "chat.jump_prev_tip", font_px=14
+            )
+            self._jump_next_btn = self._make_jump_btn(
+                "■", "chat.jump_next_tip", font_px=14
+            )
+            self._jump_bottom_btn = self._make_jump_btn("▼", "chat.jump_bottom_tip")
+            self._jump_top_btn.clicked.connect(self.jump_to_top)
+            self._jump_prev_btn.clicked.connect(self.jump_prev_user)
+            self._jump_next_btn.clicked.connect(self.jump_next_user)
+            self._jump_bottom_btn.clicked.connect(self.jump_to_bottom)
+
+            self._rail_bar = QtWidgets.QScrollBar(QtCore.Qt.Vertical)
+            self._rail_bar.setObjectName("chatRailBar")
+            self._rail_bar.setFocusPolicy(QtCore.Qt.NoFocus)
+            self._rail_bar.setFixedWidth(14)
+            self._rail_bar.setSizePolicy(
+                QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding
+            )
+            # Maya's native style often ignores scrollbar QSS; Fusion honors it.
+            try:
+                fusion = QtWidgets.QStyleFactory.create("Fusion")
+                if fusion is not None:
+                    self._rail_bar.setStyle(fusion)
+            except Exception:
+                pass
+
+            rail_lay.addWidget(self._jump_top_btn, 0)
+            rail_lay.addWidget(self._jump_prev_btn, 0)
+            rail_lay.addWidget(self._rail_bar, 1)
+            rail_lay.addWidget(self._jump_next_btn, 0)
+            rail_lay.addWidget(self._jump_bottom_btn, 0)
+            shell_lay.addWidget(self._scroll_rail, 0)
+            outer.addWidget(self._shell)
 
             self._blocks: List[Dict[str, Any]] = []
             self._widgets: List[QtWidgets.QWidget] = []
@@ -1204,22 +1251,277 @@ def create_chat_panel(parent=None):
             self._pending_separator = False
             self._on_choice_reply = None
             self._active_choice_block = None
-            self._last_scroll_ms = 0
-            self._scroll_pending = False
-            self._scroll_min_interval_ms = 120
+            self._stick_to_bottom = True
+            self._scrolling_programmatic = False
+            self._scroll_near_margin = 80
+            self._deferred_scroll = False
+            self._bar_syncing = False
+
+            bar = self.scroll.verticalScrollBar()
+            bar.rangeChanged.connect(self._on_scroll_range_changed)
+            bar.valueChanged.connect(self._on_scroll_value_changed)
+            bar.rangeChanged.connect(self._sync_rail_from_inner)
+            bar.valueChanged.connect(self._sync_rail_from_inner)
+            self._rail_bar.valueChanged.connect(self._sync_inner_from_rail)
+            self._sync_rail_from_inner()
+            self._refresh_jump_buttons()
 
             self.setStyleSheet(
                 """
                 QWidget#chatPanel, QWidget#chatContainer {
                     background-color: #17181d;
                 }
-                QScrollArea#chatScroll {
+                QFrame#chatScrollShell {
                     background-color: #17181d;
                     border: 1px solid #2e2f36;
                     border-radius: 10px;
                 }
+                QScrollArea#chatScroll {
+                    background-color: #17181d;
+                    border: none;
+                }
+                QFrame#chatScrollRail {
+                    background-color: #3a3b42;
+                    border: none;
+                    border-left: 1px solid #2a2b30;
+                    border-radius: 0px;
+                }
+                QScrollBar#chatRailBar:vertical {
+                    background: transparent;
+                    width: 14px;
+                    /* Keep ~8px thumb: was 18-5*2, now 14-3*2 */
+                    margin: 2px 3px;
+                    border: none;
+                }
+                QScrollBar#chatRailBar::handle:vertical {
+                    background: #7a7b84;
+                    border-radius: 3px;
+                    min-height: 32px;
+                    border: none;
+                }
+                QScrollBar#chatRailBar::handle:vertical:hover {
+                    background: #9697a0;
+                }
+                QScrollBar#chatRailBar::handle:vertical:pressed {
+                    background: #6a8fb8;
+                }
+                QScrollBar#chatRailBar::add-line:vertical,
+                QScrollBar#chatRailBar::sub-line:vertical {
+                    height: 0px;
+                    width: 0px;
+                    background: none;
+                    border: none;
+                }
+                QScrollBar#chatRailBar::add-page:vertical,
+                QScrollBar#chatRailBar::sub-page:vertical {
+                    background: transparent;
+                }
+                QPushButton#chatJumpBtn {
+                    background: transparent;
+                    border: none;
+                    border-radius: 0px;
+                    color: #e8e9ef;
+                    font-size: 13px;
+                    font-weight: 700;
+                    padding: 0px;
+                    margin: 0px;
+                    text-align: center;
+                }
+                QPushButton#chatJumpBtn:hover {
+                    color: #ffffff;
+                    background-color: rgba(255, 255, 255, 36);
+                }
+                QPushButton#chatJumpBtn:pressed {
+                    color: #ffffff;
+                    background-color: rgba(91, 143, 199, 90);
+                }
+                QPushButton#chatJumpBtn:disabled {
+                    color: #707179;
+                    background: transparent;
+                }
                 """
             )
+
+        def _make_jump_btn(self, label: str, tip_key: str, font_px: int = 13):
+            from maya_agent.i18n import t
+
+            btn = QtWidgets.QPushButton(label)
+            btn.setObjectName("chatJumpBtn")
+            # Match narrow rail; glyph size comes from font_px (unchanged).
+            btn.setFixedSize(14, 22 if font_px > 13 else 20)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setToolTip(t(tip_key))
+            btn.setFocusPolicy(QtCore.Qt.NoFocus)
+            btn.setFlat(True)
+            font = btn.font()
+            font.setPixelSize(int(font_px))
+            font.setBold(True)
+            btn.setFont(font)
+            return btn
+
+        def _jump_buttons(self):
+            return (
+                getattr(self, "_jump_top_btn", None),
+                getattr(self, "_jump_prev_btn", None),
+                getattr(self, "_jump_next_btn", None),
+                getattr(self, "_jump_bottom_btn", None),
+            )
+
+        def _sync_rail_from_inner(self, *_args) -> None:
+            if self._bar_syncing or not hasattr(self, "_rail_bar"):
+                return
+            inner = self.scroll.verticalScrollBar()
+            self._bar_syncing = True
+            try:
+                self._rail_bar.setRange(inner.minimum(), inner.maximum())
+                self._rail_bar.setPageStep(inner.pageStep())
+                self._rail_bar.setSingleStep(inner.singleStep())
+                self._rail_bar.setValue(inner.value())
+            finally:
+                self._bar_syncing = False
+
+        def _sync_inner_from_rail(self, value: int = 0) -> None:
+            if self._bar_syncing:
+                return
+            self._bar_syncing = True
+            try:
+                self.scroll.verticalScrollBar().setValue(int(value))
+            finally:
+                self._bar_syncing = False
+
+        def showEvent(self, event):
+            super().showEvent(event)
+            self._sync_rail_from_inner()
+            self._refresh_jump_buttons()
+
+        def _user_widgets(self) -> List[Any]:
+            return [
+                w
+                for w in self._widgets
+                if getattr(w, "role", None) == "user" and w.isVisible()
+            ]
+
+        def _visible_top_in_container(self) -> int:
+            """Y of the viewport top edge, in chat-container coordinates."""
+            vp = self.scroll.viewport()
+            top_left = self.container.mapFrom(vp, QtCore.QPoint(0, 0))
+            return int(top_left.y())
+
+        def _scroll_to_widget(self, widget: QtWidgets.QWidget) -> None:
+            if widget is None:
+                return
+            self._stick_to_bottom = False
+            # Align the bubble near the top of the viewport with a small pad.
+            pad = 8
+            target = max(0, int(widget.y()) - pad)
+            bar = self.scroll.verticalScrollBar()
+            self._scrolling_programmatic = True
+            try:
+                bar.setValue(min(target, bar.maximum()))
+            finally:
+                self._scrolling_programmatic = False
+            # One deferred pass after layout / scrollbar range settle.
+            QtCore.QTimer.singleShot(
+                0, lambda w=widget: self._scroll_to_widget_settle(w)
+            )
+
+        def _scroll_to_widget_settle(self, widget: QtWidgets.QWidget) -> None:
+            if widget is None or not widget.isVisible():
+                return
+            pad = 8
+            target = max(0, int(widget.y()) - pad)
+            bar = self.scroll.verticalScrollBar()
+            self._scrolling_programmatic = True
+            try:
+                bar.setValue(min(target, bar.maximum()))
+            finally:
+                self._scrolling_programmatic = False
+            self._refresh_jump_buttons()
+
+        def jump_to_top(self) -> None:
+            """Jump to the top of the conversation."""
+            self._stick_to_bottom = False
+            bar = self.scroll.verticalScrollBar()
+            self._scrolling_programmatic = True
+            try:
+                bar.setValue(bar.minimum())
+            finally:
+                self._scrolling_programmatic = False
+            QtCore.QTimer.singleShot(0, self._refresh_jump_buttons)
+
+        def jump_to_bottom(self) -> None:
+            """Jump to the bottom of the conversation."""
+            self._stick_to_bottom = True
+            self._apply_scroll_bottom()
+            QtCore.QTimer.singleShot(0, self._refresh_jump_buttons)
+
+        def jump_prev_user(self) -> None:
+            """Jump to the previous user bubble above the current viewport."""
+            users = self._user_widgets()
+            if not users:
+                return
+            anchor = self._visible_top_in_container() + 12
+            prev = None
+            for w in users:
+                if w.y() < anchor - 4:
+                    prev = w
+            if prev is None:
+                prev = users[0]
+            self._scroll_to_widget(prev)
+
+        def jump_next_user(self) -> None:
+            """Jump to the next user bubble below the current viewport."""
+            users = self._user_widgets()
+            if not users:
+                return
+            anchor = self._visible_top_in_container() + 12
+            nxt = None
+            for w in users:
+                if w.y() > anchor + 4:
+                    nxt = w
+                    break
+            if nxt is None:
+                nxt = users[-1]
+            self._scroll_to_widget(nxt)
+
+        def _refresh_jump_buttons(self) -> None:
+            top, prev, nxt, bottom = self._jump_buttons()
+            if top is None or prev is None or nxt is None or bottom is None:
+                return
+            from maya_agent.i18n import t
+
+            has_content = bool(self._widgets)
+            users = self._user_widgets()
+            has_users = len(users) > 0
+            bar = self.scroll.verticalScrollBar()
+            scrollable = bar.maximum() > bar.minimum()
+            at_top = bar.value() <= bar.minimum() + 4
+            at_bottom = (bar.maximum() - bar.value()) <= 4
+
+            top.setToolTip(t("chat.jump_top_tip"))
+            prev.setToolTip(t("chat.jump_prev_tip"))
+            nxt.setToolTip(t("chat.jump_next_tip"))
+            bottom.setToolTip(t("chat.jump_bottom_tip"))
+
+            # Rail stays visible with content (matches classic scrollbar chrome).
+            if hasattr(self, "_scroll_rail"):
+                self._scroll_rail.setVisible(has_content)
+            self._rail_bar.setEnabled(scrollable)
+
+            if not has_content:
+                for btn in (top, prev, nxt, bottom):
+                    btn.setEnabled(False)
+                return
+
+            top.setEnabled(not at_top)
+            bottom.setEnabled(not at_bottom)
+            if has_users:
+                anchor = self._visible_top_in_container() + 12
+                prev.setEnabled(any(w.y() < anchor - 4 for w in users))
+                nxt.setEnabled(any(w.y() > anchor + 4 for w in users))
+            else:
+                prev.setEnabled(False)
+                nxt.setEnabled(False)
 
         def clear(self):
             self.disable_active_choices()
@@ -1236,8 +1538,9 @@ def create_chat_panel(parent=None):
             self._thinking_text = ""
             self._pending_separator = False
             self._active_choice_block = None
-            self._last_scroll_ms = 0
-            self._scroll_pending = False
+            self._stick_to_bottom = True
+            self._deferred_scroll = False
+            self._refresh_jump_buttons()
 
         def set_choice_handler(self, fn) -> None:
             """fn(reply_text) called when user clicks a confirmation button."""
@@ -1256,36 +1559,51 @@ def create_chat_panel(parent=None):
             self.v.insertWidget(idx, widget)
             self._widgets.append(widget)
 
-        def _is_near_bottom(self, margin: int = 96) -> bool:
+        def _is_near_bottom(self, margin: Optional[int] = None) -> bool:
             bar = self.scroll.verticalScrollBar()
-            return (bar.maximum() - bar.value()) <= margin
+            m = self._scroll_near_margin if margin is None else margin
+            return (bar.maximum() - bar.value()) <= m
+
+        def _on_scroll_value_changed(self, _value: int = 0) -> None:
+            if self._scrolling_programmatic:
+                self._refresh_jump_buttons()
+                return
+            # User scrolled: keep auto-stick only while near the bottom.
+            self._stick_to_bottom = self._is_near_bottom()
+            self._refresh_jump_buttons()
+
+        def _on_scroll_range_changed(self, _mn: int = 0, _mx: int = 0) -> None:
+            # Content grew (stream / images / tools). If we should stick, pin
+            # immediately to the new maximum — avoids missing bottom when
+            # setValue ran before layout updated the scrollbar range.
+            if self._stick_to_bottom:
+                self._apply_scroll_bottom()
+
+        def _apply_scroll_bottom(self) -> None:
+            bar = self.scroll.verticalScrollBar()
+            self._scrolling_programmatic = True
+            try:
+                bar.setValue(bar.maximum())
+            finally:
+                self._scrolling_programmatic = False
 
         def _scroll_to_bottom(self, force: bool = False):
-            """Scroll to bottom. Soft (default): only if already near bottom."""
-            if not force and not self._is_near_bottom():
-                self._scroll_pending = False
+            """Scroll to bottom. Soft (default): only while stick-to-bottom is on."""
+            if force:
+                self._stick_to_bottom = True
+            elif not self._stick_to_bottom:
                 return
-            if not force:
-                now = QtCore.QDateTime.currentMSecsSinceEpoch()
-                elapsed = now - self._last_scroll_ms
-                if elapsed < self._scroll_min_interval_ms:
-                    if not self._scroll_pending:
-                        self._scroll_pending = True
-                        QtCore.QTimer.singleShot(
-                            max(1, self._scroll_min_interval_ms - elapsed),
-                            self._flush_pending_scroll,
-                        )
-                    return
-            self._scroll_pending = False
-            self._last_scroll_ms = QtCore.QDateTime.currentMSecsSinceEpoch()
-            bar = self.scroll.verticalScrollBar()
-            QtCore.QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
+            self._apply_scroll_bottom()
+            # Layout may still settle after setFixedHeight / insertWidget.
+            # One deferred pass catches the post-layout maximum.
+            if not self._deferred_scroll:
+                self._deferred_scroll = True
+                QtCore.QTimer.singleShot(0, self._flush_deferred_scroll)
 
-        def _flush_pending_scroll(self) -> None:
-            if not self._scroll_pending:
-                return
-            self._scroll_pending = False
-            self._scroll_to_bottom(force=False)
+        def _flush_deferred_scroll(self) -> None:
+            self._deferred_scroll = False
+            if self._stick_to_bottom:
+                self._apply_scroll_bottom()
 
         def add_user(self, text: str, images: Optional[List[Any]] = None):
             self.disable_active_choices()
@@ -1303,6 +1621,7 @@ def create_chat_panel(parent=None):
                 payload["images"] = stored
             self._blocks.append(payload)
             self._current = None
+            self._refresh_jump_buttons()
             self._scroll_to_bottom(force=True)
 
         def begin_assistant(self):
@@ -1347,11 +1666,21 @@ def create_chat_panel(parent=None):
             part.update(extra)
             parts.append(part)
 
+        def _ensure_open_assistant(self) -> bool:
+            """Reuse the live bubble. Do not open a new one after the turn closed."""
+            if self._current is not None:
+                return True
+            last = self._assistant_block()
+            if last is not None and last.get("done"):
+                return False
+            self.begin_assistant()
+            return self._current is not None
+
         def append_thinking(self, piece: str):
             if not piece:
                 return
-            if self._current is None:
-                self.begin_assistant()
+            if not self._ensure_open_assistant():
+                return
             row = self._current._thinking_row
             started_new = row is None or row._done
             self._thinking_text += piece
@@ -1370,8 +1699,8 @@ def create_chat_panel(parent=None):
                 self._current.finish_thinking()
 
         def append_assistant_text(self, piece: str):
-            if self._current is None:
-                self.begin_assistant()
+            if not self._ensure_open_assistant():
+                return
             self.finish_thinking()
             self._stream_text += piece
             # Streaming uses plain text; choice markers stripped cheaply inside
@@ -1383,8 +1712,8 @@ def create_chat_panel(parent=None):
             self._scroll_to_bottom()
 
         def tool_start(self, name: str):
-            if self._current is None:
-                self.begin_assistant()
+            if not self._ensure_open_assistant():
+                return
             self.finish_thinking()
             if self._stream_text:
                 self._current.set_streaming_text(self._stream_text)
@@ -1428,8 +1757,8 @@ def create_chat_panel(parent=None):
                         break
 
         def tool_end(self, name: str, result: str, images: Optional[List[Any]] = None):
-            if self._current is None:
-                self.begin_assistant()
+            if not self._ensure_open_assistant():
+                return
             self._current.finish_last_tool(name, result, images=images)
             block = self._assistant_block()
             if block is not None:
@@ -1616,6 +1945,7 @@ def create_chat_panel(parent=None):
             self._stream_text = ""
             self._thinking_text = ""
             self._pending_separator = bool(blocks)
+            self._refresh_jump_buttons()
             self._scroll_to_bottom(force=True)
 
         @property

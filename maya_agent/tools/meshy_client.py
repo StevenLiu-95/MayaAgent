@@ -12,7 +12,6 @@ import httpx
 
 from maya_agent.utils.config import get_config
 from maya_agent.utils.logger import get_logger
-from maya_agent.utils.paths import project_root
 
 log = get_logger("maya_agent.meshy")
 
@@ -161,17 +160,18 @@ def download_dir() -> Path:
     """
     Meshy temp model download directory.
 
-    Default: sibling of the MayaAgent project folder, e.g.
-    ``.../Plugins/meshy_downloads`` next to ``.../Plugins/MayaAgent``.
+    Prefer ``meshy.download_dir`` when set; otherwise
+    ``{agent_temp_root}/meshy_downloads``.
     """
+    from maya_agent.utils.paths import agent_temp_subdir
+
     conf = meshy_cfg()
     raw = (conf.get("download_dir") or "").strip()
     if raw:
         path = Path(raw)
-    else:
-        path = project_root().parent / "meshy_downloads"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return agent_temp_subdir("meshy_downloads")
 
 
 def file_to_data_uri(path: str, *, as_model: bool = False) -> str:
@@ -251,7 +251,7 @@ class MeshyClient:
         self.api_key = (api_key or get_meshy_api_key()).strip()
         if not self.api_key:
             raise MeshyError(
-                "未配置 Meshy API Key。请在「设置 → 模型与 API → Meshy」填写，"
+                "未配置 Meshy API Key。请在「模型 → Meshy」填写，"
                 f"或设置环境变量 {conf['api_key_env']}。"
             )
         self.base_url = conf["base_url"]

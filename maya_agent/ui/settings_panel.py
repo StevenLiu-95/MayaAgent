@@ -21,7 +21,7 @@ def create_settings_panel(
     on_saved: Optional[Callable[..., None]] = None,
 ):
     """
-    Build settings QWidget with sub-tabs (模型与 API / Agent / 界面).
+    Build settings QWidget with sub-tabs (LLM / Meshy).
     on_saved(language_changed=False) — refresh main window after settings change.
     """
     init_from_config()
@@ -125,9 +125,8 @@ def create_settings_panel(
             self.tabs.setDocumentMode(True)
             outer.addWidget(self.tabs, 1)
 
-            self._build_api_tab()
-            self._build_agent_tab()
-            self._build_ui_tab()
+            self._build_llm_tab()
+            self._build_meshy_tab()
 
             footer = QtWidgets.QFrame()
             footer.setObjectName("settingsFooter")
@@ -155,7 +154,7 @@ def create_settings_panel(
             self._autosave_timer.timeout.connect(self._autosave_now)
             self._wire_dirty_tracking()
 
-        def _build_api_tab(self) -> None:
+        def _build_llm_tab(self) -> None:
             scroll, root = self._scroll_page()
 
             conn, conn_lay = self._section(
@@ -216,48 +215,6 @@ def create_settings_panel(
             conn_lay.addLayout(actions)
             root.addWidget(conn)
 
-            meshy, meshy_lay = self._section(
-                t("settings.section.meshy"),
-                t("settings.section.meshy_hint"),
-            )
-            self.meshy_enabled = QtWidgets.QCheckBox(t("settings.meshy_enabled"))
-            meshy_lay.addWidget(
-                self._option_row(
-                    self.meshy_enabled, t("settings.meshy_enabled_hint")
-                )
-            )
-            mform = self._form(meshy_lay)
-            self.meshy_api_key_edit = QtWidgets.QLineEdit()
-            self.meshy_api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-            self.meshy_api_key_edit.setPlaceholderText(t("settings.meshy_api_key_ph"))
-            self.meshy_api_key_edit.setMinimumHeight(30)
-            mform.addRow(
-                self._field_label(t("settings.meshy_api_key")),
-                self.meshy_api_key_edit,
-            )
-            meshy_actions = QtWidgets.QHBoxLayout()
-            meshy_actions.setContentsMargins(0, 4, 0, 0)
-            meshy_actions.setSpacing(10)
-            self.meshy_test_status = QtWidgets.QLabel("")
-            self.meshy_test_status.setObjectName("testConnStatus")
-            self.meshy_test_status.setWordWrap(True)
-            self.meshy_test_status.setAlignment(
-                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
-            )
-            self.meshy_test_status.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
-            )
-            meshy_actions.addWidget(self.meshy_test_status, 1)
-            self.meshy_test_btn = QtWidgets.QPushButton(t("settings.meshy_test"))
-            self.meshy_test_btn.setObjectName("secondaryBtn")
-            self.meshy_test_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self.meshy_test_btn.setMinimumWidth(96)
-            self.meshy_test_btn.setMinimumHeight(30)
-            self.meshy_test_btn.clicked.connect(self._test_meshy)
-            meshy_actions.addWidget(self.meshy_test_btn, 0)
-            meshy_lay.addLayout(meshy_actions)
-            root.addWidget(meshy)
-
             gen, gen_lay = self._section(
                 t("settings.section.gen"),
                 t("settings.section.gen_hint"),
@@ -278,12 +235,6 @@ def create_settings_panel(
             gform.addRow(self._field_label("Temperature"), self.temp_spin)
             gform.addRow(self._field_label("Max Tokens"), self.max_tokens_spin)
             root.addWidget(gen)
-
-            self._stretch_end(root)
-            self.tabs.addTab(scroll, t("settings.tab.api"))
-
-        def _build_agent_tab(self) -> None:
-            scroll, root = self._scroll_page()
 
             beh, beh_lay = self._section(
                 t("settings.section.behavior"),
@@ -331,44 +282,55 @@ def create_settings_panel(
             root.addWidget(lim)
 
             self._stretch_end(root)
-            self.tabs.addTab(scroll, t("settings.tab.agent"))
+            self.tabs.addTab(scroll, t("settings.tab.llm"))
 
-        def _build_ui_tab(self) -> None:
+        def _build_meshy_tab(self) -> None:
             scroll, root = self._scroll_page()
 
-            lang, lang_lay = self._section(
-                t("settings.section.language"),
-                t("settings.section.language_hint"),
+            meshy, meshy_lay = self._section(
+                t("settings.section.meshy"),
+                t("settings.section.meshy_hint"),
             )
-            lform = self._form(lang_lay)
-            self.language_combo = create_toolbar_combo()
-            self.language_combo.setMinimumHeight(30)
-            for code, label in list_languages():
-                self.language_combo.addItem(label, code)
-            lform.addRow(self._field_label(t("settings.language")), self.language_combo)
-            root.addWidget(lang)
-
-            typo, typo_lay = self._section(
-                t("settings.section.appearance"),
-                t("settings.section.appearance_hint"),
+            self.meshy_enabled = QtWidgets.QCheckBox(t("settings.meshy_enabled"))
+            meshy_lay.addWidget(
+                self._option_row(
+                    self.meshy_enabled, t("settings.meshy_enabled_hint")
+                )
             )
-            form = self._form(typo_lay)
-            self.font_family = QtWidgets.QLineEdit()
-            self.font_family.setMinimumHeight(30)
-            self.font_family.setPlaceholderText(t("settings.font_ph"))
-            self.ui_scale = create_toolbar_spin()
-            self.ui_scale.setRange(75, 175)
-            self.ui_scale.setSingleStep(5)
-            self.ui_scale.setSuffix("%")
-            self.ui_scale.setFixedHeight(30)
-            self.ui_scale.setFixedWidth(110)
-            self.ui_scale.setToolTip(t("settings.ui_scale_tip"))
-            form.addRow(self._field_label(t("settings.font")), self.font_family)
-            form.addRow(self._field_label(t("settings.ui_scale")), self.ui_scale)
-            root.addWidget(typo)
+            mform = self._form(meshy_lay)
+            self.meshy_api_key_edit = QtWidgets.QLineEdit()
+            self.meshy_api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+            self.meshy_api_key_edit.setPlaceholderText(t("settings.meshy_api_key_ph"))
+            self.meshy_api_key_edit.setMinimumHeight(30)
+            mform.addRow(
+                self._field_label(t("settings.meshy_api_key")),
+                self.meshy_api_key_edit,
+            )
+            meshy_actions = QtWidgets.QHBoxLayout()
+            meshy_actions.setContentsMargins(0, 4, 0, 0)
+            meshy_actions.setSpacing(10)
+            self.meshy_test_status = QtWidgets.QLabel("")
+            self.meshy_test_status.setObjectName("testConnStatus")
+            self.meshy_test_status.setWordWrap(True)
+            self.meshy_test_status.setAlignment(
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+            )
+            self.meshy_test_status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            meshy_actions.addWidget(self.meshy_test_status, 1)
+            self.meshy_test_btn = QtWidgets.QPushButton(t("settings.meshy_test"))
+            self.meshy_test_btn.setObjectName("secondaryBtn")
+            self.meshy_test_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.meshy_test_btn.setMinimumWidth(96)
+            self.meshy_test_btn.setMinimumHeight(30)
+            self.meshy_test_btn.clicked.connect(self._test_meshy)
+            meshy_actions.addWidget(self.meshy_test_btn, 0)
+            meshy_lay.addLayout(meshy_actions)
+            root.addWidget(meshy)
 
             self._stretch_end(root)
-            self.tabs.addTab(scroll, t("settings.tab.ui"))
+            self.tabs.addTab(scroll, t("settings.tab.meshy"))
 
         # ---- data -----------------------------------------------------------
 
@@ -390,9 +352,6 @@ def create_settings_panel(
                 bool(self.show_thinking.isChecked()),
                 bool(self.show_tools.isChecked()),
                 int(self.max_rounds.value()),
-                self.language_combo.currentData(),
-                self.font_family.text().strip(),
-                int(self.ui_scale.value()),
             )
 
         def _mark_clean(self) -> None:
@@ -435,9 +394,6 @@ def create_settings_panel(
                 self.show_thinking.toggled,
                 self.show_tools.toggled,
                 self.max_rounds.valueChanged,
-                self.language_combo.currentIndexChanged,
-                self.font_family.textChanged,
-                self.ui_scale.valueChanged,
             ):
                 sig.connect(self._schedule_autosave)
             # Connection fields change → clear stale test result
@@ -496,13 +452,6 @@ def create_settings_panel(
                     bool(self.cfg.get("agent.show_tool_calls", True))
                 )
                 self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 30)))
-                lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
-                lidx = self.language_combo.findData(lang)
-                self.language_combo.setCurrentIndex(lidx if lidx >= 0 else 0)
-                self.font_family.setText(
-                    self.cfg.get("ui.font_family", "Microsoft YaHei UI")
-                )
-                self.ui_scale.setValue(self._resolve_ui_scale_pct())
                 self.meshy_enabled.setChecked(bool(self.cfg.get("meshy.enabled", True)))
                 self.meshy_api_key_edit.setText(self.cfg.get_api_key("meshy"))
             finally:
@@ -547,22 +496,10 @@ def create_settings_panel(
             self.cfg.set("agent.show_thinking", self.show_thinking.isChecked())
             self.cfg.set("agent.show_tool_calls", self.show_tools.isChecked())
             self.cfg.set("maya.max_tool_rounds", self.max_rounds.value())
-            old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
-            new_lang = str(self.language_combo.currentData() or "zh-CN")
-            self.cfg.set("app.language", new_lang)
-            self.cfg.set("ui.font_family", self.font_family.text().strip())
-            self.cfg.set("ui.ui_scale", int(self.ui_scale.value()))
-            # Drop legacy key so old font_size no longer affects scale migration
-            ui_data = self.cfg._data.get("ui")
-            if isinstance(ui_data, dict):
-                ui_data.pop("font_size", None)
             self.cfg.save_user()
             self._mark_clean()
-            language_changed = old_lang != new_lang
-            if language_changed:
-                init_from_config()
             if self._on_saved:
-                self._on_saved(language_changed=language_changed)
+                self._on_saved(language_changed=False)
             if silent:
                 self.save_hint.setText(t("settings.saved"))
             else:
@@ -571,22 +508,6 @@ def create_settings_panel(
                     t("settings.saved_dialog_title"),
                     t("settings.saved_dialog_body"),
                 )
-
-        def _resolve_ui_scale_pct(self) -> int:
-            """Prefer ui.ui_scale; migrate legacy ui.font_size (13px ≈ 100%)."""
-            raw = self.cfg.get("ui.ui_scale")
-            if raw is not None:
-                try:
-                    return max(75, min(175, int(raw)))
-                except (TypeError, ValueError):
-                    return 100
-            old = self.cfg.get("ui.font_size")
-            if old is not None:
-                try:
-                    return max(75, min(175, int(round(float(old) / 13 * 100))))
-                except (TypeError, ValueError):
-                    pass
-            return 100
 
         def _restore_defaults(self) -> None:
             reply = QtWidgets.QMessageBox.question(
@@ -748,13 +669,348 @@ def create_settings_panel(
                     btn.setEnabled(True)
 
         def show_subtab(self, name: str) -> None:
-            """Switch to a sub-tab by label, e.g. '模型与 API'."""
+            """Switch to a sub-tab by label, e.g. 'LLM'."""
             for i in range(self.tabs.count()):
                 if self.tabs.tabText(i) == name:
                     self.tabs.setCurrentIndex(i)
                     return
 
     return SettingsPanel(parent)
+
+
+def _resolve_ui_scale_pct(cfg) -> int:
+    """Prefer ui.ui_scale; migrate legacy ui.font_size (13px ≈ 100%)."""
+    raw = cfg.get("ui.ui_scale")
+    if raw is not None:
+        try:
+            return max(75, min(175, int(raw)))
+        except (TypeError, ValueError):
+            return 100
+    old = cfg.get("ui.font_size")
+    if old is not None:
+        try:
+            return max(75, min(175, int(round(float(old) / 13 * 100))))
+        except (TypeError, ValueError):
+            pass
+    return 100
+
+
+def create_ui_panel(
+    parent=None,
+    *,
+    on_saved: Optional[Callable[..., None]] = None,
+):
+    """Top-level settings panel (language / font / UI scale / temp dir)."""
+    init_from_config()
+    QtCore, QtGui, QtWidgets, _ = import_qt()
+
+    from maya_agent.utils.paths import default_agent_temp_root
+
+    class UiPanel(QtWidgets.QWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setObjectName("settingsPanel")
+            self.cfg = get_config()
+            self._on_saved = on_saved
+            self._build()
+            self._load()
+
+        def _scroll_page(self) -> tuple:
+            page = QtWidgets.QWidget()
+            page.setObjectName("settingsPage")
+            scroll = QtWidgets.QScrollArea()
+            scroll.setObjectName("settingsScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(page)
+            root = QtWidgets.QVBoxLayout(page)
+            root.setContentsMargins(14, 14, 14, 14)
+            root.setSpacing(14)
+            root.setAlignment(QtCore.Qt.AlignTop)
+            return scroll, root
+
+        def _section(self, title: str, hint: str = "") -> tuple:
+            box = QtWidgets.QFrame()
+            box.setObjectName("settingsSection")
+            lay = QtWidgets.QVBoxLayout(box)
+            lay.setContentsMargins(14, 12, 14, 14)
+            lay.setSpacing(10)
+
+            head = QtWidgets.QVBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            head.setSpacing(3)
+            title_lbl = QtWidgets.QLabel(title)
+            title_lbl.setObjectName("settingsSectionTitle")
+            head.addWidget(title_lbl)
+            if hint:
+                hint_lbl = QtWidgets.QLabel(hint)
+                hint_lbl.setObjectName("settingsSectionHint")
+                hint_lbl.setWordWrap(True)
+                head.addWidget(hint_lbl)
+            lay.addLayout(head)
+            return box, lay
+
+        def _form(self, parent_layout) -> "QtWidgets.QFormLayout":
+            form = QtWidgets.QFormLayout()
+            form.setContentsMargins(0, 2, 0, 0)
+            form.setHorizontalSpacing(14)
+            form.setVerticalSpacing(10)
+            form.setLabelAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            form.setFormAlignment(QtCore.Qt.AlignTop)
+            form.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
+            parent_layout.addLayout(form)
+            return form
+
+        def _field_label(self, text: str) -> "QtWidgets.QLabel":
+            lbl = QtWidgets.QLabel(text)
+            lbl.setObjectName("settingsFieldLabel")
+            return lbl
+
+        def _build(self) -> None:
+            outer = QtWidgets.QVBoxLayout(self)
+            outer.setContentsMargins(0, 6, 0, 0)
+            outer.setSpacing(10)
+
+            scroll, root = self._scroll_page()
+
+            lang, lang_lay = self._section(
+                t("settings.section.language"),
+                t("settings.section.language_hint"),
+            )
+            lform = self._form(lang_lay)
+            self.language_combo = create_toolbar_combo()
+            self.language_combo.setMinimumHeight(30)
+            for code, label in list_languages():
+                self.language_combo.addItem(label, code)
+            lform.addRow(self._field_label(t("settings.language")), self.language_combo)
+            root.addWidget(lang)
+
+            typo, typo_lay = self._section(
+                t("settings.section.appearance"),
+                t("settings.section.appearance_hint"),
+            )
+            form = self._form(typo_lay)
+            self.font_family = QtWidgets.QLineEdit()
+            self.font_family.setMinimumHeight(30)
+            self.font_family.setPlaceholderText(t("settings.font_ph"))
+            self.ui_scale = create_toolbar_spin()
+            self.ui_scale.setRange(75, 175)
+            self.ui_scale.setSingleStep(5)
+            self.ui_scale.setSuffix("%")
+            self.ui_scale.setFixedHeight(30)
+            self.ui_scale.setFixedWidth(110)
+            self.ui_scale.setToolTip(t("settings.ui_scale_tip"))
+            form.addRow(self._field_label(t("settings.font")), self.font_family)
+            form.addRow(self._field_label(t("settings.ui_scale")), self.ui_scale)
+            root.addWidget(typo)
+
+            temp, temp_lay = self._section(
+                t("settings.section.temp_dir"),
+                t("settings.section.temp_dir_hint"),
+            )
+            tform = self._form(temp_lay)
+            temp_row = QtWidgets.QWidget()
+            temp_row_lay = QtWidgets.QHBoxLayout(temp_row)
+            temp_row_lay.setContentsMargins(0, 0, 0, 0)
+            temp_row_lay.setSpacing(8)
+            self.temp_dir_edit = QtWidgets.QLineEdit()
+            self.temp_dir_edit.setMinimumHeight(30)
+            self.temp_dir_edit.setPlaceholderText(
+                str(default_agent_temp_root()).replace("\\", "/")
+            )
+            self.temp_dir_edit.setToolTip(t("settings.temp_dir_tip"))
+            self.temp_dir_browse = QtWidgets.QPushButton(t("settings.temp_dir_browse"))
+            self.temp_dir_browse.setObjectName("secondaryBtn")
+            self.temp_dir_browse.setCursor(QtCore.Qt.PointingHandCursor)
+            self.temp_dir_browse.setMinimumHeight(30)
+            self.temp_dir_browse.setMinimumWidth(72)
+            self.temp_dir_browse.clicked.connect(self._browse_temp_dir)
+            temp_row_lay.addWidget(self.temp_dir_edit, 1)
+            temp_row_lay.addWidget(self.temp_dir_browse, 0)
+            tform.addRow(self._field_label(t("settings.temp_dir")), temp_row)
+            root.addWidget(temp)
+            root.addStretch(1)
+
+            outer.addWidget(scroll, 1)
+
+            footer = QtWidgets.QFrame()
+            footer.setObjectName("settingsFooter")
+            foot = QtWidgets.QHBoxLayout(footer)
+            foot.setContentsMargins(0, 2, 0, 0)
+            foot.setSpacing(10)
+            self.save_hint = QtWidgets.QLabel(t("settings.autosave_hint"))
+            self.save_hint.setObjectName("settingsSectionHint")
+            foot.addWidget(self.save_hint, 1)
+            self.reset_btn = QtWidgets.QPushButton(t("settings.reset"))
+            self.reset_btn.setObjectName("secondaryBtn")
+            self.reset_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.reset_btn.setMinimumWidth(108)
+            self.reset_btn.setMinimumHeight(32)
+            self.reset_btn.setToolTip(t("settings.reset_ui_tip"))
+            self.reset_btn.clicked.connect(self._restore_defaults)
+            foot.addWidget(self.reset_btn, 0, QtCore.Qt.AlignRight)
+            outer.addWidget(footer)
+
+            self._baseline = None
+            self._suppress_dirty = False
+            self._autosave_timer = QtCore.QTimer(self)
+            self._autosave_timer.setSingleShot(True)
+            self._autosave_timer.setInterval(400)
+            self._autosave_timer.timeout.connect(self._autosave_now)
+            self._wire_dirty_tracking()
+
+        def _snapshot(self) -> tuple:
+            return (
+                self.language_combo.currentData(),
+                self.font_family.text().strip(),
+                int(self.ui_scale.value()),
+                self.temp_dir_edit.text().strip(),
+            )
+
+        def _browse_temp_dir(self) -> None:
+            start = self.temp_dir_edit.text().strip() or str(default_agent_temp_root())
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                t("settings.temp_dir_pick"),
+                start,
+            )
+            if chosen:
+                self.temp_dir_edit.setText(chosen.replace("\\", "/"))
+
+        def _mark_clean(self) -> None:
+            self._baseline = self._snapshot()
+            self.save_hint.setText(t("settings.autosave_hint"))
+
+        def _schedule_autosave(self, *_args) -> None:
+            if self._suppress_dirty or self._baseline is None:
+                return
+            if self._snapshot() == self._baseline:
+                self.save_hint.setText(t("settings.autosave_hint"))
+                return
+            self.save_hint.setText(t("settings.saving"))
+            self._autosave_timer.start()
+
+        def _autosave_now(self) -> None:
+            if self._suppress_dirty or self._baseline is None:
+                return
+            if self._snapshot() == self._baseline:
+                self.save_hint.setText(t("settings.autosave_hint"))
+                return
+            self._save()
+
+        def _wire_dirty_tracking(self) -> None:
+            self.language_combo.currentIndexChanged.connect(self._schedule_autosave)
+            self.font_family.textChanged.connect(self._schedule_autosave)
+            self.ui_scale.valueChanged.connect(self._schedule_autosave)
+            self.temp_dir_edit.textChanged.connect(self._schedule_autosave)
+
+        def _load(self) -> None:
+            self._suppress_dirty = True
+            try:
+                if self._autosave_timer.isActive():
+                    self._autosave_timer.stop()
+                lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
+                lidx = self.language_combo.findData(lang)
+                self.language_combo.setCurrentIndex(lidx if lidx >= 0 else 0)
+                self.font_family.setText(
+                    self.cfg.get("ui.font_family", "Microsoft YaHei UI")
+                )
+                self.ui_scale.setValue(_resolve_ui_scale_pct(self.cfg))
+                self.temp_dir_edit.setText(
+                    str(self.cfg.get("ui.temp_dir") or "").strip()
+                )
+                self.temp_dir_edit.setPlaceholderText(
+                    str(default_agent_temp_root()).replace("\\", "/")
+                )
+            finally:
+                self._suppress_dirty = False
+            self._mark_clean()
+
+        def reload_from_config(self) -> None:
+            self.cfg.reload()
+            self._load()
+
+        def _save(self) -> None:
+            old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
+            new_lang = str(self.language_combo.currentData() or "zh-CN")
+            self.cfg.set("app.language", new_lang)
+            self.cfg.set("ui.font_family", self.font_family.text().strip())
+            self.cfg.set("ui.ui_scale", int(self.ui_scale.value()))
+            self.cfg.set(
+                "ui.temp_dir",
+                self.temp_dir_edit.text().strip().replace("\\", "/"),
+            )
+            ui_data = self.cfg._data.get("ui")
+            if isinstance(ui_data, dict):
+                ui_data.pop("font_size", None)
+            self.cfg.save_user()
+            self._mark_clean()
+            language_changed = old_lang != new_lang
+            if language_changed:
+                init_from_config()
+            if self._on_saved:
+                self._on_saved(language_changed=language_changed)
+            self.save_hint.setText(t("settings.saved"))
+
+        def _restore_defaults(self) -> None:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                t("settings.reset_title"),
+                t("settings.reset_ui_body"),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+            if self._autosave_timer.isActive():
+                self._autosave_timer.stop()
+            old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
+            defaults = ConfigDefaults.load()
+            self.cfg.set("app.language", defaults["language"])
+            self.cfg.set("ui.font_family", defaults["font_family"])
+            self.cfg.set("ui.ui_scale", defaults["ui_scale"])
+            self.cfg.set("ui.temp_dir", defaults["temp_dir"])
+            ui_data = self.cfg._data.get("ui")
+            if isinstance(ui_data, dict):
+                ui_data.pop("font_size", None)
+            self.cfg.save_user()
+            init_from_config()
+            self._load()
+            new_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
+            if self._on_saved:
+                self._on_saved(language_changed=(old_lang != new_lang))
+            self.save_hint.setText(t("settings.reset_done"))
+
+    return UiPanel(parent)
+
+
+class ConfigDefaults:
+    """Factory UI values from bundled default_config (not the merged user config)."""
+
+    @staticmethod
+    def load() -> dict:
+        try:
+            data = get_config()._load_default_config()
+        except Exception:
+            data = {}
+        app = data.get("app") if isinstance(data, dict) else {}
+        ui = data.get("ui") if isinstance(data, dict) else {}
+        if not isinstance(app, dict):
+            app = {}
+        if not isinstance(ui, dict):
+            ui = {}
+        scale = 100
+        try:
+            scale = max(75, min(175, int(ui.get("ui_scale", 100))))
+        except (TypeError, ValueError):
+            scale = 100
+        return {
+            "language": str(app.get("language") or "zh-CN"),
+            "font_family": str(ui.get("font_family") or "Microsoft YaHei UI"),
+            "ui_scale": scale,
+            "temp_dir": str(ui.get("temp_dir") or ""),
+        }
 
 
 def create_tools_panel(
@@ -966,11 +1222,23 @@ def create_help_panel(parent=None):
         (
             t("help.settings.1"),
             t("help.settings.2"),
+            t("help.settings.meshy"),
             t("help.settings.3"),
             t("help.settings.4"),
         ),
     )
     root.addWidget(settings)
+
+    ui_help, ui_help_lay = _section(t("help.ui.title"), t("help.ui.hint"))
+    _add_help_lines(
+        ui_help_lay,
+        (
+            t("help.ui.1"),
+            t("help.ui.2"),
+            t("help.ui.3"),
+        ),
+    )
+    root.addWidget(ui_help)
 
     tools, tools_lay = _section(t("help.tools.title"), t("help.tools.hint"))
     tool_groups = (

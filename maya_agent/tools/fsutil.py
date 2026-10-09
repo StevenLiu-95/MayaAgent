@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 from maya_agent.utils.logger import get_logger
-from maya_agent.utils.paths import project_root
+from maya_agent.utils.paths import (
+    agent_temp_root,
+    agent_temp_subdir,
+    project_root,
+)
 
 log = get_logger("maya_agent.fsutil")
 
@@ -30,24 +34,23 @@ class FsError(Exception):
 
 
 def workspace_root() -> Path:
-    """Sibling of MayaAgent project: .../Plugins/maya_agent_files."""
-    root = project_root().parent / "maya_agent_files"
-    root.mkdir(parents=True, exist_ok=True)
+    """
+    Agent file workspace under the configured temp root.
+
+    Layout: ``{agent_temp_root}/`` with ``temp/`` and ``chat_images/``.
+    """
+    root = agent_temp_root()
     (root / "temp").mkdir(parents=True, exist_ok=True)
     (root / "chat_images").mkdir(parents=True, exist_ok=True)
     return root
 
 
 def chat_images_dir() -> Path:
-    d = workspace_root() / "chat_images"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return agent_temp_subdir("chat_images")
 
 
 def temp_dir() -> Path:
-    d = workspace_root() / "temp"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return agent_temp_subdir("temp")
 
 
 def _maya_roots() -> List[Path]:
@@ -83,15 +86,20 @@ def _maya_roots() -> List[Path]:
 
 def allowed_write_roots() -> List[Path]:
     roots: List[Path] = [
-        workspace_root().resolve(),
-        (project_root().parent / "meshy_downloads").resolve(),
+        agent_temp_root().resolve(),
         project_root().resolve(),
     ]
-    # Ensure meshy_downloads exists as a writable root target
-    try:
-        roots[1].mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    # Legacy locations (pre-unified temp root) remain writable
+    for legacy in (
+        project_root().parent / "maya_agent_files",
+        project_root().parent / "meshy_downloads",
+    ):
+        try:
+            legacy_r = legacy.resolve()
+            if legacy_r not in roots:
+                roots.append(legacy_r)
+        except Exception:
+            pass
     for r in _maya_roots():
         if r not in roots:
             roots.append(r)

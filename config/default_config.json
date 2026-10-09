@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -243,6 +243,7 @@
     "window_height": 720,
     "font_family": "Microsoft YaHei UI",
     "ui_scale": 100,
-    "composer_height": 120
+    "composer_height": 120,
+    "temp_dir": ""
   }
 }

@@ -358,7 +358,7 @@ def format_llm_http_error(
         cur = f"当前 Max Tokens = {mt}，" if mt else ""
         return (
             f"{provider_label} 参数错误{model_hint}：Max Tokens 超出允许范围 [{lo}, {hi}]。\n"
-            f"{cur}请打开「设置 → 模型与 API」，将 Max Tokens 改为不超过 {hi} 后保存再试"
+            f"{cur}请打开「模型 → LLM」，将 Max Tokens 改为不超过 {hi} 后保存再试"
             f"（通义千问等接口常见上限为 8192）。\n"
             f"原始信息：{msg[:240]}"
         )

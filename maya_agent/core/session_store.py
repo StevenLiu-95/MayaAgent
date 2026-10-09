@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Optional
 
 from maya_agent.core.chat_session import ProjectChatData
-from maya_agent.utils.config import user_config_dir
 from maya_agent.utils.logger import get_logger
 from maya_agent.utils.maya_compat import in_maya
+from maya_agent.utils.paths import agent_temp_subdir
 
 log = get_logger("maya_agent.session_store")
 
@@ -45,10 +45,8 @@ def sidecar_path_for_scene(scene_path: str) -> Optional[Path]:
 
 
 def fallback_path_for_untitled() -> Path:
-    """Untitled scenes: store under user config until first save."""
-    base = user_config_dir() / "untitled_sessions"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "current.json"
+    """Untitled scenes: store under the agent temp root until first save."""
+    return agent_temp_subdir("untitled_sessions") / "current.json"
 
 
 def storage_path(scene_path: Optional[str] = None) -> Path:

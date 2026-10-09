@@ -16,6 +16,7 @@ from maya_agent.ui.settings_panel import (
     create_help_panel,
     create_settings_panel,
     create_tools_panel,
+    create_ui_panel,
 )
 from maya_agent.ui.status_anim import create_animated_status
 from maya_agent.ui.stylesheets import load_stylesheet
@@ -270,6 +271,7 @@ class MayaAgentWindow:
 
                 self._build_chat_tab()
                 self._build_settings_tab()
+                self._build_ui_tab()
                 self._build_tools_tab()
                 self._build_help_tab()
 
@@ -536,6 +538,13 @@ class MayaAgentWindow:
                     on_saved=self._on_settings_saved,
                 )
                 self.tabs.addTab(self.settings_panel, t("tab.settings"))
+
+            def _build_ui_tab(self):
+                self.ui_panel = create_ui_panel(
+                    self,
+                    on_saved=self._on_settings_saved,
+                )
+                self.tabs.addTab(self.ui_panel, t("tab.ui"))
 
             def _build_tools_tab(self):
                 self.tools_panel = create_tools_panel(
@@ -806,11 +815,6 @@ class MayaAgentWindow:
                     self._refresh_session_combo()
 
             def _on_delete_session(self):
-                if len(self.sessions.project.sessions) <= 1:
-                    QtWidgets.QMessageBox.information(
-                        self, t("session.delete_title"), t("session.delete_keep_one")
-                    )
-                    return
                 sid = self.session_combo.currentData() or self.sessions.active().id
                 title = self.session_combo.currentText()
                 reply = QtWidgets.QMessageBox.question(
@@ -821,9 +825,16 @@ class MayaAgentWindow:
                 )
                 if reply != QtWidgets.QMessageBox.Yes:
                     return
+                # Last session: create a replacement first so delete can proceed.
+                if len(self.sessions.project.sessions) <= 1:
+                    self.sessions.create_session(
+                        t("session.default_title"), set_active=True
+                    )
                 new_active = self.sessions.delete(sid)
                 if new_active is None:
-                    self.sessions.create_session(t("session.default_title"), set_active=True)
+                    self.sessions.create_session(
+                        t("session.default_title"), set_active=True
+                    )
                 self._session_switching = True
                 try:
                     self._load_active_session()
@@ -850,6 +861,12 @@ class MayaAgentWindow:
                     return
                 self.setStyleSheet(load_stylesheet_safe())
                 self._apply_provider_from_config()
+                ui_panel = getattr(self, "ui_panel", None)
+                if ui_panel is not None:
+                    try:
+                        ui_panel.reload_from_config()
+                    except Exception:
+                        pass
                 QtCore.QTimer.singleShot(0, self._apply_composer_splitter_sizes)
 
             def _use_tool_from_settings(self, name: str):
@@ -1074,6 +1091,14 @@ class MayaAgentWindow:
                 self._on_send()
 
             def _on_clear(self):
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    t("composer.clear_title"),
+                    t("composer.clear_confirm"),
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                )
+                if reply != QtWidgets.QMessageBox.Yes:
+                    return
                 self._cancel_pending_save()
                 self.sessions.reset_active()
                 self.agent.reset()
@@ -1089,7 +1114,12 @@ class MayaAgentWindow:
 
             def _on_stop(self):
                 self._stopped_by_user = True
+                self._stream_timer.stop()
                 if self._worker and self._worker.isRunning():
+                    try:
+                        self._worker.signals.event.disconnect(self._on_event)
+                    except Exception:
+                        pass
                     self._worker.terminate()
                     self._worker.wait(1000)
                 try:
@@ -1100,7 +1130,11 @@ class MayaAgentWindow:
                     self.agent.memory.drop_incomplete_tool_round()
                 except Exception:
                     pass
+                # Flush remaining tokens into the current bubble, then close it
+                # so late stream events cannot open a new paragraph.
                 self._flush_stream()
+                self._stream_buf = ""
+                self._thinking_buf = ""
                 self.chat.finish_assistant(
                     stop_notice=stop_notice_for_reason("user_cancel")
                 )
@@ -1183,6 +1217,8 @@ class MayaAgentWindow:
                 self._worker.start()
 
             def _on_event(self, event: dict):
+                if getattr(self, "_stopped_by_user", False):
+                    return
                 et = event.get("type")
                 show_tools = get_config().get("agent.show_tool_calls", True)
                 show_thinking = get_config().get("agent.show_thinking", True)

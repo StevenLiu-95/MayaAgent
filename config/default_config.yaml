@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.4.1"
+  version: "1.4.2"
   language: zh-CN
   theme: dark
 
@@ -226,3 +226,4 @@ ui:
   font_family: "Microsoft YaHei UI"
   ui_scale: 100  # 界面整体缩放百分比（100 = 默认大小）
   composer_height: 120  # 对话输入区高度（可拖动调整）
+  temp_dir: ""  # 临时文件根目录；留空 = MayaAgent 同级 /MayaAgentTempFile

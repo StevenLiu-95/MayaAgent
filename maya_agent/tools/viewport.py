@@ -13,8 +13,14 @@ from maya_agent.llm.image_codec import MAX_IMAGES, attachment_from_raw_file
 from maya_agent.tools._maya import cmds as _cmds
 from maya_agent.tools.registry import ToolResult, obj_schema, tool
 from maya_agent.utils.logger import get_logger
+from maya_agent.utils.paths import agent_temp_subdir
 
 log = get_logger("maya_agent.tools.viewport")
+
+
+def _viewport_temp_dir() -> str:
+    """Directory for playblast / M3dView capture temps under the agent temp root."""
+    return str(agent_temp_subdir("viewport"))
 
 _DEFAULT_W = 1280
 _DEFAULT_H = 720
@@ -151,7 +157,7 @@ def _playblast_still(
     panel: str,
 ) -> str:
     c = _cmds()
-    tmp_dir = tempfile.mkdtemp(prefix="mayaagent_vp_")
+    tmp_dir = tempfile.mkdtemp(prefix="mayaagent_vp_", dir=_viewport_temp_dir())
     stem = os.path.join(tmp_dir, "viewport")
     frame = float(c.currentTime(query=True))
     kwargs = dict(
@@ -224,7 +230,12 @@ def _grab_m3dview_fallback() -> str:
     view = omui.M3dView.active3dView()
     img = om.MImage()
     view.readColorBuffer(img, True)
-    tmp = tempfile.NamedTemporaryFile(prefix="mayaagent_vp_", suffix=".png", delete=False)
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="mayaagent_vp_",
+        suffix=".png",
+        delete=False,
+        dir=_viewport_temp_dir(),
+    )
     tmp.close()
     img.writeToFile(tmp.name, "png")
     if not os.path.isfile(tmp.name) or os.path.getsize(tmp.name) < 32:
@@ -1523,7 +1534,10 @@ def render_still(
     temp_out = False
     if not out_path:
         tmp = tempfile.NamedTemporaryFile(
-            prefix="mayaagent_render_", suffix=".jpg", delete=False
+            prefix="mayaagent_render_",
+            suffix=".jpg",
+            delete=False,
+            dir=_viewport_temp_dir(),
         )
         tmp.close()
         out_path = tmp.name.replace("\\", "/")

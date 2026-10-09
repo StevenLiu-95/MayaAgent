@@ -41,3 +41,44 @@ def default_config_json() -> Path:
 
 def default_config_yaml() -> Path:
     return _PROJECT_ROOT / "config" / "default_config.yaml"
+
+
+def default_agent_temp_root() -> Path:
+    """Sibling of the MayaAgent project: .../MayaAgentTempFile."""
+    return _PROJECT_ROOT.parent / "MayaAgentTempFile"
+
+
+def agent_temp_root() -> Path:
+    """
+    Unified temp root for chat images, file tools, Meshy downloads,
+    viewport captures, and untitled scene sessions.
+
+    Reads ``ui.temp_dir`` from config when set; otherwise
+    ``default_agent_temp_root()``.
+    """
+    raw = ""
+    try:
+        from maya_agent.utils.config import get_config
+
+        raw = str(get_config().get("ui.temp_dir") or "").strip()
+    except Exception:
+        raw = ""
+    if raw:
+        path = Path(os.path.expandvars(os.path.expanduser(raw)))
+    else:
+        path = default_agent_temp_root()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
+def agent_temp_subdir(name: str) -> Path:
+    """Ensure and return a named subdirectory under ``agent_temp_root()``."""
+    path = agent_temp_root() / name
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return path
