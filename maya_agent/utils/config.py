@@ -222,6 +222,13 @@ class Config:
         except Exception:
             pass
 
+        try:
+            from maya_agent.tools.adv_rig import filter_system_prompt_adv
+
+            text = filter_system_prompt_adv(text)
+        except Exception:
+            pass
+
         reply_name = reply_language_name(lang)
         if lang == "zh-CN":
             return text

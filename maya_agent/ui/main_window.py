@@ -225,7 +225,8 @@ class MayaAgentWindow:
                 self._vision_enabled = False
                 self._stream_timer = QtCore.QTimer(self)
                 self._stream_timer.setSingleShot(True)
-                self._stream_timer.setInterval(80)
+                # Slightly longer coalesce cuts layout churn during fast streams.
+                self._stream_timer.setInterval(100)
                 self._stream_timer.timeout.connect(self._flush_stream)
                 self._save_timer = QtCore.QTimer(self)
                 self._save_timer.setSingleShot(True)

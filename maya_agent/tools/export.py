@@ -28,14 +28,22 @@ def _file_meta(path: str) -> Dict[str, Any]:
 
 @tool(
     name="export_fbx",
-    description="导出 FBX（Unity/Unreal 常用）。可仅导出选择。",
+    description=(
+        "导出 FBX（Unity/Unreal 常用）。可仅导出选择。"
+        "若导出后要送 Meshy convert/rig：必须 embed_textures=true，"
+        "否则贴图不会打进文件，Meshy 返回的模型会是白模。"
+    ),
     parameters=obj_schema(
         {
             "file_path": {"type": "string"},
             "selection_only": {"type": "boolean", "default": True},
             "export_animation": {"type": "boolean", "default": False},
             "export_skins": {"type": "boolean", "default": True},
-            "embed_textures": {"type": "boolean", "default": False},
+            "embed_textures": {
+                "type": "boolean",
+                "default": False,
+                "description": "嵌入贴图。Meshy convert/rig 前必须为 true",
+            },
             "generate_lod": {"type": "boolean", "default": False},
             "up_axis": {"type": "string", "enum": ["y", "z"], "default": "y"},
         },

@@ -1,10 +1,10 @@
-"""Optional AdvancedSkeleton (ADV) MEL bridge.
+"""AdvancedSkeleton (ADV) MEL bridge for Maya Agent.
 
-Prefer native tools instead:
-  create_skeleton_* / create_skin_cage / bind_from_skin_cage /
-  build_fk_ik_controls / auto_rig_character
+When AdvancedSkeleton is installed, ``adv_*`` tools are exposed to the LLM.
+Quick path: ``adv_rig_status`` → ``adv_auto_rig`` (or ``adv_next_step`` stepwise).
 
-Only use adv_* when the user explicitly has ADV installed and asks for it.
+Native alternatives (no ADV): create_skeleton_* / create_skin_cage /
+bind_from_skin_cage / build_fk_ik_controls / auto_rig_character.
 """
 
 from __future__ import annotations
@@ -97,6 +97,42 @@ def _find_adv_root() -> str:
         if os.path.isfile(os.path.join(root, "AdvancedSkeleton.mel")):
             return root
     return ""
+
+
+def adv_tools_available() -> bool:
+    """Whether adv_* tools should be exposed to the LLM (ADV install found)."""
+    return bool(_find_adv_root())
+
+
+def filter_system_prompt_adv(text: str) -> str:
+    """Strip AdvancedSkeleton guidance when ADV tools are unavailable."""
+    if adv_tools_available():
+        return text
+    lines = text.splitlines(keepends=True)
+    out: List[str] = []
+    skipping = False
+    for line in lines:
+        stripped = line.lstrip()
+        if not skipping and (
+            stripped.startswith("## AdvancedSkeleton")
+            or stripped.startswith("# AdvancedSkeleton")
+            or stripped.startswith("# ADV")
+        ):
+            skipping = True
+            continue
+        if skipping:
+            if stripped.startswith("## ") or (
+                stripped.startswith("# ")
+                and not stripped.startswith("# AdvancedSkeleton")
+                and not stripped.startswith("# ADV")
+            ):
+                skipping = False
+                out.append(line)
+            continue
+        if stripped.startswith("|") and ("AdvancedSkeleton" in line or "ADV" in line):
+            continue
+        out.append(line)
+    return "".join(out)
 
 
 def _adv_mel_path(root: str) -> str:
@@ -237,6 +273,100 @@ def _scene_status() -> Dict[str, Any]:
     }
 
 
+def _skin_meshes_configured() -> List[str]:
+    c = _cmds()
+    raw = ""
+    if c.textField("asBodySkinTextField", exists=True):
+        raw = c.textField("asBodySkinTextField", query=True, text=True) or ""
+    if not raw and c.objExists("FitSkeleton"):
+        if c.attributeQuery("objectsSkin", node="FitSkeleton", exists=True):
+            raw = c.getAttr("FitSkeleton.objectsSkin") or ""
+    names = [m for m in str(raw).split() if m and c.objExists(m)]
+    return names
+
+
+def _recommend_next(scene: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return the single next ADV action for the current scene state."""
+    st = scene if scene is not None else (_scene_status() if in_maya() else {})
+    has_fit = bool(st.get("FitSkeleton"))
+    has_group = bool(st.get("Group"))
+    deform_n = int(st.get("DeformSet") or 0)
+    skin_meshes = _skin_meshes_configured() if in_maya() else []
+    objects_skin = (st.get("objectsSkin") or "").strip()
+
+    if not has_fit:
+        return {
+            "action": "adv_import_fit_skeleton",
+            "args": {"template": "biped", "replace": True},
+            "reason": "场景尚无 FitSkeleton，先导入引导骨架",
+            "or_oneshot": "adv_auto_rig",
+        }
+    if not objects_skin and not skin_meshes:
+        return {
+            "action": "adv_set_skin_meshes",
+            "args": {"names": [], "game_engine": True},
+            "reason": "未设置 Skin 网格（可用当前选择）",
+            "or_oneshot": "adv_auto_rig",
+        }
+    if not has_group or deform_n <= 0:
+        # Prefer auto_scale if fit looks unplaced; always safe to suggest place then build
+        if not has_group:
+            return {
+                "action": "adv_auto_place_fit",
+                "args": {"mode": "auto_scale"},
+                "reason": "已有 Fit+Skin，建议先 AutoScale，再 adv_build_rig",
+                "after": "adv_build_rig",
+                "or_oneshot": "adv_auto_rig",
+            }
+        return {
+            "action": "adv_build_rig",
+            "args": {},
+            "reason": "Fit 已就绪但未 Build（缺 Group/DeformSet）",
+            "or_oneshot": "adv_auto_rig",
+        }
+    # Built — check if meshes already skinned
+    need_bind = False
+    if in_maya() and skin_meshes:
+        c = _cmds()
+        for m in skin_meshes:
+            hist = c.listHistory(m) or []
+            if not (c.ls(hist, type="skinCluster") or []):
+                need_bind = True
+                break
+    elif in_maya() and objects_skin:
+        need_bind = True
+    if need_bind:
+        return {
+            "action": "adv_bind_skin",
+            "args": {"mode": "cage", "max_influences": 4},
+            "reason": "已 Build，网格尚未蒙皮；推荐 cage 模式",
+            "or_oneshot": None,
+        }
+    return {
+        "action": "done",
+        "args": {},
+        "reason": "ADV 绑定已就绪（Fit + Group/DeformSet + 蒙皮）",
+        "or_oneshot": None,
+    }
+
+
+def _workflow_checklist() -> List[Dict[str, str]]:
+    return [
+        {"step": 1, "tool": "adv_rig_status", "note": "确认 ADV 可用与场景阶段"},
+        {"step": 2, "tool": "adv_auto_rig", "note": "一键：导入Fit→设Skin→AutoScale→Build→蒙皮"},
+        {
+            "step": "2alt",
+            "tool": "adv_next_step",
+            "note": "分步：每次执行下一必要步骤，便于中途调 Fit",
+        },
+        {
+            "step": 3,
+            "tool": "adv_create_controller",
+            "note": "可选：Build 后补 FK/IK/Pole 控制器",
+        },
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -244,12 +374,11 @@ def _scene_status() -> Dict[str, Any]:
 @tool(
     name="adv_rig_status",
     description=(
-        "【可选·需安装 ADV】检查 AdvancedSkeleton 是否可用及场景绑定状态。"
-        "日常请优先 list_skeleton_templates / create_skeleton_* / auto_rig_character。"
-        "做 ADV 自动绑定前先调用。"
+        "检查 AdvancedSkeleton 是否可用、场景绑定阶段，并返回下一步推荐动作（next）。"
+        "开始 ADV 绑定前先调用；也可在中途用来决定调用 adv_next_step 还是 adv_auto_rig。"
     ),
     parameters=obj_schema({}),
-    category="rigging",
+    category="adv",
 )
 def adv_rig_status() -> ToolResult:
     if not in_maya():
@@ -262,26 +391,45 @@ def adv_rig_status() -> ToolResult:
             sourced = bool(info) and "unknown" not in str(info).lower()
         except Exception:
             sourced = False
+    scene = _scene_status()
+    next_action = _recommend_next(scene) if root else None
     data = {
+        "available": bool(root),
         "adv_root": root or None,
         "sourced": sourced,
         "templates": list(_TEMPLATES),
-        "scene": _scene_status() if in_maya() else {},
+        "scene": scene,
+        "next": next_action,
+        "workflow": _workflow_checklist(),
+        "oneshot": "adv_auto_rig",
+        "hint": (
+            "完整角色绑定优先 adv_auto_rig；需要手动调 Fit 时用 adv_next_step 分步。"
+            if root
+            else "未找到 ADV：在设置中填写 AdvancedSkeleton 路径，或改用 auto_rig_character。"
+        ),
     }
     if not root:
         return ToolResult(
             ok=False,
-            error="未找到 AdvancedSkeleton 安装目录",
+            error="未找到 AdvancedSkeleton 安装目录（设置 maya.advanced_skeleton_path）",
             data=data,
         )
-    return ToolResult(ok=True, data=data, message=f"ADV 路径: {root}")
+    nxt = (next_action or {}).get("action", "?")
+    return ToolResult(
+        ok=True,
+        data=data,
+        message=f"ADV 可用：{root}；下一步 → {nxt}",
+    )
 
 
 @tool(
     name="adv_list_fit_templates",
-    description="列出 AdvancedSkeleton 可用的 FitSkeleton 模板（biped / UE5 / cat 等）。",
+    description=(
+        "列出 AdvancedSkeleton FitSkeleton 模板（biped / bipedGame / UE5 / cat / dragon 等）。"
+        "选模板后交给 adv_import_fit_skeleton 或 adv_auto_rig(template=...)."
+    ),
     parameters=obj_schema({}),
-    category="rigging",
+    category="adv",
 )
 def adv_list_fit_templates() -> ToolResult:
     root = _find_adv_root()
@@ -301,9 +449,10 @@ def adv_list_fit_templates() -> ToolResult:
 @tool(
     name="adv_import_fit_skeleton",
     description=(
-        "导入 AdvancedSkeleton FitSkeleton 引导骨架（不是最终绑定关节）。"
-        "模板如 biped / bipedGame / UE5。已有 FitSkeleton 时 replace=true 会替换。"
-        "下一步通常 adv_auto_place_fit 或手动调关节后 adv_build_rig。"
+        "ADV 流程第1步：导入 FitSkeleton 引导骨架（非最终变形骨）。"
+        "模板 biped / bipedGame / UE5 / cat 等。replace=true 替换已有 Fit。"
+        "完成后通常 adv_set_skin_meshes → adv_auto_place_fit → adv_build_rig；"
+        "或直接用 adv_auto_rig / adv_next_step。"
     ),
     parameters=obj_schema(
         {
@@ -320,7 +469,7 @@ def adv_list_fit_templates() -> ToolResult:
             },
         }
     ),
-    category="rigging",
+    category="adv",
     destructive=True,
 )
 def adv_import_fit_skeleton(
@@ -383,8 +532,8 @@ def adv_import_fit_skeleton(
 @tool(
     name="adv_set_skin_meshes",
     description=(
-        "设置 ADV Body>Pre 的 Skin 网格（AutoPlace / 部分蒙皮功能依赖此项）。"
-        "names 为空则用当前选择中的 mesh transform。"
+        "ADV 流程第2步：设置 Body>Pre 的 Skin 网格（AutoPlace / 蒙皮依赖）。"
+        "names 为空则用当前选择中的 mesh transform。游戏角色保持 game_engine=true。"
     ),
     parameters=obj_schema(
         {
@@ -396,7 +545,7 @@ def adv_import_fit_skeleton(
             },
         }
     ),
-    category="rigging",
+    category="adv",
 )
 def adv_set_skin_meshes(
     names: Optional[List[str]] = None,
@@ -421,8 +570,8 @@ def adv_set_skin_meshes(
 @tool(
     name="adv_auto_place_fit",
     description=(
-        "按 Skin 网格自动缩放并贴合 FitSkeleton 引导关节（ADV AutoPlace/AutoScale）。"
-        "必须已导入 FitSkeleton 且已设置 Skin。复杂网格可能失败，此时应手动调 Fit 再 Build。"
+        "ADV 流程第3步：按 Skin 网格 AutoScale/AutoPlace Fit 引导关节。"
+        "需已有 FitSkeleton + Skin。失败时可让用户手动调 Fit，再 adv_build_rig。"
     ),
     parameters=obj_schema(
         {
@@ -434,7 +583,7 @@ def adv_set_skin_meshes(
             }
         }
     ),
-    category="rigging",
+    category="adv",
     destructive=True,
 )
 def adv_auto_place_fit(mode: str = "auto_scale") -> ToolResult:
@@ -474,12 +623,12 @@ def adv_auto_place_fit(mode: str = "auto_scale") -> ToolResult:
 @tool(
     name="adv_build_rig",
     description=(
-        "执行 Build AdvancedSkeleton：由 FitSkeleton 生成变形骨骼（DeformSet）"
-        "和 FK/IK 控制器（ControlSet）。场景中不能已有名为 Group 的无关物体。"
-        "首次构建；若已有 Group 则走 ADV Rebuild。"
+        "ADV 流程第4步：Build —— 由 FitSkeleton 生成变形骨（DeformSet）"
+        "与 FK/IK 控制器（ControlSet）。场景勿有无关的 Group 节点命名冲突。"
+        "已有 Group 时走 Rebuild。完成后可用 adv_bind_skin。"
     ),
     parameters=obj_schema({}),
-    category="rigging",
+    category="adv",
     destructive=True,
 )
 def adv_build_rig() -> ToolResult:
@@ -517,9 +666,9 @@ def adv_build_rig() -> ToolResult:
 @tool(
     name="adv_bind_skin",
     description=(
-        "将网格蒙皮到 ADV 变形骨骼。mode=smooth：Maya Smooth Bind（max_influences）。"
-        "mode=cage：先建 SkinCage 再 copySkinWeights（更接近 ADV 自动权重）。"
-        "names 为空则用已设置的 Skin 或当前选择。"
+        "ADV 流程第5步：把网格蒙皮到 DeformSet。"
+        "mode=cage：ADV SkinCage 拷权（推荐，更接近 ADV 自动权重）；"
+        "mode=smooth：Maya Smooth Bind。names 空则用已设 Skin / 当前选择。"
     ),
     parameters=obj_schema(
         {
@@ -527,17 +676,17 @@ def adv_build_rig() -> ToolResult:
             "mode": {
                 "type": "string",
                 "enum": ["smooth", "cage"],
-                "default": "smooth",
+                "default": "cage",
             },
             "max_influences": {"type": "integer", "default": 4},
         }
     ),
-    category="rigging",
+    category="adv",
     destructive=True,
 )
 def adv_bind_skin(
     names: Optional[List[str]] = None,
-    mode: str = "smooth",
+    mode: str = "cage",
     max_influences: int = 4,
 ) -> ToolResult:
     if not in_maya():
@@ -564,6 +713,7 @@ def adv_bind_skin(
         return ToolResult(ok=False, error="没有 DeformSet，请先 adv_build_rig")
 
     bound: List[str] = []
+    warnings: List[str] = []
     if mode == "cage":
         try:
             if not c.objExists("skinCage"):
@@ -571,13 +721,14 @@ def adv_bind_skin(
             c.select(meshes, replace=True)
             _mel("asCopySkin;")
             bound = list(meshes)
+            return ToolResult(
+                ok=True,
+                data={"mode": "cage", "meshes": bound, "skinCage": True},
+                message=f"已通过 SkinCage 拷贝权重到 {len(bound)} 个网格",
+            )
         except Exception as e:
-            return ToolResult(ok=False, error=f"SkinCage 蒙皮失败: {e}")
-        return ToolResult(
-            ok=True,
-            data={"mode": "cage", "meshes": bound, "skinCage": True},
-            message=f"已通过 SkinCage 拷贝权重到 {len(bound)} 个网格",
-        )
+            warnings.append(f"SkinCage 失败，回退 Smooth Bind: {e}")
+            mode = "smooth"
 
     # Smooth bind to DeformSet (exclude eyes/jaw like ADV)
     try:
@@ -602,20 +753,26 @@ def adv_bind_skin(
             )
             bound.append(sc[0] if isinstance(sc, (list, tuple)) else str(sc))
     except Exception as e:
-        return ToolResult(ok=False, error=f"Smooth Bind 失败: {e}")
+        return ToolResult(ok=False, error=f"Smooth Bind 失败: {e}", data={"warnings": warnings})
     return ToolResult(
         ok=True,
-        data={"mode": "smooth", "skinClusters": bound, "meshes": meshes, "influences": len(joints)},
-        message=f"已 Smooth Bind {len(meshes)} 个网格 → {len(joints)} 根变形骨骼",
+        data={
+            "mode": "smooth",
+            "skinClusters": bound,
+            "meshes": meshes,
+            "influences": len(joints),
+            "warnings": warnings,
+        },
+        message=f"已 Smooth Bind {len(meshes)} 个网格 → {len(joints)} 根变形骨骼"
+        + (f"（{len(warnings)} 警告）" if warnings else ""),
     )
 
 
 @tool(
     name="adv_create_controller",
     description=(
-        "调用 ADV asCreateController 在指定 Fit 关节上生成控制器"
-        "（type: FK/IK/Pole/Root/COG/Bend 等）。通常 Build 已批量创建，此工具用于补控。"
-        "需要已 Build（存在 Main、对应 icon 曲线）。"
+        "ADV 补控制器：asCreateController（FK/IK/Pole/Root/Bend 等）。"
+        "Build 通常已批量生成；仅在缺失或定制时调用。需已有 Main。"
     ),
     parameters=obj_schema(
         {
@@ -637,7 +794,7 @@ def adv_bind_skin(
         },
         required=["name", "fit_joint"],
     ),
-    category="rigging",
+    category="adv",
     destructive=True,
 )
 def adv_create_controller(
@@ -672,11 +829,144 @@ def adv_create_controller(
 
 
 @tool(
+    name="adv_next_step",
+    description=(
+        "ADV 智能下一步：根据场景状态自动执行下一必要步骤"
+        "（导入Fit / 设Skin / AutoScale / Build / 蒙皮）。"
+        "适合需要中途微调 Fit 的分步绑定；完整一键请用 adv_auto_rig。"
+        "可先 adv_rig_status 查看 next，再反复调用本工具直到 action=done。"
+    ),
+    parameters=obj_schema(
+        {
+            "template": {
+                "type": "string",
+                "default": "biped",
+                "description": "仅在尚无 FitSkeleton 时用于导入",
+            },
+            "meshes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "设 Skin 时用；空则当前选择",
+            },
+            "bind_mode": {
+                "type": "string",
+                "enum": ["smooth", "cage"],
+                "default": "cage",
+            },
+            "place_mode": {
+                "type": "string",
+                "enum": ["auto_scale", "auto_place"],
+                "default": "auto_scale",
+            },
+            "game_engine": {"type": "boolean", "default": True},
+            "max_influences": {"type": "integer", "default": 4},
+            "skip_place": {
+                "type": "boolean",
+                "default": False,
+                "description": "True 时跳过 AutoPlace，直接 Build（Fit 已手调好）",
+            },
+        }
+    ),
+    category="adv",
+    destructive=True,
+)
+def adv_next_step(
+    template: str = "biped",
+    meshes: Optional[List[str]] = None,
+    bind_mode: str = "cage",
+    place_mode: str = "auto_scale",
+    game_engine: bool = True,
+    max_influences: int = 4,
+    skip_place: bool = False,
+) -> ToolResult:
+    if not in_maya():
+        return ToolResult(ok=False, error="未在 Maya 中运行")
+    if not _find_adv_root():
+        return ToolResult(
+            ok=False,
+            error="未找到 AdvancedSkeleton，请在设置中配置路径或改用 auto_rig_character",
+        )
+
+    scene = _scene_status()
+    plan = _recommend_next(scene)
+    action = plan.get("action") or "done"
+
+    if action == "done":
+        return ToolResult(
+            ok=True,
+            data={"action": "done", "scene": scene, "next": plan},
+            message=plan.get("reason") or "ADV 绑定已完成",
+        )
+
+    if action == "adv_import_fit_skeleton":
+        r = adv_import_fit_skeleton(template=template, replace=True, open_ui=True)
+    elif action == "adv_set_skin_meshes":
+        r = adv_set_skin_meshes(names=meshes or [], game_engine=game_engine)
+    elif action == "adv_auto_place_fit":
+        if skip_place:
+            r = adv_build_rig()
+            action = "adv_build_rig"
+        else:
+            place = adv_auto_place_fit(mode=place_mode)
+            warnings: List[str] = []
+            if not place.ok:
+                warnings.append(place.error or "AutoPlace 失败，使用默认 Fit 比例继续 Build")
+            build = adv_build_rig()
+            return ToolResult(
+                ok=build.ok,
+                data={
+                    "action": "adv_auto_place_fit+adv_build_rig",
+                    "place": place.data,
+                    "build": build.data,
+                    "next": _recommend_next(),
+                    "warnings": warnings
+                    + ([] if build.ok else [build.error or "Build 失败"]),
+                },
+                message=(
+                    f"{place.message or 'AutoPlace 跳过'} → {build.message}"
+                    if build.ok
+                    else (build.error or "Build 失败")
+                ),
+                error=build.error if not build.ok else "",
+            )
+    elif action == "adv_build_rig":
+        r = adv_build_rig()
+    elif action == "adv_bind_skin":
+        r = adv_bind_skin(
+            names=meshes or [],
+            mode=bind_mode,
+            max_influences=max_influences,
+        )
+    else:
+        return ToolResult(ok=False, error=f"未知下一步: {action}", data={"plan": plan})
+
+    if not r.ok:
+        r.data = dict(r.data or {})
+        r.data.update({"action": action, "plan": plan, "next": _recommend_next()})
+        return r
+
+    nxt = _recommend_next()
+    return ToolResult(
+        ok=True,
+        data={
+            "action": action,
+            "result": r.data,
+            "next": nxt,
+            "scene": _scene_status(),
+        },
+        message=f"已执行 {action}：{r.message}；下一步 → {nxt.get('action')}",
+    )
+
+
+@tool(
     name="adv_auto_rig",
     description=(
-        "【可选·需安装 ADV】一键 ADV 绑定。"
-        "日常请优先 auto_rig_character（原生，不依赖 ADV）。"
-        "auto_place 失败时仍会尝试 Build（引导骨架保持默认比例）。"
+        "【推荐】一键 AdvancedSkeleton 完整绑定："
+        "导入 Fit → 设 Skin → AutoScale → Build → 蒙皮（默认 cage）。"
+        "用户要 ADV / Advanced Skeleton / 完整控制器绑定时优先本工具。"
+        "names 空则用当前选择。auto_place 失败仍会继续 Build。"
+        "需中途手调 Fit 时改用 adv_next_step。"
     ),
     parameters=obj_schema(
         {
@@ -684,26 +974,30 @@ def adv_create_controller(
                 "type": "array",
                 "items": {"type": "string"},
                 "default": [],
-                "description": "角色网格 transform",
+                "description": "角色网格 transform；空=当前选择",
             },
-            "template": {"type": "string", "default": "biped"},
+            "template": {
+                "type": "string",
+                "default": "biped",
+                "description": "Fit 模板：biped / bipedGame / UE5 / cat / dragon 等",
+            },
             "bind_mode": {
                 "type": "string",
                 "enum": ["smooth", "cage", "none"],
-                "default": "smooth",
+                "default": "cage",
             },
             "auto_place": {"type": "boolean", "default": True},
             "game_engine": {"type": "boolean", "default": True},
             "max_influences": {"type": "integer", "default": 4},
         }
     ),
-    category="rigging",
+    category="adv",
     destructive=True,
 )
 def adv_auto_rig(
     names: Optional[List[str]] = None,
     template: str = "biped",
-    bind_mode: str = "smooth",
+    bind_mode: str = "cage",
     auto_place: bool = True,
     game_engine: bool = True,
     max_influences: int = 4,

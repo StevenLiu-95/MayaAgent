@@ -866,39 +866,645 @@ def smooth_skin_weights(
         return ToolResult(ok=False, error=str(e))
 
 
+# ---------------------------------------------------------------------------
+# Align + transfer (Meshy / mismatched transforms)
+# ---------------------------------------------------------------------------
+
+
+def _world_bbox_mesh(mesh: str) -> Tuple[float, float, float, float, float, float]:
+    """World-space AABB from final mesh shape vertices (skinned pose)."""
+    import maya.api.OpenMaya as om
+
+    tf = _mesh_transform(mesh)
+    sel = om.MSelectionList()
+    sel.add(tf)
+    dag = sel.getDagPath(0)
+    dag.extendToShape()
+    fn = om.MFnMesh(dag)
+    pts = fn.getPoints(om.MSpace.kWorld)
+    if not pts:
+        raise ValueError(f"网格无顶点: {tf}")
+    xs = [p.x for p in pts]
+    ys = [p.y for p in pts]
+    zs = [p.z for p in pts]
+    return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+
+
+def _combined_world_bbox(
+    meshes: Sequence[str],
+) -> Tuple[float, float, float, float, float, float]:
+    bbs = [_world_bbox_mesh(m) for m in meshes]
+    return (
+        min(b[0] for b in bbs),
+        min(b[1] for b in bbs),
+        min(b[2] for b in bbs),
+        max(b[3] for b in bbs),
+        max(b[4] for b in bbs),
+        max(b[5] for b in bbs),
+    )
+
+
+def _bbox_metrics(bb: Tuple[float, float, float, float, float, float]) -> Dict[str, Any]:
+    xmin, ymin, zmin, xmax, ymax, zmax = bb
+    return {
+        "bbox": [round(v, 4) for v in bb],
+        "center": (
+            (xmin + xmax) * 0.5,
+            (ymin + ymax) * 0.5,
+            (zmin + zmax) * 0.5,
+        ),
+        "feet": (
+            (xmin + xmax) * 0.5,
+            ymin,
+            (zmin + zmax) * 0.5,
+        ),
+        "size": (xmax - xmin, ymax - ymin, zmax - zmin),
+        "height": ymax - ymin,
+    }
+
+
+def _skin_influences(mesh: str) -> List[str]:
+    c = _cmds()
+    sc = _skin_cluster(mesh)
+    return list(c.skinCluster(sc, query=True, influence=True) or [])
+
+
+def _common_dag_ancestor(nodes: Sequence[str]) -> Optional[str]:
+    """Longest common DAG parent path shared by all nodes (exclusive of the nodes)."""
+    c = _cmds()
+    paths: List[List[str]] = []
+    for n in nodes:
+        if not n or not c.objExists(n):
+            continue
+        long = (c.ls(n, long=True) or [n])[0]
+        parts = [p for p in long.split("|") if p]
+        if len(parts) < 2:
+            continue
+        paths.append(parts[:-1])  # exclude self
+    if not paths:
+        return None
+    common: List[str] = []
+    for segs in zip(*paths):
+        if len(set(segs)) == 1:
+            common.append(segs[0])
+        else:
+            break
+    if not common:
+        return None
+    return "|" + "|".join(common)
+
+
+def _assembly_root(node: str) -> str:
+    """Top-level DAG under the world for a node (e.g. |Armature, |char1)."""
+    c = _cmds()
+    long = (c.ls(node, long=True) or [node])[0]
+    parts = [p for p in long.split("|") if p]
+    if not parts:
+        return long
+    return "|" + parts[0]
+
+
+def _infer_align_root(source_mesh: str) -> str:
+    """
+    Prefer the transform that owns the joints (Armature), not the mesh itself.
+    Meshy imports often have |Armature and |char1 as world siblings.
+    """
+    c = _cmds()
+    inf = _skin_influences(source_mesh)
+    if not inf:
+        return _assembly_root(_mesh_transform(source_mesh))
+
+    # Walk up from first joint; prefer named armature/rig transform
+    cur = (c.ls(inf[0], long=True) or [inf[0]])[0]
+    fallback = _assembly_root(cur)
+    for _ in range(16):
+        if not c.objExists(cur):
+            break
+        short = cur.split("|")[-1].lower()
+        nt = c.nodeType(cur)
+        if nt == "transform" and (
+            short in ("armature", "root", "rig", "skeleton", "skel")
+            or "armature" in short
+            or short.endswith("_rig")
+            or short.endswith("_skel")
+        ):
+            return cur
+        parents = c.listRelatives(cur, parent=True, fullPath=True) or []
+        if not parents:
+            break
+        cur = parents[0]
+
+    anc = _common_dag_ancestor(inf)
+    if anc and c.objExists(anc):
+        return _assembly_root(anc)
+    return fallback
+
+
+def _nodes_to_align(source_mesh: str, align_root: str) -> List[str]:
+    """
+    World assemblies that must move/scale together.
+
+    Meshy: |Armature (joints) + |char1 (skinned mesh) are siblings — moving only
+    Armature leaves bind-pose mesh transform behind in some scenes; moving only
+    the mesh leaves the skeleton offset (classic 'green bones beside character').
+    Always transform both assemblies when they differ.
+    """
+    c = _cmds()
+    root = _assembly_root(align_root)
+    mesh_top = _assembly_root(source_mesh)
+    out: List[str] = []
+    for n in (root, mesh_top):
+        if n and c.objExists(n) and n not in out:
+            out.append(n)
+    if not out:
+        raise ValueError("未找到可对齐的根节点")
+    return out
+
+
+def _bbox_overlap_ratio(
+    a: Tuple[float, float, float, float, float, float],
+    b: Tuple[float, float, float, float, float, float],
+) -> float:
+    """Axis-aligned bbox intersection volume / min(volume_a, volume_b)."""
+    ix0, iy0, iz0 = max(a[0], b[0]), max(a[1], b[1]), max(a[2], b[2])
+    ix1, iy1, iz1 = min(a[3], b[3]), min(a[4], b[4]), min(a[5], b[5])
+    if ix1 <= ix0 or iy1 <= iy0 or iz1 <= iz0:
+        return 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0) * (iz1 - iz0)
+    va = max(1e-12, (a[3] - a[0]) * (a[4] - a[1]) * (a[5] - a[2]))
+    vb = max(1e-12, (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]))
+    return float(inter / min(va, vb))
+
+
+def _snap_rig_root_to_target(
+    *,
+    source_mesh: str,
+    target_meshes: Sequence[str],
+    align_root: str = "",
+    match: str = "feet",
+    uniform_scale: bool = True,
+    scale_tolerance: float = 0.02,
+    max_pivot_error: float = 2.0,
+) -> Dict[str, Any]:
+    """
+    Uniform-scale + world-translate so the *skinned* source mesh bbox matches
+    the combined target bbox.
+
+    Moves Armature **and** the source-mesh assembly together (Meshy sibling
+    layout). Scale/translate use the source feet/center as world pivot so both
+    stay locked. Do not move nodes back after weight transfer.
+    """
+    c = _cmds()
+    src = _mesh_transform(source_mesh)
+    targets = [_mesh_transform(t) for t in target_meshes]
+    root = _long(align_root) if (align_root or "").strip() else _infer_align_root(src)
+    if not c.objExists(root):
+        raise ValueError(f"对齐根节点不存在: {root}")
+    movers = _nodes_to_align(src, root)
+
+    src_bb = _world_bbox_mesh(src)
+    dst_bb = _combined_world_bbox(targets)
+    src_m = _bbox_metrics(src_bb)
+    dst_m = _bbox_metrics(dst_bb)
+    src_h = float(src_m["height"])
+    dst_h = float(dst_m["height"])
+    if src_h < 1e-6 or dst_h < 1e-6:
+        raise ValueError("源或目标包围盒高度过小，无法对齐")
+
+    match = (match or "feet").strip().lower()
+    if match not in ("feet", "center"):
+        raise ValueError("match 必须是 feet 或 center")
+    pivot_key = "feet" if match == "feet" else "center"
+    dst_pivot = dst_m[pivot_key]
+
+    before_states = {
+        n: {
+            "translate": list(c.xform(n, query=True, worldSpace=True, translation=True)),
+            "scale": list(c.getAttr(f"{n}.scale")[0]),
+            "rotate": list(c.xform(n, query=True, worldSpace=True, rotation=True)),
+        }
+        for n in movers
+    }
+
+    # Already overlapping enough → skip (avoid double-align drift)
+    pre_err = sum(abs(src_m[pivot_key][i] - dst_m[pivot_key][i]) for i in range(3))
+    pre_overlap = _bbox_overlap_ratio(src_bb, dst_bb)
+    height_ratio = dst_h / src_h
+    if (
+        pre_err <= float(max_pivot_error)
+        and pre_overlap >= 0.35
+        and abs(height_ratio - 1.0) <= float(scale_tolerance)
+    ):
+        return {
+            "align_root": root,
+            "movers": movers,
+            "match": match,
+            "scale_applied": 1.0,
+            "translation_delta": [0.0, 0.0, 0.0],
+            "source_before": src_m,
+            "target": dst_m,
+            "source_after": src_m,
+            "skipped": True,
+            "feet_error": round(pre_err, 5),
+            "overlap_ratio": round(pre_overlap, 4),
+            "root_before": before_states.get(root),
+            "root_after": before_states.get(root),
+        }
+
+    scale = 1.0
+    if uniform_scale and abs(height_ratio - 1.0) > float(scale_tolerance):
+        scale = height_ratio
+        # Scale every mover about the *current* source pivot (world)
+        pivot = list(src_m[pivot_key])
+        for n in movers:
+            c.scale(
+                scale,
+                scale,
+                scale,
+                n,
+                relative=True,
+                pivot=pivot,
+                worldSpace=True,
+            )
+
+    src_m_mid = _bbox_metrics(_world_bbox_mesh(src))
+    src_pivot = src_m_mid[pivot_key]
+    delta = (
+        dst_pivot[0] - src_pivot[0],
+        dst_pivot[1] - src_pivot[1],
+        dst_pivot[2] - src_pivot[2],
+    )
+    if any(abs(v) > 1e-9 for v in delta):
+        for n in movers:
+            c.move(delta[0], delta[1], delta[2], n, relative=True, worldSpace=True)
+
+    after_bb = _world_bbox_mesh(src)
+    after_src = _bbox_metrics(after_bb)
+    err = sum(abs(after_src[pivot_key][i] - dst_m[pivot_key][i]) for i in range(3))
+    overlap = _bbox_overlap_ratio(after_bb, dst_bb)
+
+    # If feet match failed (odd proportions), retry center translation once
+    if err > float(max_pivot_error) and match == "feet":
+        c_delta = (
+            dst_m["center"][0] - after_src["center"][0],
+            dst_m["center"][1] - after_src["center"][1],
+            dst_m["center"][2] - after_src["center"][2],
+        )
+        if any(abs(v) > 1e-9 for v in c_delta):
+            for n in movers:
+                c.move(
+                    c_delta[0],
+                    c_delta[1],
+                    c_delta[2],
+                    n,
+                    relative=True,
+                    worldSpace=True,
+                )
+            delta = (delta[0] + c_delta[0], delta[1] + c_delta[1], delta[2] + c_delta[2])
+            after_bb = _world_bbox_mesh(src)
+            after_src = _bbox_metrics(after_bb)
+            err = sum(
+                abs(after_src["center"][i] - dst_m["center"][i]) for i in range(3)
+            )
+            overlap = _bbox_overlap_ratio(after_bb, dst_bb)
+            match = "center_fallback"
+
+    after_states = {
+        n: {
+            "translate": list(c.xform(n, query=True, worldSpace=True, translation=True)),
+            "scale": list(c.getAttr(f"{n}.scale")[0]),
+            "rotate": list(c.xform(n, query=True, worldSpace=True, rotation=True)),
+        }
+        for n in movers
+    }
+
+    if err > float(max_pivot_error) and overlap < 0.15:
+        raise ValueError(
+            f"对齐后仍偏差过大（pivot_error={err:.3f}, overlap={overlap:.3f}）。"
+            f"已移动: {movers}。请检查源网格是否为 Meshy 蒙皮网格、目标是否为原角色分件，"
+            "或手动指定 align_root=Armature。"
+        )
+
+    return {
+        "align_root": root,
+        "movers": movers,
+        "match": match,
+        "scale_applied": scale,
+        "translation_delta": [round(v, 5) for v in delta],
+        "source_before": src_m,
+        "target": dst_m,
+        "source_after": after_src,
+        "skipped": False,
+        "feet_error": round(err, 5),
+        "overlap_ratio": round(overlap, 4),
+        "root_before": before_states.get(_assembly_root(root)),
+        "root_after": after_states.get(_assembly_root(root)),
+        "mover_before": before_states,
+        "mover_after": after_states,
+    }
+
+
+def _ensure_bound_to_influences(
+    mesh: str,
+    influences: Sequence[str],
+    *,
+    max_influences: int = 4,
+) -> str:
+    """Return skinCluster on mesh; bind to influences if missing."""
+    c = _cmds()
+    tf = _mesh_transform(mesh)
+    try:
+        return _skin_cluster(tf)
+    except ValueError:
+        pass
+    joints = [j for j in influences if c.objExists(j)]
+    if not joints:
+        raise ValueError(f"无法绑定 {tf}：没有有效影响骨")
+    c.select(joints, replace=True)
+    c.select(tf, add=True)
+    sc = c.skinCluster(
+        toSelectedBones=True,
+        bindMethod=0,
+        normalizeWeights=1,
+        maximumInfluences=max(1, int(max_influences)),
+        obeyMaxInfluences=True,
+        dropoffRate=4.0,
+        removeUnusedInfluence=False,
+    )
+    return sc[0] if isinstance(sc, (list, tuple)) else str(sc)
+
+
+def _do_copy_skin_weights(source: str, destination: str, *, no_mirror: bool = True) -> Dict[str, Any]:
+    c = _cmds()
+    src = _mesh_transform(source)
+    dst = _mesh_transform(destination)
+    ss = _skin_cluster(src)
+    ds = _skin_cluster(dst)
+    c.copySkinWeights(
+        ss=ss,
+        ds=ds,
+        noMirror=bool(no_mirror),
+        surfaceAssociation="closestPoint",
+        influenceAssociation=["closestJoint", "oneToOne", "label"],
+    )
+    return {"source": src, "destination": dst, "source_skin": ss, "dest_skin": ds}
+
+
+@tool(
+    name="align_skinned_rig",
+    description=(
+        "把 Meshy/错位蒙皮源对齐到目标网格（或分件合并包围盒）。"
+        "同时移动 Armature 与源网格顶层节点（兄弟层级常见），按脚底对齐并可选均匀缩放。"
+        "在 copy_skin_weights / transfer_skin_weights 前调用；对齐后保持，不要移回。"
+    ),
+    parameters=obj_schema(
+        {
+            "source_mesh": {
+                "type": "string",
+                "description": "已蒙皮的源网格（如 Meshy 的 char1）",
+            },
+            "target_meshes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "对齐目标：原角色网格或分件列表",
+            },
+            "align_root": {
+                "type": "string",
+                "default": "",
+                "description": "骨架根（默认自动推断 Armature）",
+            },
+            "match": {
+                "type": "string",
+                "enum": ["feet", "center"],
+                "default": "feet",
+            },
+            "uniform_scale": {"type": "boolean", "default": True},
+            "scale_tolerance": {
+                "type": "number",
+                "default": 0.02,
+                "description": "高度比与 1 的偏差小于此值则不缩放",
+            },
+            "max_pivot_error": {
+                "type": "number",
+                "default": 2.0,
+                "description": "对齐后脚底/中心允许的最大偏差（场景单位）",
+            },
+        },
+        required=["source_mesh", "target_meshes"],
+    ),
+    category="rigging",
+    destructive=True,
+)
+def align_skinned_rig(
+    source_mesh: str,
+    target_meshes: List[str],
+    align_root: str = "",
+    match: str = "feet",
+    uniform_scale: bool = True,
+    scale_tolerance: float = 0.02,
+    max_pivot_error: float = 2.0,
+) -> ToolResult:
+    try:
+        _require_maya()
+        if not target_meshes:
+            return ToolResult(ok=False, error="target_meshes 不能为空")
+        info = _snap_rig_root_to_target(
+            source_mesh=source_mesh,
+            target_meshes=target_meshes,
+            align_root=align_root,
+            match=match,
+            uniform_scale=bool(uniform_scale),
+            scale_tolerance=float(scale_tolerance),
+            max_pivot_error=float(max_pivot_error),
+        )
+        skipped = "（已重叠，跳过）" if info.get("skipped") else ""
+        return ToolResult(
+            ok=True,
+            data=info,
+            message=(
+                f"已对齐 movers={info.get('movers')} → 目标"
+                f"{skipped}（scale={info['scale_applied']:.4f}, "
+                f"feet_error={info['feet_error']}, overlap={info.get('overlap_ratio')}）"
+            ),
+        )
+    except Exception as e:
+        return ToolResult(ok=False, error=str(e))
+
+
 @tool(
     name="copy_skin_weights",
-    description="在两网格间传递蒙皮权重（copySkinWeights，按最近点 + 最近关节）。",
+    description=(
+        "在两网格间传递蒙皮权重（copySkinWeights，按最近点 + 最近关节）。"
+        "默认 align=true：先把源侧 Armature+蒙皮网格一起对齐到目标再拷贝（修复 Meshy 错位）。"
+        "对齐会保留，拷完不能把骨架移回。多目标请用 transfer_skin_weights。"
+    ),
     parameters=obj_schema(
         {
             "source": {"type": "string"},
             "destination": {"type": "string"},
             "no_mirror": {"type": "boolean", "default": True},
+            "align": {
+                "type": "boolean",
+                "default": True,
+                "description": "拷贝前对齐源骨架+源网格到目标",
+            },
+            "align_root": {"type": "string", "default": ""},
+            "match": {
+                "type": "string",
+                "enum": ["feet", "center"],
+                "default": "feet",
+            },
+            "uniform_scale": {"type": "boolean", "default": True},
+            "max_pivot_error": {"type": "number", "default": 2.0},
         },
         required=["source", "destination"],
     ),
     category="rigging",
     destructive=True,
 )
-def copy_skin_weights(source: str, destination: str, no_mirror: bool = True) -> ToolResult:
+def copy_skin_weights(
+    source: str,
+    destination: str,
+    no_mirror: bool = True,
+    align: bool = True,
+    align_root: str = "",
+    match: str = "feet",
+    uniform_scale: bool = True,
+    max_pivot_error: float = 2.0,
+) -> ToolResult:
     try:
         _require_maya()
-        c = _cmds()
         src = _mesh_transform(source)
         dst = _mesh_transform(destination)
-        ss = _skin_cluster(src)
-        ds = _skin_cluster(dst)
-        c.copySkinWeights(
-            ss=ss,
-            ds=ds,
-            noMirror=bool(no_mirror),
-            surfaceAssociation="closestPoint",
-            influenceAssociation=["closestJoint", "oneToOne", "label"],
-        )
-        return ToolResult(
-            ok=True,
-            data={"source": src, "destination": dst, "source_skin": ss, "dest_skin": ds},
-            message=f"权重已复制 {src} → {dst}",
-        )
+        align_info = None
+        if align:
+            align_info = _snap_rig_root_to_target(
+                source_mesh=src,
+                target_meshes=[dst],
+                align_root=align_root,
+                match=match,
+                uniform_scale=bool(uniform_scale),
+                max_pivot_error=float(max_pivot_error),
+            )
+        data = _do_copy_skin_weights(src, dst, no_mirror=no_mirror)
+        data["aligned"] = bool(align)
+        if align_info:
+            data["align"] = align_info
+        msg = f"权重已复制 {src} → {dst}"
+        if align_info:
+            msg += (
+                f"；对齐 movers={align_info.get('movers')} "
+                f"feet_error={align_info['feet_error']} "
+                f"overlap={align_info.get('overlap_ratio')}"
+            )
+        return ToolResult(ok=True, data=data, message=msg)
+    except Exception as e:
+        return ToolResult(ok=False, error=str(e))
+
+
+@tool(
+    name="transfer_skin_weights",
+    description=(
+        "批量：Meshy 合并蒙皮体 → 原始分件。默认先把 Armature+源网格对齐到分件包围盒，"
+        "再自动 bind 并 closestPoint 拷权重。对齐保留，勿移回错位骨架。"
+    ),
+    parameters=obj_schema(
+        {
+            "source": {
+                "type": "string",
+                "description": "Meshy 蒙皮网格，如 char1 / Jinx_Skinned",
+            },
+            "destinations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "原始分件网格列表",
+            },
+            "align": {"type": "boolean", "default": True},
+            "align_root": {"type": "string", "default": ""},
+            "match": {
+                "type": "string",
+                "enum": ["feet", "center"],
+                "default": "feet",
+            },
+            "uniform_scale": {"type": "boolean", "default": True},
+            "max_pivot_error": {"type": "number", "default": 2.0},
+            "auto_bind": {
+                "type": "boolean",
+                "default": True,
+                "description": "目标无 skinCluster 时自动绑定到源影响骨",
+            },
+            "max_influences": {"type": "integer", "default": 4},
+            "no_mirror": {"type": "boolean", "default": True},
+        },
+        required=["source", "destinations"],
+    ),
+    category="rigging",
+    destructive=True,
+)
+def transfer_skin_weights(
+    source: str,
+    destinations: List[str],
+    align: bool = True,
+    align_root: str = "",
+    match: str = "feet",
+    uniform_scale: bool = True,
+    max_pivot_error: float = 2.0,
+    auto_bind: bool = True,
+    max_influences: int = 4,
+    no_mirror: bool = True,
+) -> ToolResult:
+    try:
+        _require_maya()
+        if not destinations:
+            return ToolResult(ok=False, error="destinations 不能为空")
+        src = _mesh_transform(source)
+        dests = [_mesh_transform(d) for d in destinations]
+        influences = _skin_influences(src)
+
+        align_info = None
+        if align:
+            align_info = _snap_rig_root_to_target(
+                source_mesh=src,
+                target_meshes=dests,
+                align_root=align_root,
+                match=match,
+                uniform_scale=bool(uniform_scale),
+                max_pivot_error=float(max_pivot_error),
+            )
+
+        results: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for dst in dests:
+            try:
+                if auto_bind:
+                    _ensure_bound_to_influences(
+                        dst, influences, max_influences=max_influences
+                    )
+                info = _do_copy_skin_weights(src, dst, no_mirror=no_mirror)
+                results.append(info)
+            except Exception as e:
+                errors.append(f"{dst}: {e}")
+
+        ok = len(results) > 0 and not errors
+        partial = len(results) > 0 and bool(errors)
+        data: Dict[str, Any] = {
+            "source": src,
+            "copied": results,
+            "errors": errors,
+            "influence_count": len(influences),
+            "aligned": bool(align),
+        }
+        if align_info:
+            data["align"] = align_info
+        msg = f"已传递权重 {src} → {len(results)}/{len(dests)} 个网格"
+        if align_info:
+            msg += (
+                f"；movers={align_info.get('movers')} "
+                f"feet_error={align_info['feet_error']} "
+                f"overlap={align_info.get('overlap_ratio')}"
+            )
+        if errors:
+            msg += f"；失败 {len(errors)} 个"
+        return ToolResult(ok=ok or partial, data=data, message=msg, error="; ".join(errors[:5]))
     except Exception as e:
         return ToolResult(ok=False, error=str(e))

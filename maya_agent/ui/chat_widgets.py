@@ -64,8 +64,10 @@ def create_chat_panel(parent=None):
             self.setFrameShape(QtWidgets.QFrame.NoFrame)
             self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
             self.setMinimumWidth(0)
+            # Vertical Maximum: must not absorb leftover viewport height (that
+            # stretched bubbles and created a fake bottom gap).
             self.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
             )
             colors = {
                 "user": ("#2c4f73", "#5a8fc4"),
@@ -83,8 +85,20 @@ def create_chat_panel(parent=None):
                 """
             )
 
+        def minimumSizeHint(self):
+            # Never let long unwrapped children dictate row width.
+            s = super().minimumSizeHint()
+            return QtCore.QSize(0, s.height())
+
+        def sizeHint(self):
+            s = super().sizeHint()
+            return QtCore.QSize(max(0, int(self.width()) or s.width()), s.height())
+
     class BodyView(QtWidgets.QTextBrowser):
         """Read-only rich text that grows with content (no inner scroll)."""
+
+        _WIDTH_EPS = 6
+        _BUBBLE_PAD = 28  # bubble left+right content margins
 
         def __init__(self, role: str, parent=None):
             super().__init__(parent)
@@ -98,9 +112,13 @@ def create_chat_panel(parent=None):
                 self.setOpenExternalLinks(True)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            try:
+                self.setLineWrapMode(QtWidgets.QTextEdit.WidgetWidth)
+            except Exception:
+                pass
             self.setMinimumWidth(0)
             self.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
             )
             # Allow QTextDocument to break long tokens inside the bubble width
             try:
@@ -138,6 +156,36 @@ def create_chat_panel(parent=None):
             self.viewport().setPalette(pal)
             self._stream_cache = None
             self._stream_height = 0
+            self._layout_width = 0
+            self._refit_guard = False
+            self._streaming = False
+
+        def minimumSizeHint(self):
+            # Critical: default QTextBrowser sizeHint uses unwrapped doc width
+            # and will push the chat row past the dialog edge.
+            h = int(self._stream_height or self.height() or 16)
+            return QtCore.QSize(0, max(h, 16))
+
+        def sizeHint(self):
+            w = int(self._layout_width or self.width() or 0)
+            h = int(self._stream_height or self.height() or 16)
+            return QtCore.QSize(max(w, 0), max(h, 16))
+
+        def hasHeightForWidth(self):
+            return True
+
+        def heightForWidth(self, width: int) -> int:
+            # Do not mutate the live document during streaming (layout races).
+            if self._streaming or self._stream_cache is not None:
+                return max(int(self._stream_height or self.height() or 16), 16)
+            w = max(int(width) - 4, 80)
+            doc = self.document()
+            old = doc.textWidth()
+            doc.setTextWidth(w)
+            h = max(int(doc.size().height() + 0.999) + 2, 16)
+            if old > 0:
+                doc.setTextWidth(old)
+            return h
 
         def _on_anchor(self, url):
             from maya_agent.ui.image_viewer import open_external_url
@@ -145,16 +193,20 @@ def create_chat_panel(parent=None):
             open_external_url(url)
 
         def set_html(self, html: str):
+            self._streaming = False
             self._stream_cache = None
             self._stream_height = 0
+            self._layout_width = 0
             self.setHtml(html or "")
-            self._refit(monotonic=False)
+            self._refit(streaming=False)
 
         def set_plain(self, text: str):
+            self._streaming = False
             self._stream_cache = None
             self._stream_height = 0
+            self._layout_width = 0
             self.setPlainText(text or "")
-            self._refit(monotonic=False)
+            self._refit(streaming=False)
 
         def set_plain_streaming(self, text: str):
             """Fast live-update path: plain text + incremental insert when possible."""
@@ -162,66 +214,140 @@ def create_chat_panel(parent=None):
             prev = self._stream_cache
             if prev is not None and text == prev:
                 return
+            self._streaming = True
+            # Soft-break long runs so wrap width stays inside the bubble.
+            display = chat_format.soft_break_long_runs(text)
+            prev_display = (
+                chat_format.soft_break_long_runs(prev) if prev is not None else None
+            )
             if (
-                prev
-                and text.startswith(prev)
-                and (len(text) - len(prev)) <= 800
+                prev_display is not None
+                and display.startswith(prev_display)
+                and (len(display) - len(prev_display)) <= 800
             ):
                 cursor = self.textCursor()
                 end = getattr(QtGui.QTextCursor, "End", None)
                 if end is None:
                     end = QtGui.QTextCursor.MoveOperation.End
                 cursor.movePosition(end)
-                cursor.insertText(text[len(prev) :])
+                cursor.insertText(display[len(prev_display) :])
                 self.setTextCursor(cursor)
             else:
-                self.setPlainText(text)
+                self.setPlainText(display)
             self._stream_cache = text
-            # Always measure from the document (no estimate/real oscillation).
-            # Height is monotonic while streaming so bubbles never bounce upward.
-            self._refit(monotonic=True)
+            self._refit(streaming=True)
 
-        def _content_width(self) -> int:
-            return max(self.viewport().width(), self.width() - 4, 160)
+        def _viewport_content_width(self) -> int:
+            """Walk up to the chat QScrollArea for a stable target width."""
+            p = self.parentWidget()
+            while p is not None:
+                # BodyView → Bubble → MessageBlock → container → viewport → scroll
+                if isinstance(p, QtWidgets.QScrollArea) or p.objectName() == "chatScroll":
+                    try:
+                        vp = p.viewport() if hasattr(p, "viewport") else p
+                        # margins + avatar + spacing + bubble pad + side gutter
+                        inner = int(vp.width()) - 120
+                        if inner >= 120:
+                            return inner
+                    except Exception:
+                        pass
+                    break
+                p = p.parentWidget()
+            return 0
 
-        def _refit(self, *, monotonic: bool = False):
-            width = self._content_width()
-            self.document().setTextWidth(width)
-            # Keep height tight — large pads here show as empty bottom margin in bubbles
-            h = max(int(self.document().size().height()) + 2, 16)
-            if monotonic:
-                h = max(h, int(getattr(self, "_stream_height", 0) or 0))
-                self._stream_height = h
+        def _resolve_text_width(self, *, streaming: bool) -> int:
+            """Stable content width; lock while streaming (prevents jitter)."""
+            # Once streaming has a width, keep it — any change reflows height.
+            if streaming and self._layout_width >= 120:
+                return int(self._layout_width)
+
+            candidates = []
+            # Prefer the bubble's real width — viewport estimates are often wider
+            # than the final bubble and under-estimate height (clipped user text).
+            bubble = self.parentWidget()
+            if bubble is not None:
+                bw = int(bubble.width()) - self._BUBBLE_PAD
+                if bw >= 120:
+                    candidates.append(bw)
+            self_w = int(self.width() or 0) - 4
+            if self_w >= 120:
+                candidates.append(self_w)
+            vp = int(self.viewport().width() or 0)
+            if vp >= 120:
+                candidates.append(vp)
+            vp_w = self._viewport_content_width()
+            if vp_w >= 120:
+                candidates.append(vp_w)
+
+            if candidates:
+                # Narrowest width ⇒ tall enough height (never clip).
+                width = min(candidates)
+            elif self._layout_width >= 120:
+                width = int(self._layout_width)
             else:
-                self._stream_height = 0
-            if self.height() != h:
-                self.setFixedHeight(h)
+                width = 240
+
+            prev_w = int(self._layout_width or 0)
+            if prev_w and abs(width - prev_w) < self._WIDTH_EPS:
+                return prev_w
+            return width
+
+        def _refit(self, *, streaming: bool = False) -> bool:
+            """Recompute height. Returns True if height changed."""
+            if self._refit_guard:
+                return False
+            width = self._resolve_text_width(streaming=streaming)
+            self._layout_width = width
+
+            self._refit_guard = True
+            try:
+                self.document().setTextWidth(width)
+                # ceil-ish: avoid float rounding that oscillates by 1px
+                h = max(int(self.document().size().height() + 0.999) + 2, 16)
+                if streaming:
+                    # Strictly monotonic while streaming — never shrink.
+                    h = max(h, int(self._stream_height or 0))
+                    self._stream_height = h
+                else:
+                    self._stream_height = 0
+                if self.height() != h:
+                    self.setFixedHeight(h)
+                    return True
+                return False
+            finally:
+                self._refit_guard = False
 
         def resizeEvent(self, event):
             super().resizeEvent(event)
-            # Width changes need a real reflow; keep streaming height monotonic
-            # so a temporary narrow/wide pass does not yank the bubble upward.
-            self._refit(monotonic=self._stream_cache is not None)
+            # Streaming width/height is locked — ignore resize thrash entirely.
+            if self._streaming or self._stream_cache is not None:
+                return
+            new_w = self._resolve_text_width(streaming=False)
+            prev_w = int(self._layout_width or 0)
+            if prev_w and abs(new_w - prev_w) < self._WIDTH_EPS:
+                return
+            self._refit(streaming=False)
 
         def showEvent(self, event):
             super().showEvent(event)
-            QtCore.QTimer.singleShot(
-                0, lambda: self._refit(monotonic=self._stream_cache is not None)
-            )
+            if self._streaming or self._stream_cache is not None:
+                return
+            QtCore.QTimer.singleShot(0, lambda: self._refit(streaming=False))
     class ToolRow(QtWidgets.QFrame):
         def __init__(self, parent=None):
             super().__init__(parent)
             self.setObjectName("toolRow")
             self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
             self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
             self.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
             )
             lay = QtWidgets.QVBoxLayout(self)
             lay.setContentsMargins(10, 8, 10, 8)
             lay.setSpacing(4)
             self.title = QtWidgets.QLabel("⚙ …")
-            self.title.setWordWrap(True)
+            self.title.setWordWrap(False)
             self.title.setMinimumWidth(0)
             self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
             self.bar = QtWidgets.QProgressBar()
@@ -445,12 +571,22 @@ def create_chat_panel(parent=None):
         def _tick_running(self) -> None:
             self._anim_frame += 1
             spin = _SPINNER[self._anim_frame % len(_SPINNER)]
-            dots = "." * (self._anim_frame % 4)
+            n = self._anim_frame % 4
+            dots = "." * n + "\u00a0" * (3 - n)
             suffix = self._progress_suffix()
+            # Fixed-width title pulse — avoid sizeHint/layout thrash.
             self.title.setText(
                 f"{spin} 正在执行  {self._running_name}{suffix}{dots}"
             )
-            self.setStyleSheet(self._running_stylesheet(self._anim_frame % 2 == 0))
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            # Cap wrapped labels so long tool JSON cannot widen the bubble.
+            if self._anim_timer.isActive():
+                return
+            inner = max(80, int(self.width()) - 24)
+            self.title.setMaximumWidth(inner)
+            self.detail.setMaximumWidth(inner)
 
         def _progress_suffix(self) -> str:
             if self._progress_status:
@@ -549,21 +685,24 @@ def create_chat_panel(parent=None):
         """Collapsible block for model reasoning / thinking content."""
 
         _PREVIEW_CHARS = 840
-        _STREAM_TAIL_CHARS = 2700
+        _STREAM_TAIL_CHARS = 1200
+        # Cap streaming body height so growing thought text cannot bounce the chat.
+        _STREAM_DETAIL_MAX_H = 112
 
         def __init__(self, parent=None):
             super().__init__(parent)
             self.setObjectName("thinkingRow")
             self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
             self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
             self.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
             )
             lay = QtWidgets.QVBoxLayout(self)
             lay.setContentsMargins(10, 8, 10, 8)
             lay.setSpacing(4)
             self.title = QtWidgets.QLabel("思考中…")
-            self.title.setWordWrap(True)
+            self.title.setWordWrap(False)
             self.title.setMinimumWidth(0)
             self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
             self.detail = QtWidgets.QLabel("")
@@ -591,6 +730,7 @@ def create_chat_panel(parent=None):
             self._expanded = True
             self._anim_frame = 0
             self._detail_cache = None
+            self._stream_detail_h = 0
             self._anim_timer = QtCore.QTimer(self)
             self._anim_timer.setInterval(220)
             self._anim_timer.timeout.connect(self._tick)
@@ -645,13 +785,19 @@ def create_chat_panel(parent=None):
         def _tick(self) -> None:
             self._anim_frame += 1
             spin = _SPINNER[self._anim_frame % len(_SPINNER)]
-            dots = "." * (self._anim_frame % 4)
+            # Fixed-width dots pad so title sizeHint never changes.
+            n = self._anim_frame % 4
+            dots = "." * n + "\u00a0" * (3 - n)
             self.title.setText(f"{spin} 思考中{dots}")
-            # Restyle infrequently — stylesheet rebuilds are expensive on Maya UI thread
-            if self._anim_frame % 3 == 0:
-                self.setStyleSheet(
-                    self._stylesheet(running=True, pulse=self._anim_frame % 6 == 0)
-                )
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            # Keep labels within this row; the row itself fills the bubble width.
+            inner = max(80, int(self.width()) - 24)
+            if self.title.maximumWidth() != inner:
+                self.title.setMaximumWidth(inner)
+            if self.detail.maximumWidth() != inner:
+                self.detail.setMaximumWidth(inner)
 
         def _escape_html(self, text: str) -> str:
             return chat_format.escape(text or "").replace("\n", "<br/>")
@@ -675,10 +821,23 @@ def create_chat_panel(parent=None):
                 self._detail_cache = shown
                 self.detail.setTextFormat(QtCore.Qt.PlainText)
                 self.detail.setText(shown)
-                self.expand_btn.hide()
                 self.detail.show()
+                # Grow detail height monotonically up to a hard cap — never shrink.
+                hint = max(int(self.detail.sizeHint().height() or 0), 20)
+                h = min(
+                    self._STREAM_DETAIL_MAX_H,
+                    max(hint, int(self._stream_detail_h or 0)),
+                )
+                self._stream_detail_h = h
+                if self.detail.height() != h:
+                    self.detail.setFixedHeight(h)
+                self.expand_btn.hide()
                 return
 
+            # Unlock height after stream ends.
+            self._stream_detail_h = 0
+            self.detail.setMinimumHeight(0)
+            self.detail.setMaximumHeight(16777215)
             long = len(text) > self._PREVIEW_CHARS
             if long and not self._expanded:
                 shown = text[: self._PREVIEW_CHARS].rstrip() + "…"
@@ -706,7 +865,7 @@ def create_chat_panel(parent=None):
             self._done = False
             self._expanded = True
             if not self._anim_timer.isActive():
-                self.title.setText("◐ 思考中…")
+                self.title.setText("◐ 思考中\u00a0\u00a0\u00a0")
                 self._anim_timer.start()
             self._refresh_detail()
 
@@ -751,6 +910,10 @@ def create_chat_panel(parent=None):
         def __init__(self, parent=None):
             super().__init__(parent)
             self.setObjectName("choiceBar")
+            self.setMinimumWidth(0)
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
+            )
             self._buttons: List[Any] = []
             self._on_pick = None
             self._lay = QtWidgets.QVBoxLayout(self)
@@ -794,6 +957,7 @@ def create_chat_panel(parent=None):
                 btn.setCursor(QtCore.Qt.PointingHandCursor)
                 btn.setEnabled(enabled)
                 btn.setToolTip(reply)
+                btn.setMinimumWidth(0)
                 btn.setSizePolicy(
                     QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
                 )
@@ -844,16 +1008,26 @@ def create_chat_panel(parent=None):
                 self._on_pick(reply)
 
     class MessageBlock(QtWidgets.QWidget):
+        # avatar(32) + spacing(10) + margins(8) + opposite gutter(~40)
+        _CHROME_W = 90
+        # Bubble : side-gutter stretch — keeps AI/user side margins symmetric.
+        _BUBBLE_STRETCH = 5
+        _GUTTER_STRETCH = 1
+
         def __init__(self, role: str, parent=None):
             super().__init__(parent)
             self.role = role
             self.setMinimumWidth(0)
+            # Vertical Maximum keeps the row tight — leftover viewport space must
+            # not be poured into the last bubble (fake bottom gap).
             self.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
             )
             self._image_host = None
             self._tools: List[ToolRow] = []
+            self._thinking_rows: List[Any] = []
             self._thinking_row: Optional[ThinkingRow] = None
+            self._body_views: List[Any] = []
             self._body_view: Optional[BodyView] = None
             self._choice_bar = None
 
@@ -863,7 +1037,7 @@ def create_chat_panel(parent=None):
 
             self.bubble = Bubble(role if role in ("user", "assistant", "error") else "assistant")
             bubble_lay = QtWidgets.QVBoxLayout(self.bubble)
-            bubble_lay.setContentsMargins(12, 8, 12, 8)
+            bubble_lay.setContentsMargins(12, 10, 12, 10)
             bubble_lay.setSpacing(6)
 
             self.content = QtWidgets.QVBoxLayout()
@@ -872,28 +1046,35 @@ def create_chat_panel(parent=None):
             bubble_lay.addLayout(self.content)
 
             self.typing = create_typing_indicator(self.bubble)
-            self.typing.setMaximumHeight(0)
+            self.typing.setFixedHeight(0)
+            self.typing.hide()
             bubble_lay.addWidget(self.typing)
 
             self._meta_label = None
             self._notice_label = None
+            # Symmetric gutters: user has left stretch, AI/error have right stretch
+            # with the same stretch ratio so bubbles align visually.
             if role == "user":
-                root.addStretch(1)
-                root.addWidget(self.bubble, 6)
+                root.addStretch(self._GUTTER_STRETCH)
+                root.addWidget(self.bubble, self._BUBBLE_STRETCH)
                 root.addWidget(Avatar("你", "#3d7ab8"), 0, QtCore.Qt.AlignTop)
             elif role == "error":
                 root.addWidget(Avatar("!", "#8b3a3a"), 0, QtCore.Qt.AlignTop)
-                root.addWidget(self.bubble, 7)
-                root.addStretch(1)
+                root.addWidget(self.bubble, self._BUBBLE_STRETCH)
+                root.addStretch(self._GUTTER_STRETCH)
             else:
                 root.addWidget(Avatar("AI", "#2f7d5b"), 0, QtCore.Qt.AlignTop)
-                root.addWidget(self.bubble, 7)
-                root.addStretch(1)
+                root.addWidget(self.bubble, self._BUBBLE_STRETCH)
+                root.addStretch(self._GUTTER_STRETCH)
                 self._choice_bar = ChoiceBar(self.bubble)
                 bubble_lay.addWidget(self._choice_bar)
                 self._notice_label = QtWidgets.QLabel("")
                 self._notice_label.setObjectName("stopNotice")
                 self._notice_label.setWordWrap(True)
+                self._notice_label.setMinimumWidth(0)
+                self._notice_label.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+                )
                 self._notice_label.setTextInteractionFlags(
                     QtCore.Qt.TextSelectableByMouse
                 )
@@ -913,6 +1094,10 @@ def create_chat_panel(parent=None):
                 self._meta_label = QtWidgets.QLabel("")
                 self._meta_label.setObjectName("turnMeta")
                 self._meta_label.setWordWrap(True)
+                self._meta_label.setMinimumWidth(0)
+                self._meta_label.setSizePolicy(
+                    QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+                )
                 self._meta_label.setTextInteractionFlags(
                     QtCore.Qt.TextSelectableByMouse
                 )
@@ -928,8 +1113,92 @@ def create_chat_panel(parent=None):
 
             self.bubble.setMinimumWidth(0)
             self.bubble.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
             )
+
+        def minimumSizeHint(self):
+            # Do not let long unwrapped text dictate row minimum width.
+            s = super().minimumSizeHint()
+            return QtCore.QSize(0, s.height())
+
+        def sizeHint(self):
+            s = super().sizeHint()
+            w = int(self.width() or 0)
+            return QtCore.QSize(w if w > 0 else s.width(), s.height())
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._constrain_inner_widths()
+
+        def _iter_content_rows(self):
+            for i in range(self.content.count()):
+                item = self.content.itemAt(i)
+                w = item.widget() if item is not None else None
+                if w is not None:
+                    yield w
+
+        def _constrain_inner_widths(self) -> None:
+            """Keep bubble within the row; let thinking/tool rows fill the bubble."""
+            total = int(self.width() or 0)
+            if total <= 0:
+                return
+            bubble_max = max(120, total - self._CHROME_W)
+            width_changed = self.bubble.maximumWidth() != bubble_max
+            if width_changed:
+                self.bubble.setMaximumWidth(bubble_max)
+
+            # Clear stale max-width caps so rows can pin to bubble edges when wide.
+            qmax = 16777215
+            for row in self._iter_content_rows():
+                try:
+                    if row.maximumWidth() < qmax:
+                        row.setMaximumWidth(qmax)
+                except Exception:
+                    pass
+
+            inner = max(80, int(self.bubble.width() or bubble_max) - 28)
+            for label in (self._meta_label, self._notice_label):
+                if label is not None and label.maximumWidth() != inner:
+                    label.setMaximumWidth(inner)
+            if self._choice_bar is not None and self._choice_bar.maximumWidth() != inner:
+                self._choice_bar.setMaximumWidth(inner)
+
+            if width_changed:
+                self._refit_all_bodies()
+
+        def _refit_all_bodies(self) -> None:
+            """Exact-fit every text body (fixes clip + post-stream empty height)."""
+            for w in self._iter_content_rows():
+                if isinstance(w, BodyView) and not getattr(w, "_streaming", False):
+                    try:
+                        w._layout_width = 0  # allow width re-measure
+                        w._refit(streaming=False)
+                    except Exception:
+                        pass
+            if (
+                self._body_view is not None
+                and not self._body_view._streaming
+                and self._body_view.isVisible()
+            ):
+                try:
+                    self._body_view._layout_width = 0
+                    self._body_view._refit(streaming=False)
+                except Exception:
+                    pass
+
+        def compact(self) -> None:
+            """Tighten geometry after a turn ends."""
+            self._set_typing(False)
+            for row in self._thinking_rows:
+                try:
+                    if not getattr(row, "_done", True):
+                        row.set_done()
+                except Exception:
+                    pass
+            self._constrain_inner_widths()
+            self._refit_all_bodies()
+            self.bubble.updateGeometry()
+            self.updateGeometry()
 
         def set_turn_meta(
             self,
@@ -968,6 +1237,7 @@ def create_chat_panel(parent=None):
                 view = BodyView(self.role, self.bubble)
                 self.content.addWidget(view)
                 self._body_view = view
+                self._body_views.append(view)
             return self._body_view
 
         def set_images(self, images: Optional[List[Any]]) -> None:
@@ -1025,6 +1295,8 @@ def create_chat_panel(parent=None):
             view.set_plain(text or "")
             view.setVisible(bool(text))
             self._set_typing(False)
+            # Defer refit until the bubble has its final width (avoids clipped user text).
+            QtCore.QTimer.singleShot(0, self._refit_all_bodies)
 
         def set_markdown(self, text: str):
             self.finish_thinking()
@@ -1037,6 +1309,7 @@ def create_chat_panel(parent=None):
             view.set_html(chat_format.markdown_to_html(text))
             view.show()
             self._set_typing(False)
+            QtCore.QTimer.singleShot(0, self._refit_all_bodies)
 
         def set_choices(
             self,
@@ -1062,13 +1335,12 @@ def create_chat_panel(parent=None):
         def set_streaming_text(self, text: str):
             self.finish_thinking()
             view = self._ensure_body()
-            # Avoid expensive choice parsing while streaming; hide incomplete marker cheaply
-            display = text or ""
-            marker = display.find("[[CHOICES]]")
-            if marker >= 0:
-                display = display[:marker].rstrip()
+            # Cheap strip of in-progress CHOICES so height does not spike then collapse.
+            display = chat_format.strip_incomplete_choices(text or "")
+            # Keep the body visible once created — show/hide toggles cause jitter.
+            if not view.isVisible():
+                view.show()
             view.set_plain_streaming(display)
-            view.setVisible(bool(display))
             if display:
                 self._set_typing(False)
             elif not self._tools and self._thinking_row is None:
@@ -1083,6 +1355,7 @@ def create_chat_panel(parent=None):
                 row = ThinkingRow(self.bubble)
                 self.content.addWidget(row)
                 self._thinking_row = row
+                self._thinking_rows.append(row)
             self._thinking_row.append(piece)
             self._set_typing(False)
 
@@ -1097,6 +1370,7 @@ def create_chat_panel(parent=None):
             row = ThinkingRow(self.bubble)
             self.content.addWidget(row)
             self._thinking_row = row
+            self._thinking_rows.append(row)
             self._thinking_row.set_full(text, done=True)
             self._set_typing(False)
 
@@ -1110,11 +1384,12 @@ def create_chat_panel(parent=None):
 
         def _set_typing(self, on: bool):
             if on:
-                self.typing.setMaximumHeight(16777215)
+                self.typing.setFixedHeight(22)
                 self.typing.start()
             else:
                 self.typing.stop()
-                self.typing.setMaximumHeight(0)
+                self.typing.setFixedHeight(0)
+                self.typing.hide()
 
         def show_typing(self, on: bool = True):
             has_body = (
@@ -1129,9 +1404,21 @@ def create_chat_panel(parent=None):
 
         def add_tool_running(self, name: str) -> ToolRow:
             self.finish_thinking()
+            # Commit prior text body to exact height before starting a tool row.
+            if self._body_view is not None:
+                try:
+                    self._body_view._streaming = False
+                    self._body_view._stream_cache = None
+                    self._body_view._stream_height = 0
+                    self._body_view._layout_width = 0
+                    self._body_view._refit(streaming=False)
+                except Exception:
+                    pass
             self._body_view = None
             row = ToolRow(self.bubble)
             row.set_running(name)
+            # Fill bubble content width (no stale max-width from prior narrow layout).
+            row.setMaximumWidth(16777215)
             self.content.addWidget(row)
             self._tools.append(row)
             self._set_typing(False)
@@ -1179,24 +1466,28 @@ def create_chat_panel(parent=None):
 
             self.scroll = QtWidgets.QScrollArea()
             self.scroll.setObjectName("chatScroll")
-            self.scroll.setWidgetResizable(True)
+            # Width is synced manually; height must follow content only.
+            # widgetResizable(True) would stretch the container to the viewport
+            # and pour leftover height into the last bubble / a pin spacer.
+            self.scroll.setWidgetResizable(False)
             self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.scroll.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
 
             self.container = QtWidgets.QWidget()
             self.container.setObjectName("chatContainer")
             self.container.setMinimumWidth(0)
             self.container.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+                QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Maximum
             )
             self.v = QtWidgets.QVBoxLayout(self.container)
-            self.v.setContentsMargins(10, 14, 10, 18)
+            self.v.setContentsMargins(8, 8, 8, 8)
             self.v.setSpacing(6)
-            self.v.addStretch(1)
+            self.v.setAlignment(QtCore.Qt.AlignTop)
+            self.v.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
 
             self.scroll.setWidget(self.container)
-            self.scroll.setWidgetResizable(True)
             shell_lay.addWidget(self.scroll, 1)
 
             # Classic scrollbar chrome: continuous track + end arrows + pill thumb.
@@ -1255,6 +1546,8 @@ def create_chat_panel(parent=None):
             self._scrolling_programmatic = False
             self._scroll_near_margin = 80
             self._deferred_scroll = False
+            self._scroll_settle_pending = False
+            self._last_scroll_max = -1
             self._bar_syncing = False
 
             bar = self.scroll.verticalScrollBar()
@@ -1391,8 +1684,47 @@ def create_chat_panel(parent=None):
 
         def showEvent(self, event):
             super().showEvent(event)
+            self._constrain_container_width()
             self._sync_rail_from_inner()
             self._refresh_jump_buttons()
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._constrain_container_width()
+
+        def _constrain_container_width(self) -> None:
+            """Sync scroll widget size to viewport width + content height."""
+            self._relayout_container()
+
+        def _relayout_container(self) -> None:
+            """
+            Width = viewport (no horizontal overflow).
+            Height = content only (never stretched to fill the viewport).
+            """
+            vp = self.scroll.viewport()
+            if vp is None:
+                return
+            w = int(vp.width() or 0)
+            if w <= 0:
+                return
+            if self.container.width() != w:
+                self.container.setFixedWidth(w)
+            for wdg in self._widgets:
+                if isinstance(wdg, MessageBlock):
+                    try:
+                        wdg._constrain_inner_widths()
+                    except Exception:
+                        pass
+            # Activate layout, then size height to the tight content hint.
+            self.v.activate()
+            hint_h = int(self.v.sizeHint().height() or 0)
+            if hint_h <= 0:
+                hint_h = int(self.container.sizeHint().height() or 1)
+            hint_h = max(1, hint_h)
+            if self.container.height() != hint_h:
+                self.container.setFixedHeight(hint_h)
+            else:
+                self.container.updateGeometry()
 
         def _user_widgets(self) -> List[Any]:
             return [
@@ -1530,7 +1862,6 @@ def create_chat_panel(parent=None):
                 w = item.widget()
                 if w:
                     w.deleteLater()
-            self.v.addStretch(1)
             self._blocks.clear()
             self._widgets.clear()
             self._current = None
@@ -1540,7 +1871,10 @@ def create_chat_panel(parent=None):
             self._active_choice_block = None
             self._stick_to_bottom = True
             self._deferred_scroll = False
+            self._scroll_settle_pending = False
+            self._last_scroll_max = -1
             self._refresh_jump_buttons()
+            QtCore.QTimer.singleShot(0, self._relayout_container)
 
         def set_choice_handler(self, fn) -> None:
             """fn(reply_text) called when user clicks a confirmation button."""
@@ -1555,9 +1889,10 @@ def create_chat_panel(parent=None):
                 self._active_choice_block = None
 
         def _insert_before_stretch(self, widget: QtWidgets.QWidget):
-            idx = max(0, self.v.count() - 1)
-            self.v.insertWidget(idx, widget)
+            """Append a chat row (name kept for call-site compatibility)."""
+            self.v.addWidget(widget)
             self._widgets.append(widget)
+            QtCore.QTimer.singleShot(0, self._relayout_container)
 
         def _is_near_bottom(self, margin: Optional[int] = None) -> bool:
             bar = self.scroll.verticalScrollBar()
@@ -1573,19 +1908,30 @@ def create_chat_panel(parent=None):
             self._refresh_jump_buttons()
 
         def _on_scroll_range_changed(self, _mn: int = 0, _mx: int = 0) -> None:
-            # Content grew (stream / images / tools). If we should stick, pin
-            # immediately to the new maximum — avoids missing bottom when
-            # setValue ran before layout updated the scrollbar range.
-            if self._stick_to_bottom:
-                self._apply_scroll_bottom()
+            # Only chase content growth. Shrink / layout noise must not yank scroll.
+            prev = int(getattr(self, "_last_scroll_max", -1))
+            self._last_scroll_max = int(_mx)
+            if self._stick_to_bottom and int(_mx) > prev:
+                self._schedule_scroll_bottom()
 
         def _apply_scroll_bottom(self) -> None:
             bar = self.scroll.verticalScrollBar()
+            target = int(bar.maximum())
+            cur = int(bar.value())
+            if cur >= target:
+                return
             self._scrolling_programmatic = True
             try:
-                bar.setValue(bar.maximum())
+                bar.setValue(target)
             finally:
                 self._scrolling_programmatic = False
+
+        def _schedule_scroll_bottom(self) -> None:
+            if self._deferred_scroll:
+                return
+            self._deferred_scroll = True
+            # ~1 frame coalesce — avoid zero-delay + settle double-pump jitter.
+            QtCore.QTimer.singleShot(16, self._flush_deferred_scroll)
 
         def _scroll_to_bottom(self, force: bool = False):
             """Scroll to bottom. Soft (default): only while stick-to-bottom is on."""
@@ -1593,15 +1939,12 @@ def create_chat_panel(parent=None):
                 self._stick_to_bottom = True
             elif not self._stick_to_bottom:
                 return
-            self._apply_scroll_bottom()
-            # Layout may still settle after setFixedHeight / insertWidget.
-            # One deferred pass catches the post-layout maximum.
-            if not self._deferred_scroll:
-                self._deferred_scroll = True
-                QtCore.QTimer.singleShot(0, self._flush_deferred_scroll)
+            self._schedule_scroll_bottom()
 
         def _flush_deferred_scroll(self) -> None:
             self._deferred_scroll = False
+            # Keep container height in sync with growing bubbles before scrolling.
+            self._relayout_container()
             if self._stick_to_bottom:
                 self._apply_scroll_bottom()
 
@@ -1820,6 +2163,12 @@ def create_chat_panel(parent=None):
                 self._current.set_turn_meta(
                     model=model, usage=usage, llm_calls=llm_calls
                 )
+            # Tighten heights/widths so cancelled/finished turns leave no phantom gap.
+            try:
+                self._current.compact()
+            except Exception:
+                pass
+            QtCore.QTimer.singleShot(0, self._relayout_container)
             block = self._assistant_block()
             if block is not None:
                 block["done"] = True
@@ -1945,8 +2294,15 @@ def create_chat_panel(parent=None):
             self._stream_text = ""
             self._thinking_text = ""
             self._pending_separator = bool(blocks)
+            for wdg in self._widgets:
+                if isinstance(wdg, MessageBlock):
+                    try:
+                        wdg.compact()
+                    except Exception:
+                        pass
             self._refresh_jump_buttons()
             self._scroll_to_bottom(force=True)
+            QtCore.QTimer.singleShot(0, self._relayout_container)
 
         @property
         def blocks(self) -> List[Dict[str, Any]]:

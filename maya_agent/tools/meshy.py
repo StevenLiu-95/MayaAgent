@@ -11,7 +11,10 @@ from maya_agent.tools.meshy_client import (
     MeshyError,
     drop_none,
     download_dir,
+    ensure_model_has_textures_for_meshy,
+    inspect_glb,
     meshy_cfg,
+    multi_material_rig_warning,
     pick_model_url,
     resolve_image_input,
     resolve_model_input,
@@ -579,7 +582,11 @@ def meshy_remesh(
 
 @tool(
     name="meshy_convert",
-    description="Meshy 格式转换。input_task_id 或 model_url/path + target_formats（必填）。",
+    description=(
+        "Meshy 格式转换。input_task_id 或 model_url/path + target_formats（必填）。"
+        "本地 FBX→GLB（供绑骨）时，FBX 必须用 export_fbx(embed_textures=true) 嵌入贴图；"
+        "仅外部贴图路径的 FBX 上传后会丢贴图，后续绑骨导入必为白模。"
+    ),
     parameters=obj_schema(
         {
             "target_formats": {
@@ -592,6 +599,11 @@ def meshy_remesh(
             "model_path": {"type": "string"},
             "wait": {"type": "boolean", "default": False},
             "wait_timeout": {"type": "number"},
+            "skip_texture_check": {
+                "type": "boolean",
+                "default": False,
+                "description": "为 true 时跳过本地 FBX 外部贴图检测（不推荐）",
+            },
         },
         required=["target_formats"],
     ),
@@ -605,14 +617,20 @@ def meshy_convert(
     model_path: str = "",
     wait: bool = False,
     wait_timeout: Optional[float] = None,
+    skip_texture_check: bool = False,
 ) -> ToolResult:
     try:
         if not target_formats:
             return ToolResult(ok=False, error="target_formats 不能为空")
         body: Dict[str, Any] = {"target_formats": list(target_formats)}
+        local_path = (model_path or "").strip()
         if (input_task_id or "").strip():
             body["input_task_id"] = input_task_id.strip()
-        elif model_url or model_path:
+        elif model_url or local_path:
+            if local_path and not skip_texture_check:
+                tex_err = ensure_model_has_textures_for_meshy(local_path)
+                if tex_err:
+                    return ToolResult(ok=False, error=tex_err, data={"path": local_path})
             body["model_url"] = resolve_model_input(
                 model_url=model_url, model_path=model_path
             )
@@ -620,9 +638,35 @@ def meshy_convert(
             return ToolResult(
                 ok=False, error="需要 input_task_id 或 model_url/model_path"
             )
-        return _create_and_maybe_wait(
+        result = _create_and_maybe_wait(
             "convert", body, wait=wait, wait_timeout=wait_timeout
         )
+        # When wait=true and GLB is produced, verify textures survived convert.
+        if (
+            result.ok
+            and wait
+            and not skip_texture_check
+            and isinstance(result.data, dict)
+        ):
+            task = (result.data.get("task") or {}) if isinstance(result.data.get("task"), dict) else {}
+            urls = task.get("model_urls") if isinstance(task.get("model_urls"), dict) else {}
+            glb_url = urls.get("glb")
+            if glb_url:
+                try:
+                    dest = download_dir() / f"meshy_convert_check_{result.data.get('task_id') or 'tmp'}.glb"
+                    MeshyClient().download(str(glb_url), dest)
+                    info = inspect_glb(str(dest))
+                    result.data = dict(result.data)
+                    result.data["glb_texture_check"] = info
+                    if not info.get("has_images"):
+                        result.message = (
+                            (result.message or "")
+                            + " ⚠ 转换后的 GLB 没有嵌入贴图，后续 meshy_rig 会得到白模。"
+                            "请用 embed_textures=true 重新导出 FBX 后再 convert。"
+                        ).strip()
+                except Exception as e:
+                    log.warning("post-convert GLB texture check failed: %s", e)
+        return result
     except Exception as e:
         return _err(e)
 
@@ -736,7 +780,11 @@ def meshy_uv_unwrap(
     name="meshy_rig",
     description=(
         "Meshy 自动绑骨（清晰人形/四足，需有贴图）。input_task_id 或 GLB model_url/path。"
-        "面数>30万需先 remesh。animation_type: biped|quadruped。"
+        "本地 GLB 若无嵌入贴图会直接拒绝，避免导入白模。"
+        "多材质 GLB（头/身/发分贴图）绑骨后常被压成单材质+单张贴图，头发出错花屏："
+        "更稳妥是绑完把权重拷回原始分件网格，或先烘焙单 atlas。"
+        "推荐流程：export_fbx(embed_textures=true) → meshy_convert→glb → meshy_rig → "
+        "meshy_import_to_maya。面数>30万需先 remesh。animation_type: biped|quadruped。"
     ),
     parameters=obj_schema(
         {
@@ -750,6 +798,11 @@ def meshy_uv_unwrap(
             },
             "wait": {"type": "boolean", "default": False},
             "wait_timeout": {"type": "number"},
+            "skip_texture_check": {
+                "type": "boolean",
+                "default": False,
+                "description": "为 true 时允许无贴图 GLB（结果多为白模，不推荐）",
+            },
         },
     ),
     category="meshy",
@@ -763,12 +816,21 @@ def meshy_rig(
     animation_type: str = "",
     wait: bool = False,
     wait_timeout: Optional[float] = None,
+    skip_texture_check: bool = False,
 ) -> ToolResult:
     try:
         body: Dict[str, Any] = {"height_meters": float(height_meters or 1.7)}
+        local_path = (model_path or "").strip()
+        multi_warn: Optional[str] = None
         if (input_task_id or "").strip():
             body["input_task_id"] = input_task_id.strip()
-        elif model_url or model_path:
+        elif model_url or local_path:
+            if local_path and not skip_texture_check:
+                tex_err = ensure_model_has_textures_for_meshy(local_path)
+                if tex_err:
+                    return ToolResult(ok=False, error=tex_err, data={"path": local_path})
+            if local_path:
+                multi_warn = multi_material_rig_warning(local_path)
             body["model_url"] = resolve_model_input(
                 model_url=model_url, model_path=model_path
             )
@@ -778,9 +840,15 @@ def meshy_rig(
             )
         if animation_type:
             body["animation_type"] = animation_type
-        return _create_and_maybe_wait(
+        result = _create_and_maybe_wait(
             "rigging", body, wait=wait, wait_timeout=wait_timeout
         )
+        if multi_warn and result.ok:
+            if isinstance(result.data, dict):
+                result.data = dict(result.data)
+                result.data["multi_material_warning"] = multi_warn
+            result.message = ((result.message or "") + " " + multi_warn).strip()
+        return result
     except Exception as e:
         return _err(e)
 
@@ -1241,6 +1309,44 @@ def _enable_viewport_textures() -> None:
             pass
 
 
+def _has_pbr_data_maps(maps: Dict[str, str]) -> bool:
+    """True when metallic / roughness / normal maps are present (full Meshy PBR set)."""
+    return bool(maps.get("metallic") or maps.get("roughness") or maps.get("normal"))
+
+
+def _looks_like_meshy_generated_albedo(path_or_name: str) -> bool:
+    """
+    Meshy text/image-to-3D albedo files are typically texture_0.png / texture_1.png.
+    Convert/rig of user assets often keep DCC names like lambert3_baseColor.png —
+    those are diffuse-only and must not be force-upgraded to glossy PBR.
+    """
+    leaf = (path_or_name or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    stem = leaf.rsplit(".", 1)[0] if "." in leaf else leaf
+    if stem.startswith("texture_") and stem[len("texture_") :].isdigit():
+        return True
+    if stem in ("base_color", "basecolor", "albedo"):
+        return True
+    return False
+
+
+def _apply_matte_standard_surface(shader: str) -> None:
+    """Match lambert-like matte look when no roughness/metallic maps exist."""
+    import maya.cmds as cmds
+
+    for attr, value in (
+        ("base", 1.0),
+        ("metalness", 0.0),
+        ("specular", 0.0),
+        ("specularRoughness", 0.85),
+        ("coat", 0.0),
+    ):
+        try:
+            if cmds.attributeQuery(attr, node=shader, exists=True):
+                cmds.setAttr(f"{shader}.{attr}", float(value))
+        except Exception:
+            pass
+
+
 def _rebuild_one_meshy_material(
     old_shader: str,
     maps: Dict[str, str],
@@ -1269,15 +1375,29 @@ def _rebuild_one_meshy_material(
     cmds.connectAttr(f"{shader}.outColor", f"{sg}.surfaceShader", force=True)
 
     wired: Dict[str, Any] = {"shader": shader, "shading_group": sg, "type": shader_type}
+    has_data = _has_pbr_data_maps(maps)
 
     try:
         cmds.setAttr(f"{shader}.base", 1.0)
     except Exception:
         pass
-    try:
-        cmds.setAttr(f"{shader}.specular", 1.0)
-    except Exception:
-        pass
+
+    # Full PBR sets need specular energy; diffuse-only must stay matte.
+    # Previous bug: always specular=1.0 + default roughness≈0.2 → black/wet look
+    # on convert/rig FBX that only ship a single *_baseColor map.
+    if has_data and maps.get("roughness"):
+        try:
+            cmds.setAttr(f"{shader}.specular", 1.0)
+        except Exception:
+            pass
+        try:
+            if cmds.attributeQuery("metalness", node=shader, exists=True):
+                cmds.setAttr(f"{shader}.metalness", 0.0)
+        except Exception:
+            pass
+    else:
+        _apply_matte_standard_surface(shader)
+        wired["matte_defaults"] = True
 
     base = maps.get("base_color")
     if base and cmds.objExists(base):
@@ -1297,6 +1417,11 @@ def _rebuild_one_meshy_material(
     ):
         wired["roughness_plug"] = _connect_scalar_map(rough, f"{shader}.specularRoughness")
         wired["roughness"] = rough
+        # Restore specular once roughness map drives the lobe
+        try:
+            cmds.setAttr(f"{shader}.specular", 1.0)
+        except Exception:
+            pass
 
     normal = maps.get("normal")
     if normal and cmds.objExists(normal) and cmds.attributeQuery(
@@ -1460,8 +1585,23 @@ def _rebuild_meshy_pbr_materials(
         is_legacy = stype in ("phong", "phongE", "blinn", "lambert")
         already_pbr = _shader_has_pbr_slots(shader)
         needs = False
+        has_data = _has_pbr_data_maps(maps)
+        # Diffuse-only convert/rig FBX (e.g. lambert3_baseColor.png) must NOT be
+        # force-upgraded: standardSurface defaults look black/wet vs original lambert.
+        # Full Meshy PBR (metal/rough/normal) or Meshy albedo texture_N still rebuild.
         if maps and is_legacy:
-            needs = True
+            if has_data:
+                needs = True
+            elif maps.get("base_color"):
+                albedo = maps["base_color"]
+                albedo_path = _file_texture_path(albedo) if albedo else ""
+                if _looks_like_meshy_generated_albedo(albedo_path or albedo):
+                    needs = True  # rebuild with matte defaults when no data maps
+                else:
+                    # Keep original lambert/phong for user-asset convert→rig imports
+                    needs = False
+            else:
+                needs = False
         elif maps and already_pbr:
             try:
                 metal_src = cmds.listConnections(
@@ -1539,6 +1679,50 @@ def _rebuild_meshy_pbr_materials(
     }
 
 
+def _new_mesh_texture_status(
+    before_meshes: set,
+) -> Dict[str, Any]:
+    """After import, report whether newly added meshes have file textures wired."""
+    import maya.cmds as cmds
+
+    after = set(cmds.ls(type="mesh", long=True) or [])
+    new_meshes = sorted(after - before_meshes)
+    textured = 0
+    bare = []
+    for mesh in new_meshes:
+        if not cmds.objExists(mesh):
+            continue
+        try:
+            if cmds.getAttr(f"{mesh}.intermediateObject"):
+                continue
+        except Exception:
+            pass
+        sgs = cmds.listConnections(mesh, type="shadingEngine") or []
+        has_file = False
+        for sg in sgs:
+            shaders = cmds.listConnections(f"{sg}.surfaceShader") or []
+            for sh in shaders:
+                for fnode in _collect_file_nodes_from_shader(sh):
+                    path = _file_texture_path(fnode)
+                    if path:
+                        has_file = True
+                        break
+                if has_file:
+                    break
+            if has_file:
+                break
+        if has_file:
+            textured += 1
+        else:
+            bare.append(mesh)
+    return {
+        "new_mesh_count": len(new_meshes),
+        "textured_mesh_count": textured,
+        "untextured_meshes": bare[:12],
+        "has_textures": textured > 0,
+    }
+
+
 def _import_path_into_maya(
     path: str,
     namespace: str = "",
@@ -1557,10 +1741,13 @@ def _import_path_into_maya(
         "i": True,
         "ignoreVersion": True,
         "mergeNamespacesOnClash": False,
-        "rpr": "meshy",
     }
-    if namespace:
-        kwargs["namespace"] = namespace
+    # namespace and renamingPrefix (rpr) conflict on some Maya builds when combined.
+    ns = (namespace or "").strip()
+    if ns:
+        kwargs["namespace"] = ns
+    else:
+        kwargs["rpr"] = "meshy"
 
     before_meshes = set(cmds.ls(type="mesh", long=True) or [])
     before_shaders = set(cmds.ls(materials=True) or [])
@@ -1568,7 +1755,9 @@ def _import_path_into_maya(
     if suffix == ".fbx":
         if not ensure_plugin("fbxmaya"):
             return ToolResult(ok=False, error="无法加载 fbxmaya 插件")
-        kwargs.update({"type": "FBX", "options": "fbx"})
+        kwargs["type"] = "FBX"
+        # Leave options unset — passing options="fbx" has caused TypeError on
+        # the materials flag with namespace on some Maya locales/builds.
         try:
             import maya.mel as mel
 
@@ -1585,7 +1774,16 @@ def _import_path_into_maya(
                     pass
         except Exception:
             pass
-        nodes = cmds.file(str(p), **kwargs)
+        try:
+            nodes = cmds.file(str(p), **kwargs)
+        except TypeError as e:
+            # Retry with minimal flags (namespace-only imports have hit materials TypeError)
+            log.warning("FBX import retry after TypeError: %s", e)
+            minimal = {"i": True, "ignoreVersion": True, "type": "FBX"}
+            if ns:
+                minimal["namespace"] = ns
+                minimal["mergeNamespacesOnClash"] = False
+            nodes = cmds.file(str(p), **minimal)
         data: Dict[str, Any] = {"imported": nodes, "path": str(p)}
         msg = f"已导入 FBX: {p}"
         if rebuild_pbr:
@@ -1606,6 +1804,32 @@ def _import_path_into_maya(
                 log.exception("PBR rebuild after FBX import failed")
                 data["pbr_error"] = str(e)
                 msg += f"；PBR 重建失败（几何已导入）: {e}"
+        try:
+            tex = _new_mesh_texture_status(before_meshes)
+            data["texture_status"] = tex
+            if tex["new_mesh_count"] and not tex.get("has_textures"):
+                msg += (
+                    "；⚠ 新导入网格没有可用贴图连接（多为白模）。"
+                    "常见原因：送 Meshy 的 FBX/GLB 未嵌入贴图——"
+                    "请 export_fbx(embed_textures=true) → meshy_convert → meshy_rig 重做。"
+                )
+            # Meshy rig often collapses multi-material assets to one map in .fbm
+            fbm = p.with_suffix(".fbm")
+            if fbm.is_dir():
+                imgs = [
+                    x.name
+                    for x in fbm.iterdir()
+                    if x.suffix.lower() in {".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff"}
+                ]
+                data["fbm_textures"] = imgs
+                if len(imgs) == 1 and tex.get("has_textures"):
+                    msg += (
+                        f"；⚠ 旁路 .fbm 仅含 1 张贴图（{imgs[0]}）。"
+                        "若原资产有多套材质（头/身/发），Meshy 绑骨可能已丢弃其余贴图，"
+                        "头部花屏属预期；请把权重拷回原始分件网格，或先烘焙单 atlas。"
+                    )
+        except Exception as e:
+            log.warning("texture status check failed: %s", e)
         return ToolResult(ok=True, data=data, message=msg)
 
     if suffix == ".obj":
@@ -1637,9 +1861,11 @@ def _import_path_into_maya(
     name="meshy_import_to_maya",
     description=(
         "将 Meshy 成功任务的模型下载并导入当前 Maya 场景（优先 FBX）。"
-        "FBX 导入后默认自动把 Phong 降级材质重建为 standardSurface PBR："
-        "baseColor=sRGB；metallic/roughness（灰度 L）用 outColorR→metalness/specularRoughness；"
-        "法线用 file.outColor→normalCamera（Raw；不用 bump2d/aiNormalMap）。"
+        "FBX 导入后默认自动把 Meshy 完整 PBR（含 metallic/roughness/normal）从 Phong "
+        "重建为 standardSurface：baseColor=sRGB；metallic/roughness 用 outColorR；"
+        "法线 file.outColor→normalCamera（Raw）。"
+        "仅有一张 *_baseColor / 漫反射贴图的 convert→rig 资产会保留原 lambert/phong，"
+        "避免被升成高光 standardSurface 导致发黑发亮。"
         "可传 kind+task_id，或已下载的 file_path。下载在工作线程，导入走主线程。"
     ),
     parameters=obj_schema(

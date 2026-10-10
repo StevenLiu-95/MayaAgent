@@ -216,6 +216,188 @@ def resolve_model_input(*, model_url: str = "", model_path: str = "") -> str:
     raise MeshyError("需要提供 model_url 或 model_path")
 
 
+def inspect_glb(path: str) -> Dict[str, Any]:
+    """
+    Lightweight GLB (glTF 2 binary) inspection for materials / embedded images.
+
+    Used to catch Meshy convert/rig inputs that lost textures (white-mesh outcome).
+    """
+    import json
+    import struct
+
+    p = Path(path)
+    if not p.is_file():
+        raise MeshyError(f"文件不存在: {path}")
+    data = p.read_bytes()
+    if len(data) < 20 or data[:4] != b"glTF":
+        raise MeshyError(f"不是有效的 GLB: {path}")
+    _magic, version, length = struct.unpack_from("<4sII", data, 0)
+    if version != 2:
+        raise MeshyError(f"仅支持 glTF 2.0 GLB（version={version}）")
+    offset = 12
+    js: Optional[Dict[str, Any]] = None
+    while offset + 8 <= len(data) and offset + 8 <= length:
+        clen, ctype = struct.unpack_from("<I4s", data, offset)
+        chunk = data[offset + 8 : offset + 8 + clen]
+        offset += 8 + clen
+        if ctype == b"JSON":
+            try:
+                js = json.loads(chunk.decode("utf-8"))
+            except Exception as e:
+                raise MeshyError(f"GLB JSON 解析失败: {e}") from e
+            break
+    if not isinstance(js, dict):
+        raise MeshyError("GLB 中未找到 JSON chunk")
+
+    materials = js.get("materials") or []
+    images = js.get("images") or []
+    textures = js.get("textures") or []
+    textured = 0
+    for mat in materials:
+        if not isinstance(mat, dict):
+            continue
+        pbr = mat.get("pbrMetallicRoughness") or {}
+        if isinstance(pbr, dict) and pbr.get("baseColorTexture"):
+            textured += 1
+            continue
+        if mat.get("normalTexture") or mat.get("occlusionTexture") or mat.get("emissiveTexture"):
+            textured += 1
+    return {
+        "path": str(p),
+        "material_count": len(materials),
+        "image_count": len(images),
+        "texture_count": len(textures),
+        "textured_material_count": textured,
+        "material_names": [
+            str(m.get("name") or "") for m in materials if isinstance(m, dict)
+        ][:20],
+        "has_images": len(images) > 0,
+    }
+
+
+def fbx_has_external_texture_refs(path: str) -> Dict[str, Any]:
+    """
+    Heuristic for whether an FBX will lose textures when uploaded as a lone data-URI.
+
+    Note: ``FBXExportEmbeddedTextures`` still leaves original absolute path strings
+    in the file. Presence of PNG/JPEG magic bytes indicates real embedded media —
+    those must NOT be treated as external-only (false positive seen on 33MB embeds).
+    """
+    import re
+
+    p = Path(path)
+    if not p.is_file():
+        raise MeshyError(f"文件不存在: {path}")
+    raw = p.read_bytes()
+    has_embedded_blobs = (b"\x89PNG\r\n\x1a\n" in raw) or (b"\xff\xd8\xff" in raw)
+    # Collect printable strings that look like image paths
+    strings = re.findall(rb"[\x20-\x7e]{8,}", raw)
+    refs: List[str] = []
+    for b in strings:
+        s = b.decode("ascii", errors="ignore")
+        low = s.lower().replace("\\", "/")
+        if any(ext in low for ext in (".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp")):
+            # Prefer path-like hits
+            if "/" in low or ":/" in low or ":\\" in s or low.endswith(
+                (".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp")
+            ):
+                refs.append(s.strip())
+    # Dedup preserve order
+    seen = set()
+    uniq: List[str] = []
+    for r in refs:
+        key = r.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+    abs_refs = [
+        r
+        for r in uniq
+        if re.match(r"^[A-Za-z]:[\\/]", r) or r.startswith("/") or "://" in r
+    ]
+    # External-only when path refs exist AND no embedded image blobs.
+    likely_external_only = bool(abs_refs) and not has_embedded_blobs
+    return {
+        "path": str(p),
+        "texture_ref_count": len(uniq),
+        "absolute_texture_refs": abs_refs[:12],
+        "has_embedded_image_blobs": has_embedded_blobs,
+        "likely_external_only": likely_external_only,
+    }
+
+
+def ensure_model_has_textures_for_meshy(path: str) -> Optional[str]:
+    """
+    Return an error message if local model is unsafe for Meshy convert/rig
+    (textures will be lost → white mesh). None means OK / not applicable.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return f"文件不存在: {path}"
+    suffix = p.suffix.lower()
+    # Misnamed downloads: Meshy sometimes returns FBX bytes saved as .glb
+    head = p.read_bytes()[:24]
+    if suffix == ".glb" and head.startswith(b"Kaydara FBX"):
+        return (
+            f"{p.name} 扩展名是 .glb，但文件头是 FBX（Kaydara）。"
+            "请用 meshy_download_model(prefer_format='glb') 重新下载，或改扩展名为 .fbx。"
+        )
+    if suffix == ".glb":
+        try:
+            info = inspect_glb(str(p))
+        except MeshyError as e:
+            return str(e)
+        if not info.get("has_images"):
+            return (
+                "GLB 内没有嵌入贴图（images=0）。继续绑骨/转换会导致白模。"
+                "请用 export_fbx(embed_textures=true) 重新导出带嵌入贴图的 FBX，"
+                "再 meshy_convert 成 GLB 后重试。"
+            )
+        return None
+    if suffix == ".fbx":
+        try:
+            info = fbx_has_external_texture_refs(str(p))
+        except MeshyError as e:
+            return str(e)
+        if info.get("likely_external_only"):
+            samples = ", ".join(info.get("absolute_texture_refs") or [])[:240]
+            return (
+                "FBX 引用了外部贴图路径且未检测到嵌入的贴图二进制，上传 Meshy 时贴图不会带走，"
+                "convert/rig 结果会是白模。"
+                "请先 export_fbx(..., embed_textures=true) 导出嵌入贴图的 FBX，再调用本工具。"
+                + (f" 检测到路径示例: {samples}" if samples else "")
+            )
+        return None
+    return None
+
+
+def multi_material_rig_warning(path: str) -> Optional[str]:
+    """
+    Meshy rig often collapses multi-material GLBs to a single material/texture
+    (keeps first/body map, drops head/hair maps) without rebaking a unified atlas.
+    """
+    p = Path(path)
+    if not p.is_file() or p.suffix.lower() != ".glb":
+        return None
+    try:
+        info = inspect_glb(str(p))
+    except MeshyError:
+        return None
+    n_mat = int(info.get("material_count") or 0)
+    n_img = int(info.get("image_count") or 0)
+    if n_mat <= 1 and n_img <= 1:
+        return None
+    names = ", ".join(info.get("material_names") or [])
+    return (
+        f"⚠ 输入 GLB 有 {n_mat} 个材质 / {n_img} 张贴图"
+        + (f"（{names}）" if names else "")
+        + "。Meshy 绑骨常会折叠成单一材质并只保留其中一张贴图（多为第一张/身体），"
+        "头/发/面饰 UV 仍按原布局采样错误贴图 → 局部花屏。"
+        "更稳妥：绑骨后把权重拷回未合并的原始多材质网格；"
+        "或先烘焙成单 atlas 再送 Meshy。"
+    )
+
 def _format_http_error(status: int, body: Any) -> str:
     msg = ""
     if isinstance(body, dict):

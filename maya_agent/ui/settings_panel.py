@@ -275,7 +275,7 @@ def create_settings_panel(
             )
             lform = self._form(lim_lay)
             self.max_rounds = create_toolbar_spin()
-            self.max_rounds.setRange(1, 50)
+            self.max_rounds.setRange(1, 100)
             self.max_rounds.setFixedHeight(30)
             self.max_rounds.setFixedWidth(100)
             lform.addRow(self._field_label(t("settings.max_rounds")), self.max_rounds)
@@ -329,6 +329,51 @@ def create_settings_panel(
             meshy_lay.addLayout(meshy_actions)
             root.addWidget(meshy)
 
+            adv, adv_lay = self._section(
+                t("settings.section.adv"),
+                t("settings.section.adv_hint"),
+            )
+            aform = self._form(adv_lay)
+            self.adv_path_edit = QtWidgets.QLineEdit()
+            self.adv_path_edit.setMinimumHeight(30)
+            self.adv_path_edit.setPlaceholderText(t("settings.adv_path_ph"))
+            self.adv_path_edit.setToolTip(t("settings.adv_path_tip"))
+            self.adv_path_browse = QtWidgets.QPushButton(t("settings.adv_path_browse"))
+            self.adv_path_browse.setObjectName("secondaryBtn")
+            self.adv_path_browse.setCursor(QtCore.Qt.PointingHandCursor)
+            self.adv_path_browse.setMinimumHeight(30)
+            self.adv_path_browse.setMinimumWidth(72)
+            self.adv_path_browse.clicked.connect(self._browse_adv_path)
+            adv_row = QtWidgets.QWidget()
+            adv_row_lay = QtWidgets.QHBoxLayout(adv_row)
+            adv_row_lay.setContentsMargins(0, 0, 0, 0)
+            adv_row_lay.setSpacing(8)
+            adv_row_lay.addWidget(self.adv_path_edit, 1)
+            adv_row_lay.addWidget(self.adv_path_browse, 0)
+            aform.addRow(self._field_label(t("settings.adv_path")), adv_row)
+            adv_actions = QtWidgets.QHBoxLayout()
+            adv_actions.setContentsMargins(0, 4, 0, 0)
+            adv_actions.setSpacing(10)
+            self.adv_status = QtWidgets.QLabel("")
+            self.adv_status.setObjectName("testConnStatus")
+            self.adv_status.setWordWrap(True)
+            self.adv_status.setAlignment(
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+            )
+            self.adv_status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            adv_actions.addWidget(self.adv_status, 1)
+            self.adv_detect_btn = QtWidgets.QPushButton(t("settings.adv_detect"))
+            self.adv_detect_btn.setObjectName("secondaryBtn")
+            self.adv_detect_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.adv_detect_btn.setMinimumWidth(96)
+            self.adv_detect_btn.setMinimumHeight(30)
+            self.adv_detect_btn.clicked.connect(self._detect_adv)
+            adv_actions.addWidget(self.adv_detect_btn, 0)
+            adv_lay.addLayout(adv_actions)
+            root.addWidget(adv)
+
             self._stretch_end(root)
             self.tabs.addTab(scroll, t("settings.tab.meshy"))
 
@@ -344,6 +389,7 @@ def create_settings_panel(
                 self.base_url_edit.text().strip(),
                 bool(self.meshy_enabled.isChecked()),
                 self.meshy_api_key_edit.text(),
+                self.adv_path_edit.text().strip(),
                 round(float(self.temp_spin.value()), 4),
                 int(self.max_tokens_spin.value()),
                 bool(self.auto_undo.isChecked()),
@@ -407,6 +453,8 @@ def create_settings_panel(
                 sig.connect(self._clear_test_status)
             self.meshy_api_key_edit.textChanged.connect(self._clear_meshy_test_status)
             self.meshy_enabled.toggled.connect(self._clear_meshy_test_status)
+            self.adv_path_edit.textChanged.connect(self._schedule_autosave)
+            self.adv_path_edit.textChanged.connect(self._clear_adv_status)
 
         def _clear_test_status(self, *_args) -> None:
             self._set_test_status("", "")
@@ -454,6 +502,9 @@ def create_settings_panel(
                 self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 30)))
                 self.meshy_enabled.setChecked(bool(self.cfg.get("meshy.enabled", True)))
                 self.meshy_api_key_edit.setText(self.cfg.get_api_key("meshy"))
+                self.adv_path_edit.setText(
+                    str(self.cfg.get("maya.advanced_skeleton_path") or "").strip()
+                )
             finally:
                 self._suppress_dirty = False
             self._mark_clean()
@@ -496,6 +547,10 @@ def create_settings_panel(
             self.cfg.set("agent.show_thinking", self.show_thinking.isChecked())
             self.cfg.set("agent.show_tool_calls", self.show_tools.isChecked())
             self.cfg.set("maya.max_tool_rounds", self.max_rounds.value())
+            self.cfg.set(
+                "maya.advanced_skeleton_path",
+                self.adv_path_edit.text().strip().replace("\\", "/"),
+            )
             self.cfg.save_user()
             self._mark_clean()
             if self._on_saved:
@@ -562,6 +617,63 @@ def create_settings_panel(
                 f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
                 f"background: transparent; border: none; padding: 0; }}"
             )
+
+        def _set_adv_status(self, text: str, kind: str = "") -> None:
+            label = getattr(self, "adv_status", None)
+            if label is None:
+                return
+            label.setText(text or "")
+            colors = {
+                "ok": "#5dca8a",
+                "fail": "#e07070",
+                "info": "#8a8a93",
+            }
+            color = colors.get(kind, "#8a8a93")
+            label.setStyleSheet(
+                f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+                f"background: transparent; border: none; padding: 0; }}"
+            )
+
+        def _clear_adv_status(self, *_args) -> None:
+            self._set_adv_status("", "")
+
+        def _browse_adv_path(self) -> None:
+            start = self.adv_path_edit.text().strip() or ""
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                t("settings.adv_path_pick"),
+                start,
+            )
+            if chosen:
+                self.adv_path_edit.setText(chosen.replace("\\", "/"))
+
+        def _detect_adv(self) -> None:
+            path = self.adv_path_edit.text().strip().replace("\\", "/")
+            self.cfg.set("maya.advanced_skeleton_path", path)
+            self._set_adv_status(t("settings.adv_detect_running"), "info")
+            btn = getattr(self, "adv_detect_btn", None)
+            if btn is not None:
+                btn.setEnabled(False)
+            try:
+                QtWidgets.QApplication.processEvents()
+                from maya_agent.tools.adv_rig import _find_adv_root, adv_tools_available
+
+                root = _find_adv_root()
+                if adv_tools_available() and root:
+                    self._set_adv_status(t("settings.adv_detect_ok").format(path=root), "ok")
+                    # Sync field if auto-discovered and user left blank
+                    if not path:
+                        self.adv_path_edit.setText(root.replace("\\", "/"))
+                else:
+                    self._set_adv_status(t("settings.adv_detect_fail"), "fail")
+            except Exception as e:
+                err = " ".join(str(e).split())
+                if len(err) > 72:
+                    err = err[:72] + "…"
+                self._set_adv_status(f"{t('settings.adv_detect_fail')} · {err}", "fail")
+            finally:
+                if btn is not None:
+                    btn.setEnabled(True)
 
         def _test_connection(self) -> None:
             pid = self.provider_combo.currentData()
@@ -1263,10 +1375,16 @@ def create_help_panel(parent=None):
         ),
         (
             "绑骨 rigging",
-            "list_skeleton_templates、create_skeleton_*（biped/ue5/cat/dragon 等 15 种）、"
-            "create_skin_cage、bind_from_skin_cage、build_fk_ik_controls、auto_rig_character、"
-            "list_skinned_meshes、bake_mesh_to_world、extract_skinned_geometry 等"
-            "（adv_* 仅在已安装 AdvancedSkeleton 且用户明确要求时使用）",
+            "原生：list_skeleton_templates、create_skeleton_*、create_skin_cage、"
+            "bind_from_skin_cage、build_fk_ik_controls、auto_rig_character、"
+            "list_skinned_meshes、extract_skinned_geometry 等",
+        ),
+        (
+            "AdvancedSkeleton adv",
+            "已安装 ADV 时自动启用：adv_rig_status、adv_auto_rig（一键）、"
+            "adv_next_step（分步）、adv_import_fit_skeleton、adv_set_skin_meshes、"
+            "adv_auto_place_fit、adv_build_rig、adv_bind_skin、adv_create_controller。"
+            "路径在「模型 → Meshy」页的 AdvancedSkeleton 栏配置",
         ),
         (
             "动画 animation",
