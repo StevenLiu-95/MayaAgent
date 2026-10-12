@@ -12,19 +12,100 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import platform
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from maya_discover import (  # noqa: E402
+    KNOWN_VERSIONS,
+    documents_dir as _discover_documents_dir,
+    documents_maya_root as _discover_documents_maya_root,
+    discover_maya_versions,
+    find_mayapy,
+    is_valid_project_root,
+    list_maya_user_versions,
+    version_junction_path,
+)
+
 PLUGIN_TEMPLATE = PROJECT_ROOT / "resources" / "maya_plugin" / "MayaAgent.py"
 PLUGIN_FILENAME = "MayaAgent.py"
 PLUGIN_NAME = "MayaAgent"
 AUTOLOAD_LINE = (
     f'evalDeferred("autoLoadPlugin(\\"\\", \\"{PLUGIN_FILENAME}\\", \\"{PLUGIN_NAME}\\")");'
 )
+
+
+@dataclass
+class VersionInstallResult:
+    version: str
+    hooks_ok: bool = False
+    deps_ok: Optional[bool] = None
+    mayapy: str = ""
+    load_path: str = ""
+    error: str = ""
+
+
+@dataclass
+class InstallReport:
+    project_root: str
+    versions: List[VersionInstallResult] = field(default_factory=list)
+    plugin_ok: bool = False
+    plugin_path: str = ""
+    dry_run: bool = False
+
+    def print_summary(self) -> None:
+        print("\n---------- Install Report ----------")
+        print(f"Project root: {self.project_root}")
+        if self.dry_run:
+            print("Mode: dry-run (no files written)")
+        print(f"Shared plug-in: {'OK' if self.plugin_ok else 'FAIL'} {self.plugin_path}")
+        for row in self.versions:
+            deps = (
+                "n/a"
+                if row.deps_ok is None
+                else ("OK" if row.deps_ok else "FAIL")
+            )
+            hooks = "OK" if row.hooks_ok else "FAIL"
+            print(
+                f"  Maya {row.version}: hooks={hooks} deps={deps} "
+                f"mayapy={row.mayapy or '(not found)'} "
+                f"load_path={row.load_path or '-'}"
+            )
+            if row.error:
+                print(f"    error: {row.error}")
+        hooks_fail = [r for r in self.versions if not r.hooks_ok]
+        deps_fail = [r for r in self.versions if r.deps_ok is False]
+        if hooks_fail:
+            print(f"⚠ Hooks failed for: {', '.join(r.version for r in hooks_fail)}")
+        if deps_fail:
+            print(
+                f"⚠ Deps failed for: {', '.join(r.version for r in deps_fail)} "
+                "(chat needs httpx; run doctor / install.bat force / --vendor-only)"
+            )
+        if not hooks_fail and not deps_fail:
+            print("All reported versions OK.")
+        print("------------------------------------")
+        print("Diagnose anytime: python scripts/doctor.py")
+
+    @property
+    def hooks_all_failed(self) -> bool:
+        if not self.versions:
+            return not self.plugin_ok
+        return all(not r.hooks_ok for r in self.versions)
+
+    @property
+    def any_deps_failed(self) -> bool:
+        return any(r.deps_ok is False for r in self.versions)
 
 USERSETUP_SNIPPET = '''
 # >>> Maya Agent
@@ -58,39 +139,22 @@ evalDeferred("mayaAgentBootstrap()");
 
 
 def documents_dir() -> Path:
-    if platform.system() == "Windows":
-        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
-    if platform.system() == "Darwin":
-        return Path.home() / "Library" / "Preferences" / "Autodesk" / "maya"
-    return Path.home() / "maya"
+    return _discover_documents_dir()
 
 
 def maya_app_dir() -> Path:
-    if platform.system() == "Darwin":
-        return documents_dir()
-    return documents_dir() / "maya"
+    return _discover_documents_maya_root()
 
 
 def maya_versions_on_disk() -> list:
-    versions = []
-    maya_root = maya_app_dir()
-    if not maya_root.exists():
-        return versions
-    for child in maya_root.iterdir():
-        if child.is_dir() and child.name.isdigit():
-            versions.append(child.name)
-    return sorted(versions)
+    return list_maya_user_versions()
 
 
 def scripts_dir_for(version: str) -> Path:
-    if platform.system() == "Darwin":
-        return documents_dir() / version / "scripts"
     return maya_app_dir() / version / "scripts"
 
 
 def modules_dir_for(version: str) -> Path:
-    if platform.system() == "Darwin":
-        return documents_dir() / version / "modules"
     return maya_app_dir() / version / "modules"
 
 
@@ -100,6 +164,13 @@ def shared_plugins_dir() -> Path:
         return documents_dir() / "plug-ins"
     return maya_app_dir() / "plug-ins"
 
+
+def project_root_for_plugin(root: Path) -> Path:
+    """Absolute real project root written into shared MayaAgent.py MODULE_ROOT."""
+    resolved = Path(root).resolve()
+    if is_valid_project_root(resolved):
+        return resolved
+    return PROJECT_ROOT.resolve()
 
 def _path_lexists(path: Path) -> bool:
     """True if path exists as a directory entry, including broken junctions."""
@@ -156,9 +227,7 @@ def ensure_junction_or_copy(version: str, root: Path) -> Path:
     Prefer an ASCII-friendly path under Documents/maya/<ver>/MayaAgent
     (junction on Windows) so startup never breaks on non-ASCII project paths.
     """
-    link = maya_app_dir() / version / "MayaAgent"
-    if platform.system() == "Darwin":
-        link = documents_dir() / version / "MayaAgent"
+    link = version_junction_path(version)
     link.parent.mkdir(parents=True, exist_ok=True)
 
     if _is_usable_load_link(link, root):
@@ -249,7 +318,7 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
         return
     root_fwd = str(root).replace("\\", "/")
     mod.write_text(
-        f"+ MayaAgent 1.4.2 {root_fwd}\n"
+        f"+ MayaAgent 1.4.3 {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",
@@ -474,9 +543,7 @@ def _strip_shelf_buttons(mel_text: str, markers: tuple) -> str:
 
 def remove_project_junction(version: str) -> None:
     """Remove Documents/maya/<ver>/MayaAgent junction/symlink (not the real project)."""
-    link = maya_app_dir() / version / "MayaAgent"
-    if platform.system() == "Darwin":
-        link = documents_dir() / version / "MayaAgent"
+    link = version_junction_path(version)
     if not _path_lexists(link):
         return
     _remove_link_path(link)
@@ -486,21 +553,41 @@ def remove_project_junction(version: str) -> None:
         print(f"Could not remove {link} (safe to delete manually if it is only a junction)")
 
 
+def _dry_run_paths(version: str, root: Path) -> None:
+    scripts = scripts_dir_for(version)
+    modules = modules_dir_for(version)
+    link = version_junction_path(version)
+    print(f"\n=== [dry-run] Maya {version} ===")
+    print(f"  junction : {link} -> {root}")
+    print(f"  userSetup: {scripts / 'userSetup.py'}")
+    print(f"  userSetup.mel: {scripts / 'userSetup.mel'}")
+    print(f"  module   : {modules / 'MayaAgent.mod'}")
+    print(f"  launcher : {scripts / 'maya_agent_launch.py'}")
+    for prefs in _prefs_dirs_for(version) or [maya_app_dir() / version / "prefs"]:
+        print(f"  pluginPrefs: {prefs / 'pluginPrefs.mel'}")
+
+
 def install_version(
     version: str,
     project_root: Path | None = None,
     *,
     uninstall: bool = False,
+    dry_run: bool = False,
 ) -> Path:
     """
     Install (or uninstall) Maya Agent hooks for one Maya version.
 
-    Returns the load path used for MODULE_ROOT / PYTHONPATH (junction or project).
+    Returns the load path used for userSetup / PYTHONPATH (junction or project).
+    Shared plug-in MODULE_ROOT uses the real project root (see install_all).
     """
     root = Path(project_root or PROJECT_ROOT).resolve()
     scripts = scripts_dir_for(version)
     modules = modules_dir_for(version)
     print(f"\n=== Maya {version} → {scripts} ===")
+
+    if dry_run:
+        _dry_run_paths(version, root)
+        return version_junction_path(version)
 
     if uninstall:
         write_usersetup(scripts, root, uninstall=True)
@@ -531,62 +618,139 @@ def install_all(
     project_root: Path | None = None,
     *,
     uninstall: bool = False,
+    dry_run: bool = False,
+    report: InstallReport | None = None,
 ) -> Path:
-    """Install for multiple versions; write shared plug-in once. Returns MODULE_ROOT path."""
-    root = Path(project_root or PROJECT_ROOT).resolve()
+    """Install for multiple versions; write shared plug-in once with real project root."""
+    root = project_root_for_plugin(Path(project_root or PROJECT_ROOT))
     vers = list(versions or [])
     if not vers:
-        vers = maya_versions_on_disk()
+        vers = discover_maya_versions()
     if not vers:
-        vers = ["2022", "2023", "2024", "2025", "2026"]
-        print("未检测到 Maya 用户目录，将写入常见版本路径。")
+        vers = list(KNOWN_VERSIONS[1:])  # 2022–2026
+        print("未检测到 Maya，将写入常见版本路径。")
 
     print(f"Project root: {root}")
-    shared_root: Path | None = None
+    if report is not None:
+        report.project_root = str(root)
+        report.dry_run = dry_run
 
     for ver in vers:
+        row = VersionInstallResult(version=ver)
+        mp = find_mayapy(ver)
+        row.mayapy = str(mp) if mp else ""
         try:
-            link = install_version(ver, root, uninstall=uninstall)
-            if not uninstall:
-                shared_root = shared_root or link
+            link = install_version(ver, root, uninstall=uninstall, dry_run=dry_run)
+            row.load_path = str(link)
+            row.hooks_ok = True
         except OSError as e:
             print(f"Skip {ver}: {e}")
+            row.hooks_ok = False
+            row.error = str(e)
+        if report is not None:
+            # Merge with existing deps row if present
+            existing = next((r for r in report.versions if r.version == ver), None)
+            if existing is None:
+                report.versions.append(row)
+            else:
+                existing.hooks_ok = row.hooks_ok
+                existing.load_path = row.load_path
+                existing.mayapy = row.mayapy or existing.mayapy
+                if row.error:
+                    existing.error = row.error
 
+    plugin_root = root
     try:
-        if uninstall:
-            write_autoload_plugin(root, uninstall=True)
+        if dry_run:
+            dest = shared_plugins_dir() / PLUGIN_FILENAME
+            print(f"\n=== [dry-run] shared plug-in ===\n  {dest}")
+            print(f"  MODULE_ROOT = {plugin_root}")
+            if report is not None:
+                report.plugin_ok = True
+                report.plugin_path = str(dest)
+        elif uninstall:
+            write_autoload_plugin(plugin_root, uninstall=True)
+            if report is not None:
+                report.plugin_ok = True
+                report.plugin_path = str(shared_plugins_dir() / PLUGIN_FILENAME)
         else:
-            write_autoload_plugin(shared_root or root, uninstall=False)
+            write_autoload_plugin(plugin_root, uninstall=False)
+            if report is not None:
+                report.plugin_ok = True
+                report.plugin_path = str(shared_plugins_dir() / PLUGIN_FILENAME)
     except OSError as e:
         print(f"Plug-in install error: {e}")
+        if report is not None:
+            report.plugin_ok = False
+            report.plugin_path = str(shared_plugins_dir() / PLUGIN_FILENAME)
 
-    return shared_root or root
+    return plugin_root
 
 
 def install_python_deps(
     versions: list[str] | None = None,
     *,
     force: bool = False,
+    report: InstallReport | None = None,
 ) -> int:
     """
     Install httpx / requests / PyYAML into each Maya mayapy (and .vendor fallback).
 
     Returns number of version failures (0 = all ok).
     """
-    import importlib.util
-
     path = Path(__file__).resolve().parent / "install_deps.py"
     spec = importlib.util.spec_from_file_location("maya_agent_install_deps", path)
     if spec is None or spec.loader is None:
         print(f"[警告] 无法加载 {path}")
         return 1
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     vers = list(versions or [])
     if not vers:
-        vers = maya_versions_on_disk() or ["2022", "2023", "2024", "2025", "2026"]
+        vers = discover_maya_versions() or list(KNOWN_VERSIONS[1:])
     print("\n---------- Python 依赖 (mayapy / .vendor) ----------")
-    return int(mod.install_versions(vers, force=force, allow_vendor=True))
+    failures = 0
+    for ver in vers:
+        row = None
+        if report is not None:
+            row = next((r for r in report.versions if r.version == ver), None)
+            if row is None:
+                row = VersionInstallResult(version=ver)
+                report.versions.append(row)
+            mp = find_mayapy(ver)
+            row.mayapy = str(mp) if mp else ""
+        mayapy = find_mayapy(ver)
+        print(f"\n=== Maya {ver} 依赖 ===")
+        if not mayapy:
+            print("  [跳过] 未找到 mayapy.exe，仅会写入脚本挂钩")
+            if row is not None:
+                row.deps_ok = None  # skipped — not a hard fail if vendor works later
+            continue
+        ok = bool(mod.install_for_mayapy(mayapy, force=force, allow_vendor=True))
+        if row is not None:
+            row.deps_ok = ok
+            row.mayapy = str(mayapy)
+        if not ok:
+            failures += 1
+    if failures and report is not None:
+        # Last-resort vendor already attempted inside install_for_mayapy
+        pass
+    if not any(find_mayapy(v) for v in vers):
+        print("\n[警告] 未找到任何 mayapy。")
+        print("  将尝试写入项目 .vendor，供 Maya 启动时加载。")
+        if mod.install_to_vendor(mod.REQUIREMENTS, force=force):
+            for r in report.versions if report else []:
+                if r.deps_ok is None:
+                    r.deps_ok = True
+            return 0
+        print("  [警告] 依赖未安装。菜单仍可出现，但对话功能需要 httpx。")
+        if report is not None:
+            for r in report.versions:
+                if r.deps_ok is None:
+                    r.deps_ok = False
+        return 1
+    return failures
 
 
 def main(argv=None) -> int:
@@ -603,28 +767,57 @@ def main(argv=None) -> int:
         action="store_true",
         help="Force reinstall Python deps even if already present",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print paths that would be written; do not modify the system",
+    )
+    parser.add_argument(
+        "--list-versions",
+        action="store_true",
+        help="Print discovered Maya versions and exit",
+    )
     args = parser.parse_args(argv)
 
+    if args.list_versions:
+        vers = discover_maya_versions()
+        print(" ".join(vers) if vers else "")
+        return 0 if vers else 1
+
     versions = [args.maya_version] if args.maya_version else None
+    if versions is None:
+        versions = discover_maya_versions() or list(KNOWN_VERSIONS[1:])
+
+    report = InstallReport(project_root=str(PROJECT_ROOT.resolve()))
 
     dep_failures = 0
-    if not args.uninstall and not args.skip_deps:
+    if not args.uninstall and not args.skip_deps and not args.dry_run:
         try:
-            dep_failures = install_python_deps(versions, force=args.force_deps)
+            dep_failures = install_python_deps(
+                versions, force=args.force_deps, report=report
+            )
         except Exception as e:
             dep_failures = 1
             print(f"[警告] 依赖安装异常: {e}")
 
-    install_all(versions, PROJECT_ROOT, uninstall=args.uninstall)
+    install_all(
+        versions,
+        PROJECT_ROOT,
+        uninstall=args.uninstall,
+        dry_run=args.dry_run,
+        report=report,
+    )
 
     if not args.uninstall:
+        report.print_summary()
         dep_hint = ""
-        if dep_failures:
+        if dep_failures or report.any_deps_failed:
             dep_hint = (
                 "\n⚠ 部分 mayapy 依赖未装好。对话需要 httpx。\n"
                 "  请重新运行 install.bat，或:\n"
                 "  python scripts/install_deps.py --force\n"
-                "  若仍失败，脚本会写入项目 .vendor 目录作为兜底。\n"
+                "  python scripts/install_deps.py --vendor-only\n"
+                "  诊断: python scripts/doctor.py\n"
             )
         print(
             "\n安装完成。请完全退出并重启 Maya。\n"
@@ -639,13 +832,20 @@ def main(argv=None) -> int:
             "并检查 Plug-in Manager 中 MayaAgent.py 是否勾选 Loaded/Auto load。\n"
         )
     else:
+        report.print_summary()
         print(
             "\n已卸载：plug-in / userSetup / module / 工具架偏好 / 目录联接。\n"
             "若 Maya 正在运行，请再执行一次以清理当前会话 UI：\n"
             "  import maya_agent; maya_agent.plugin.menu.uninstall_ui()\n"
             "或在 Plug-in Manager 中卸载 MayaAgent.py，然后重启 Maya。\n"
         )
-    return 1 if (not args.uninstall and dep_failures) else 0
+
+    if args.uninstall or args.dry_run:
+        return 0
+    # Hooks all failed → hard fail; deps-only failure → 0 (usable menu) matching install.bat
+    if report.hooks_all_failed:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

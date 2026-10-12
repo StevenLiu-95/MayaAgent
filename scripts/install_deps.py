@@ -31,6 +31,16 @@ try:
 except ImportError:  # non-Windows
     winreg = None  # type: ignore
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from maya_discover import (  # noqa: E402
+    KNOWN_VERSIONS,
+    find_mayapy as _discover_find_mayapy,
+    find_mayapy_beside_executable as _discover_find_mayapy_beside,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 VENDOR_DIR = PROJECT_ROOT / ".vendor"
@@ -118,91 +128,13 @@ def _print_proc(proc: subprocess.CompletedProcess) -> None:
 
 
 def find_mayapy(version: str) -> Optional[Path]:
-    """Locate mayapy.exe / mayapy for a Maya version."""
-    candidates: List[Path] = []
-    ver = str(version).strip()
-
-    if platform.system() == "Windows" and winreg is not None:
-        try:
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                rf"SOFTWARE\Autodesk\Maya\{ver}\Setup\InstallPath",
-            )
-            try:
-                loc, _ = winreg.QueryValueEx(key, "MAYA_INSTALL_LOCATION")
-            finally:
-                winreg.CloseKey(key)
-            root = Path(str(loc))
-            candidates.extend(
-                [
-                    root / "bin" / "mayapy.exe",
-                    root / "bin" / "mayapy",
-                ]
-            )
-        except OSError:
-            pass
-
-        prog = os.environ.get("ProgramFiles", r"C:\Program Files")
-        prog_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-        for base in (
-            Path(prog) / "Autodesk" / f"Maya{ver}",
-            Path(prog_x86) / "Autodesk" / f"Maya{ver}",
-            Path(r"C:\Program Files\Autodesk") / f"Maya{ver}",
-            Path(r"D:\Program Files\Autodesk") / f"Maya{ver}",
-            Path(rf"D:\LAS\LAD\Maya\Program\{ver}") / f"Maya{ver}",
-            Path(rf"D:\Autodesk\Maya{ver}"),
-            Path(rf"E:\Program Files\Autodesk\Maya{ver}"),
-        ):
-            candidates.append(base / "bin" / "mayapy.exe")
-
-    elif platform.system() == "Darwin":
-        candidates.extend(
-            [
-                Path(f"/Applications/Autodesk/maya{ver}/Maya.app/Contents/bin/mayapy"),
-                Path(f"/Applications/Autodesk/Maya{ver}/Maya.app/Contents/bin/mayapy"),
-            ]
-        )
-    else:
-        candidates.extend(
-            [
-                Path(f"/usr/autodesk/maya{ver}/bin/mayapy"),
-                Path(f"/usr/autodesk/Maya{ver}/bin/mayapy"),
-            ]
-        )
-
-    seen = set()
-    for path in candidates:
-        try:
-            key = str(path.resolve()) if path.exists() else str(path)
-        except OSError:
-            key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        if path.is_file():
-            return path
-    return None
+    """Locate mayapy.exe / mayapy for a Maya version (delegates to maya_discover)."""
+    return _discover_find_mayapy(version)
 
 
 def find_mayapy_beside_executable(executable: Optional[str] = None) -> Optional[Path]:
-    """
-    When running inside Maya, ``sys.executable`` is often maya.exe.
-    mayapy sits next to it in the same ``bin`` folder.
-    """
-    exe = Path(executable or sys.executable)
-    parent = exe.parent
-    names = ("mayapy.exe", "mayapy") if platform.system() == "Windows" else ("mayapy",)
-    for name in names:
-        cand = parent / name
-        if cand.is_file():
-            return cand
-    # Sometimes Script Editor points at a wrapper; walk up one level
-    for name in names:
-        cand = parent.parent / "bin" / name
-        if cand.is_file():
-            return cand
-    return None
-
+    """Locate mayapy next to the running Maya/mayapy executable."""
+    return _discover_find_mayapy_beside(executable)
 
 def detect_http_proxy() -> Optional[str]:
     """
@@ -865,7 +797,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     versions = list(args.versions)
     if not versions:
-        versions = ["2020", "2022", "2023", "2024", "2025", "2026"]
+        versions = list(KNOWN_VERSIONS)
 
     failures = install_versions(
         versions,

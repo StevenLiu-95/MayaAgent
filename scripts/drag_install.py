@@ -53,6 +53,7 @@ def _load_install_module(root: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"无法加载 {path}")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # needed for @dataclass in install.py
     spec.loader.exec_module(mod)
     return mod
 

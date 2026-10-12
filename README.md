@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.4.2** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
+**v1.4.3** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
 
 ## 核心能力
 
@@ -25,6 +25,22 @@
 1. 双击项目根目录 **`install.bat`**（可选：`install.bat 2025` / `install.bat all` / `install.bat force`）
 2. **完全退出并重启 Maya**
 3. 菜单栏应出现 **Maya Agent**，工具架出现 **MayaAgent** 页签
+
+版本与 mayapy 由 `scripts/maya_discover.py` 统一探测（Documents 用户目录、注册表、常见安装路径）。非标准安装可设置：
+
+```bat
+set MAYA_AGENT_MAYAPY_ROOTS=D:\LAS\LAD\Maya\Program\2025\Maya2025
+install.bat
+```
+
+安装结束会打印 **Install Report**（每版本 hooks / deps / mayapy / load_path）。挂钩失败为错误；仅依赖失败时菜单通常仍可用，对话需 `httpx`。
+
+诊断（只读）：
+
+```bash
+python scripts/doctor.py
+python scripts/doctor.py --maya-version 2025
+```
 
 卸载：双击 **`uninstall.bat`**。
 
@@ -58,7 +74,10 @@ python scripts/install_deps.py --vendor-only
 python scripts/install.py
 python scripts/install.py --maya-version 2025
 python scripts/install.py --force-deps
+python scripts/install.py --dry-run
+python scripts/install.py --list-versions
 python scripts/install.py --uninstall
+python scripts/doctor.py
 ```
 
 ### 手动启动 / 热重载
@@ -119,8 +138,10 @@ MayaAgent/
 │   ├── prompts/                 # 系统提示词
 │   └── maya_plugin/             # 自动加载插件模板
 ├── scripts/
-│   ├── install.py               # 安装 / 卸载挂钩
+│   ├── install.py               # 安装 / 卸载挂钩 + Install Report
 │   ├── install_deps.py          # mayapy 依赖（ensurepip/镜像/逐包/.vendor）
+│   ├── maya_discover.py         # Maya 版本 / mayapy 统一探测
+│   ├── doctor.py                # 安装健康检查（只读）
 │   └── drag_install.py          # 拖入式安装逻辑（含依赖加固）
 ├── install.bat / uninstall.bat
 ├── install_dragdrop.mel         # 拖进视口安装
@@ -132,7 +153,9 @@ MayaAgent/
 
 | 现象 | 处理 |
 | ---- | ---- |
+| 安装状态不明 | 运行 `python scripts/doctor.py`，对照 Install Report |
 | 插件列表有 MayaAgent，但无菜单/工具架 | 拖入 `install_dragdrop.mel`，或 Script Editor（**Python**）执行 `import maya_agent; maya_agent.reload()` |
+| 未检测到 mayapy / 自定义安装路径 | 设置 `MAYA_AGENT_MAYAPY_ROOTS` 后重跑 `install.bat` |
 | `No module named 'httpx'` / pip SSL / 代理报错 | 运行 `install.bat force`，或 `python scripts/install_deps.py --force`；仍失败则 `--vendor-only`。菜单不依赖 PyYAML |
 | `No module named 'yaml'` | 默认配置为 JSON，菜单可用；可选装 PyYAML，或同上走 `.vendor` |
 | `install_dragdrop.mel` Syntax error | 确认拖入的是项目根目录最新版；MEL 需用 `+` 拼接字符串，勿用 Script Editor 的 MEL 模式粘贴 Python |

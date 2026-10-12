@@ -9,11 +9,15 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib.util
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SCRIPTS))
 
 
 def _ok(name: str) -> None:
@@ -88,9 +92,12 @@ def test_install_modules_syntax() -> None:
     for rel in (
         "scripts/install.py",
         "scripts/install_deps.py",
+        "scripts/maya_discover.py",
+        "scripts/doctor.py",
         "scripts/drag_install.py",
         "maya_agent/utils/paths.py",
         "maya_agent/utils/config.py",
+        "maya_agent/plugin/menu.py",
         "resources/maya_plugin/MayaAgent.py",
     ):
         path = ROOT / rel
@@ -102,12 +109,125 @@ def test_install_modules_syntax() -> None:
         _ok(f"syntax {rel}")
 
 
+def test_maya_discover() -> None:
+    import maya_discover as disc
+
+    for name in (
+        "documents_maya_root",
+        "list_maya_user_versions",
+        "find_mayapy",
+        "discover_maya_versions",
+        "is_valid_project_root",
+        "version_junction_path",
+    ):
+        if not hasattr(disc, name):
+            _fail("maya_discover API", f"missing {name}")
+    if not disc.is_valid_project_root(ROOT):
+        _fail("is_valid_project_root", str(ROOT))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_root = Path(tmp) / "FakeMayaRoot"
+        (fake_root / "bin").mkdir(parents=True)
+        mayapy_name = "mayapy.exe" if os.name == "nt" else "mayapy"
+        mayapy_path = fake_root / "bin" / mayapy_name
+        mayapy_path.write_text("", encoding="utf-8")
+        old = os.environ.get("MAYA_AGENT_MAYAPY_ROOTS")
+        os.environ["MAYA_AGENT_MAYAPY_ROOTS"] = str(fake_root)
+        try:
+            # Re-import candidate builder sees env; find_mayapy for a version
+            # that appears in the path string may still miss if name is not MayaXXXX.
+            # Point env at .../Maya2099 style:
+            named = Path(tmp) / "Maya2099"
+            (named / "bin").mkdir(parents=True)
+            (named / "bin" / mayapy_name).write_text("", encoding="utf-8")
+            os.environ["MAYA_AGENT_MAYAPY_ROOTS"] = str(named)
+            found = disc.find_mayapy("2099")
+            if found is None or not found.is_file():
+                _fail("MAYA_AGENT_MAYAPY_ROOTS", f"expected mayapy under {named}, got {found}")
+        finally:
+            if old is None:
+                os.environ.pop("MAYA_AGENT_MAYAPY_ROOTS", None)
+            else:
+                os.environ["MAYA_AGENT_MAYAPY_ROOTS"] = old
+    _ok("maya_discover + MAYA_AGENT_MAYAPY_ROOTS")
+
+
+def test_plugin_single_deferred_and_resolve() -> None:
+    src = (ROOT / "resources" / "maya_plugin" / "MayaAgent.py").read_text(encoding="utf-8")
+    if "resolve_module_root" not in src:
+        _fail("plugin template", "missing resolve_module_root")
+    if "executeDeferred(_bootstrap)" not in src:
+        _fail("plugin template", "missing executeDeferred(_bootstrap)")
+    # After successful executeDeferred, must return before evalDeferred fallback
+    chunk = src.split("executeDeferred(_bootstrap)", 1)[1]
+    before_fallback = chunk.split("evalDeferred", 1)[0]
+    if "return" not in before_fallback:
+        _fail("plugin template", "executeDeferred success path does not return (dual schedule risk)")
+    if "def _schedule_bootstrap" not in src:
+        _fail("plugin template", "missing _schedule_bootstrap")
+    _ok("plugin single deferred + resolve_module_root")
+
+
+def test_menu_bootstrap_idempotent_flags() -> None:
+    from maya_agent.plugin import menu as menu_mod
+
+    for name in (
+        "_BOOTSTRAP_DONE",
+        "_BOOTSTRAP_IN_FLIGHT",
+        "_reset_bootstrap_state",
+        "bootstrap",
+    ):
+        if not hasattr(menu_mod, name):
+            _fail("menu bootstrap", f"missing {name}")
+    menu_mod._reset_bootstrap_state()
+    if menu_mod._BOOTSTRAP_DONE or menu_mod._BOOTSTRAP_IN_FLIGHT:
+        _fail("menu bootstrap", "reset did not clear flags")
+    _ok("menu bootstrap idempotent flags")
+
+
+def test_install_report_and_plugin_root() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "maya_agent_install_mod", ROOT / "scripts" / "install.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, "InstallReport") or not hasattr(mod, "project_root_for_plugin"):
+        _fail("install API", "missing InstallReport / project_root_for_plugin")
+    root = mod.project_root_for_plugin(ROOT)
+    if not mod.is_valid_project_root(root):
+        _fail("project_root_for_plugin", str(root))
+    report = mod.InstallReport(project_root=str(root), dry_run=True)
+    report.plugin_ok = True
+    report.versions.append(
+        mod.VersionInstallResult(version="2025", hooks_ok=True, deps_ok=True, mayapy="x")
+    )
+    report.print_summary()
+    _ok("InstallReport + project_root_for_plugin")
+
+
+def test_doctor_runs() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "maya_agent_doctor", ROOT / "scripts" / "doctor.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    rc = mod.run_doctor([])  # empty version list still checks project + plug-in
+    if rc not in (0, 1):
+        _fail("doctor", f"unexpected rc={rc}")
+    _ok(f"doctor runs (rc={rc})")
+
+
 def test_install_deps_proxy_detect() -> None:
     spec = importlib.util.spec_from_file_location(
         "maya_agent_install_deps", ROOT / "scripts" / "install_deps.py"
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     proxy = mod.detect_http_proxy()
     print(f"  info proxy detect -> {proxy!r}")
@@ -186,6 +306,11 @@ def main() -> int:
     test_default_config_json()
     test_install_modules_syntax()
     test_install_dragdrop_mel()
+    test_maya_discover()
+    test_plugin_single_deferred_and_resolve()
+    test_menu_bootstrap_idempotent_flags()
+    test_install_report_and_plugin_root()
+    test_doctor_runs()
     test_install_deps_proxy_detect()
     test_vendor_path_injection()
     test_config_without_yaml()

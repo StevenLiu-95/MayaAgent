@@ -178,22 +178,31 @@ def defer_idle(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
 
 
 def defer_idle_lowest(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
-    """Like defer_idle, plus a lowest-priority MEL/python backup when possible."""
+    """
+    Schedule ``callback`` for idle (prefer ``executeDeferred``).
+
+    Do **not** also queue ``cmds.evalDeferred('python(\"...\")')`` when the
+    primary path already succeeded: on several Maya builds that string is
+    later evaluated as Python (not MEL), which raises
+    ``NameError: name 'python' is not defined`` and matches Script Editor
+    noise when opening the panel / during late startup.
+    """
     ok = defer_idle(callback, *args, **kwargs)
-    if not in_maya():
+    if ok or not in_maya():
         return ok
+    # Primary path failed — last-resort MEL wrapper (only if still needed).
     try:
         import maya.cmds as cmds
 
         if args or kwargs:
-            return ok
+            return False
         name = getattr(callback, "__name__", "") or ""
         mod = getattr(callback, "__module__", "") or ""
         if not mod or not name:
-            return ok
+            return False
         py = f"import {mod} as _m; getattr(_m, {name!r})()"
         escaped = py.replace("\\", "\\\\").replace('"', '\\"')
         cmds.evalDeferred(f'python("{escaped}")', lowestPriority=True)
         return True
     except Exception:
-        return ok
+        return False

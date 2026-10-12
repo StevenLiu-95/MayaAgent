@@ -208,6 +208,13 @@ def create_chat_panel(parent=None):
             self.setPlainText(text or "")
             self._refit(streaming=False)
 
+        def finish_streaming(self) -> bool:
+            """Leave streaming mode and allow height to shrink to exact content."""
+            self._streaming = False
+            self._stream_cache = None
+            self._stream_height = 0
+            return self._refit(streaming=False)
+
         def set_plain_streaming(self, text: str):
             """Fast live-update path: plain text + incremental insert when possible."""
             text = text or ""
@@ -262,13 +269,21 @@ def create_chat_panel(parent=None):
                 return int(self._layout_width)
 
             candidates = []
-            # Prefer the bubble's real width — viewport estimates are often wider
-            # than the final bubble and under-estimate height (clipped user text).
+            # Prefer the bubble's real / max width — viewport estimates are often
+            # wider than the final bubble and under-estimate height (clipped text).
             bubble = self.parentWidget()
             if bubble is not None:
                 bw = int(bubble.width()) - self._BUBBLE_PAD
                 if bw >= 120:
                     candidates.append(bw)
+                # maximumWidth is set before geometry settles; use it so the first
+                # refit after markdown is not computed against an over-wide bubble.
+                try:
+                    mw = int(bubble.maximumWidth() or 0) - self._BUBBLE_PAD
+                    if 120 <= mw < 16777215 - self._BUBBLE_PAD:
+                        candidates.append(mw)
+                except Exception:
+                    pass
             self_w = int(self.width() or 0) - 4
             if self_w >= 120:
                 candidates.append(self_w)
@@ -288,7 +303,20 @@ def create_chat_panel(parent=None):
                 width = 240
 
             prev_w = int(self._layout_width or 0)
-            if prev_w and abs(width - prev_w) < self._WIDTH_EPS:
+            # While not streaming, always accept a meaningfully narrower width
+            # even inside EPS — otherwise post-layout shrink leaves height short.
+            if (
+                streaming
+                and prev_w
+                and abs(width - prev_w) < self._WIDTH_EPS
+            ):
+                return prev_w
+            if (
+                not streaming
+                and prev_w
+                and width >= prev_w
+                and abs(width - prev_w) < self._WIDTH_EPS
+            ):
                 return prev_w
             return width
 
@@ -302,8 +330,10 @@ def create_chat_panel(parent=None):
             self._refit_guard = True
             try:
                 self.document().setTextWidth(width)
-                # ceil-ish: avoid float rounding that oscillates by 1px
-                h = max(int(self.document().size().height() + 0.999) + 2, 16)
+                # Extra pad: list/table HTML often reports 1–2 lines short; without
+                # it the turn-meta footer overlaps the last body line.
+                pad = 4 if streaming else 10
+                h = max(int(self.document().size().height() + 0.999) + pad, 16)
                 if streaming:
                     # Strictly monotonic while streaming — never shrink.
                     h = max(h, int(self._stream_height or 0))
@@ -362,6 +392,16 @@ def create_chat_panel(parent=None):
                 QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
             )
             self.bar.hide()
+            self.status = QtWidgets.QLabel("")
+            self.status.setObjectName("toolStatus")
+            self.status.setWordWrap(True)
+            self.status.setMinimumWidth(0)
+            self.status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            self.status.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self.status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.status.hide()
             self.detail = QtWidgets.QLabel("")
             self.detail.setWordWrap(True)
             self.detail.setMinimumWidth(0)
@@ -375,7 +415,8 @@ def create_chat_panel(parent=None):
                 QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse
             )
             self.detail.setOpenExternalLinks(True)
-            self.expand_btn = QtWidgets.QPushButton("展开全部")
+            self.detail.hide()
+            self.expand_btn = QtWidgets.QPushButton("展开全部 ▾")
             self.expand_btn.setObjectName("toolExpandBtn")
             self.expand_btn.setCursor(QtCore.Qt.PointingHandCursor)
             self.expand_btn.setFlat(True)
@@ -384,6 +425,7 @@ def create_chat_panel(parent=None):
             self.expand_btn.hide()
             lay.addWidget(self.title)
             lay.addWidget(self.bar)
+            lay.addWidget(self.status)
             lay.addWidget(self.detail)
             self._image_host = QtWidgets.QWidget()
             self._image_host.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
@@ -401,9 +443,9 @@ def create_chat_panel(parent=None):
             self._anim_timer = QtCore.QTimer(self)
             self._anim_timer.setInterval(130)
             self._anim_timer.timeout.connect(self._tick_running)
-            self._preview_html = ""
             self._full_html = ""
             self._expanded = False
+            self._has_images = False
 
         def set_images(self, images: Optional[List[Any]]) -> None:
             from maya_agent.llm.base import ImageAttachment
@@ -444,7 +486,9 @@ def create_chat_panel(parent=None):
                 )
                 self._image_lay.insertWidget(self._image_lay.count() - 1, label)
                 shown += 1
-            self._image_host.setVisible(shown > 0)
+            self._has_images = shown > 0
+            # Viewport thumbnails stay visible in both collapsed and expanded states.
+            self._image_host.setVisible(self._has_images)
 
         def _running_stylesheet(self, pulse: bool) -> str:
             bg = "#403828" if pulse else "#3a3428"
@@ -460,6 +504,11 @@ def create_chat_panel(parent=None):
                     border: none;
                     color: #e0c888;
                     font-size: 12px;
+                }}
+                QFrame#toolRow QLabel#toolStatus {{
+                    color: #d0c8a8;
+                    font-size: 12px;
+                    font-weight: 400;
                 }}
                 QFrame#toolRow QLabel#toolDetail {{
                     color: #b0a080;
@@ -514,6 +563,11 @@ def create_chat_panel(parent=None):
                         font-size: 12px;
                         font-weight: 600;
                     }
+                    QFrame#toolRow QLabel#toolStatus {
+                        color: #d0d0d6;
+                        font-size: 12px;
+                        font-weight: 400;
+                    }
                     QFrame#toolRow QLabel#toolDetail {
                         color: #b8c8be;
                         font-size: 11px;
@@ -546,6 +600,11 @@ def create_chat_panel(parent=None):
                     color: #e09090;
                     font-size: 12px;
                     font-weight: 600;
+                }
+                QFrame#toolRow QLabel#toolStatus {
+                    color: #e0b0b0;
+                    font-size: 12px;
+                    font-weight: 400;
                 }
                 QFrame#toolRow QLabel#toolDetail {
                     color: #c8a0a0;
@@ -586,7 +645,10 @@ def create_chat_panel(parent=None):
                 return
             inner = max(80, int(self.width()) - 24)
             self.title.setMaximumWidth(inner)
+            self.status.setMaximumWidth(inner)
             self.detail.setMaximumWidth(inner)
+            if self._expanded and self.detail.isVisible():
+                self._fit_detail_height()
 
         def _progress_suffix(self) -> str:
             if self._progress_status:
@@ -602,12 +664,15 @@ def create_chat_panel(parent=None):
             self.title.setText(f"◐ 正在执行  {name}")
             self.bar.hide()
             self.bar.setValue(0)
+            self.status.hide()
+            self.status.clear()
             self.detail.setText("")
             self.detail.hide()
             self.expand_btn.hide()
-            self._preview_html = ""
             self._full_html = ""
             self._expanded = False
+            self._has_images = False
+            self._image_host.hide()
             if not self._anim_timer.isActive():
                 self._anim_timer.start()
 
@@ -647,21 +712,84 @@ def create_chat_panel(parent=None):
             self._progress_status = ""
             self.bar.hide()
             self.bar.setValue(0)
-            title, preview, full, ok, needs_expand = (
+            title, status, full, ok, needs_expand = (
                 chat_format.summarize_tool_result_views(name, result_json)
             )
             self.setStyleSheet(self._done_stylesheet(ok))
             self.title.setText(f"⚙ {title}")
-            self._preview_html = preview
-            self._full_html = full
+            if status:
+                self.status.setText(status)
+                self.status.show()
+            else:
+                self.status.clear()
+                self.status.hide()
+            self._full_html = full or ""
             self._expanded = False
-            self.detail.setText(preview)
-            self.detail.setVisible(bool(preview))
-            if needs_expand and full:
+            # Collapsed: header (title + status) + thumbnails; hide detail body.
+            self.detail.clear()
+            self.detail.hide()
+            self.detail.setFixedHeight(0)
+            self._image_host.setVisible(self._has_images)
+            if needs_expand and self._full_html:
                 self.expand_btn.setText("展开全部 ▾")
                 self.expand_btn.show()
             else:
                 self.expand_btn.hide()
+
+        def _estimate_html_height(self, width: int) -> int:
+            """QTextDocument height — more reliable than QLabel for rich tables."""
+            try:
+                doc = QtGui.QTextDocument()
+                doc.setDocumentMargin(0)
+                doc.setHtml(self.detail.text() or "")
+                doc.setTextWidth(max(80, int(width)))
+                return max(int(doc.size().height() + 0.999) + 4, 16)
+            except Exception:
+                return 0
+
+        def _fit_detail_height(self) -> None:
+            """Exact-fit expanded detail so long tool output is not clipped."""
+            if not self.detail.isVisible() or not (self.detail.text() or "").strip():
+                self.detail.setMinimumHeight(0)
+                self.detail.setMaximumHeight(0)
+                self.detail.setFixedHeight(0)
+                return
+            inner = max(80, int(self.width() or 0) - 24)
+            try:
+                mw = int(self.detail.maximumWidth() or 0)
+                if 80 <= mw < 16777215:
+                    inner = min(inner, mw)
+            except Exception:
+                pass
+            self.detail.setMinimumHeight(0)
+            self.detail.setMaximumHeight(16777215)
+            h = 0
+            try:
+                h = int(self.detail.heightForWidth(inner) or 0)
+            except Exception:
+                h = 0
+            doc_h = self._estimate_html_height(inner)
+            if doc_h > 0:
+                h = max(h, doc_h)
+            if h <= 0:
+                try:
+                    h = int(self.detail.sizeHint().height() or 0)
+                except Exception:
+                    h = 0
+            self.detail.setFixedHeight(max(16, h))
+
+        def _notify_chat_layout(self) -> None:
+            parent = self.parentWidget()
+            while parent is not None:
+                if hasattr(parent, "_relayout_container"):
+                    try:
+                        QtCore.QTimer.singleShot(0, parent._relayout_container)
+                    except Exception:
+                        pass
+                if hasattr(parent, "_scroll_to_bottom"):
+                    parent._scroll_to_bottom()
+                    break
+                parent = parent.parentWidget()
 
         def _toggle_expand(self):
             if not self._full_html:
@@ -669,17 +797,19 @@ def create_chat_panel(parent=None):
             self._expanded = not self._expanded
             if self._expanded:
                 self.detail.setText(self._full_html)
+                self.detail.show()
+                self._fit_detail_height()
                 self.expand_btn.setText("收起 ▴")
             else:
-                self.detail.setText(self._preview_html or self._full_html)
+                self.detail.clear()
+                self.detail.hide()
+                self.detail.setFixedHeight(0)
                 self.expand_btn.setText("展开全部 ▾")
+            # Thumbnails remain visible while collapsed.
+            self._image_host.setVisible(self._has_images)
             self.detail.updateGeometry()
-            parent = self.parentWidget()
-            while parent is not None:
-                if hasattr(parent, "_scroll_to_bottom"):
-                    parent._scroll_to_bottom()
-                    break
-                parent = parent.parentWidget()
+            self.updateGeometry()
+            self._notify_chat_layout()
 
     class ThinkingRow(QtWidgets.QFrame):
         """Collapsible block for model reasoning / thinking content."""
@@ -807,12 +937,43 @@ def create_chat_panel(parent=None):
                 return text
             return "…\n" + text[-self._STREAM_TAIL_CHARS :]
 
+        def _fit_detail_height(self) -> None:
+            """Pin detail to an exact height after streaming (kills leftover fixed gaps)."""
+            if not self.detail.isVisible() or not (self._text or "").strip():
+                self.detail.setMinimumHeight(0)
+                self.detail.setMaximumHeight(0)
+                self.detail.setFixedHeight(0)
+                return
+            inner = max(80, int(self.width() or 0) - 24)
+            try:
+                mw = int(self.detail.maximumWidth() or 0)
+                if 80 <= mw < 16777215:
+                    inner = min(inner, mw)
+            except Exception:
+                pass
+            self.detail.setMinimumHeight(0)
+            self.detail.setMaximumHeight(16777215)
+            h = 0
+            try:
+                h = int(self.detail.heightForWidth(inner) or 0)
+            except Exception:
+                h = 0
+            if h <= 0:
+                try:
+                    h = int(self.detail.sizeHint().height() or 0)
+                except Exception:
+                    h = 0
+            h = max(16, h)
+            self.detail.setFixedHeight(h)
+
         def _refresh_detail(self) -> None:
             text = self._text or ""
             if not text:
                 self.detail.hide()
                 self.expand_btn.hide()
                 self._detail_cache = None
+                self._stream_detail_h = 0
+                self._fit_detail_height()
                 return
             if not self._done:
                 shown = self._stream_display_text(text)
@@ -834,10 +995,8 @@ def create_chat_panel(parent=None):
                 self.expand_btn.hide()
                 return
 
-            # Unlock height after stream ends.
+            # Unlock stream cap, then exact-fit to final copy.
             self._stream_detail_h = 0
-            self.detail.setMinimumHeight(0)
-            self.detail.setMaximumHeight(16777215)
             long = len(text) > self._PREVIEW_CHARS
             if long and not self._expanded:
                 shown = text[: self._PREVIEW_CHARS].rstrip() + "…"
@@ -851,12 +1010,12 @@ def create_chat_panel(parent=None):
                 else:
                     self.expand_btn.hide()
             cache_key = ("done", self._expanded, shown)
-            if cache_key == self._detail_cache:
-                return
-            self._detail_cache = cache_key
-            self.detail.setTextFormat(QtCore.Qt.RichText)
-            self.detail.setText(self._escape_html(shown))
+            if cache_key != self._detail_cache:
+                self._detail_cache = cache_key
+                self.detail.setTextFormat(QtCore.Qt.RichText)
+                self.detail.setText(self._escape_html(shown))
             self.detail.show()
+            self._fit_detail_height()
 
         def append(self, piece: str) -> None:
             if not piece:
@@ -1169,18 +1328,31 @@ def create_chat_panel(parent=None):
         def _refit_all_bodies(self) -> None:
             """Exact-fit every text body (fixes clip + post-stream empty height)."""
             for w in self._iter_content_rows():
-                if isinstance(w, BodyView) and not getattr(w, "_streaming", False):
+                if isinstance(w, BodyView):
                     try:
+                        if getattr(w, "_streaming", False) or getattr(
+                            w, "_stream_cache", None
+                        ) is not None:
+                            w.finish_streaming()
                         w._layout_width = 0  # allow width re-measure
                         w._refit(streaming=False)
                     except Exception:
                         pass
+                elif isinstance(w, ThinkingRow) and getattr(w, "_done", False):
+                    try:
+                        w._fit_detail_height()
+                    except Exception:
+                        pass
             if (
                 self._body_view is not None
-                and not self._body_view._streaming
                 and self._body_view.isVisible()
             ):
                 try:
+                    if (
+                        self._body_view._streaming
+                        or self._body_view._stream_cache is not None
+                    ):
+                        self._body_view.finish_streaming()
                     self._body_view._layout_width = 0
                     self._body_view._refit(streaming=False)
                 except Exception:
@@ -1193,12 +1365,41 @@ def create_chat_panel(parent=None):
                 try:
                     if not getattr(row, "_done", True):
                         row.set_done()
+                    elif getattr(row, "_done", False):
+                        row._fit_detail_height()
                 except Exception:
                     pass
+            for w in self._iter_content_rows():
+                if isinstance(w, BodyView):
+                    try:
+                        w.finish_streaming()
+                    except Exception:
+                        pass
             self._constrain_inner_widths()
             self._refit_all_bodies()
             self.bubble.updateGeometry()
             self.updateGeometry()
+            # Second pass after Qt applies max-width / layout geometry.
+            QtCore.QTimer.singleShot(0, self._post_layout_refit)
+
+        def _post_layout_refit(self) -> None:
+            """Re-measure body height once bubble width is final — prevents footer overlap."""
+            try:
+                self._constrain_inner_widths()
+                self._refit_all_bodies()
+                self.bubble.updateGeometry()
+                self.updateGeometry()
+            except Exception:
+                return
+            parent = self.parentWidget()
+            while parent is not None:
+                if hasattr(parent, "_relayout_container"):
+                    try:
+                        parent._relayout_container()
+                    except Exception:
+                        pass
+                    break
+                parent = parent.parentWidget()
 
         def set_turn_meta(
             self,
@@ -1302,6 +1503,10 @@ def create_chat_panel(parent=None):
             self.finish_thinking()
             if not text:
                 if self._body_view is not None:
+                    try:
+                        self._body_view.finish_streaming()
+                    except Exception:
+                        pass
                     self._body_view.hide()
                 self._set_typing(False)
                 return
@@ -1310,6 +1515,7 @@ def create_chat_panel(parent=None):
             view.show()
             self._set_typing(False)
             QtCore.QTimer.singleShot(0, self._refit_all_bodies)
+            QtCore.QTimer.singleShot(0, self._post_layout_refit)
 
         def set_choices(
             self,
@@ -1407,9 +1613,7 @@ def create_chat_panel(parent=None):
             # Commit prior text body to exact height before starting a tool row.
             if self._body_view is not None:
                 try:
-                    self._body_view._streaming = False
-                    self._body_view._stream_cache = None
-                    self._body_view._stream_height = 0
+                    self._body_view.finish_streaming()
                     self._body_view._layout_width = 0
                     self._body_view._refit(streaming=False)
                 except Exception:
@@ -1696,6 +1900,47 @@ def create_chat_panel(parent=None):
             """Sync scroll widget size to viewport width + content height."""
             self._relayout_container()
 
+        def _measure_content_height(self) -> int:
+            """
+            Tight height from visible children sizeHints (after exact-fit).
+
+            Never shrink to a shorter laid-out geometry: if the container was
+            previously too short, last.height() is undersized and min(summed, geo)
+            would lock in clipped / overlapping bubble footers.
+            """
+            margins = self.v.contentsMargins()
+            top_m = int(margins.top())
+            bottom_m = int(margins.bottom())
+            spacing = int(self.v.spacing() or 0)
+            visible = [
+                w for w in self._widgets if w is not None and w.isVisible()
+            ]
+            if not visible:
+                return 1
+
+            summed = top_m + bottom_m
+            for i, w in enumerate(visible):
+                hint_h = int(w.sizeHint().height() or 0)
+                geo_h = int(w.height() or 0)
+                # Prefer the larger of hint vs geometry so a just-grown body is
+                # not measured with a stale short height.
+                h = max(hint_h, geo_h)
+                if h <= 0:
+                    h = max(int(w.minimumSizeHint().height() or 0), 1)
+                summed += h
+                if i:
+                    summed += spacing
+
+            last = visible[-1]
+            ly = int(last.y())
+            lh = max(int(last.height() or 0), int(last.sizeHint().height() or 0))
+            if lh > 0 and ly >= top_m:
+                geo_bottom = ly + lh + bottom_m
+                # Grow to cover laid-out bottom; never shrink below sizeHint sum.
+                if geo_bottom > summed:
+                    return max(1, geo_bottom)
+            return max(1, summed)
+
         def _relayout_container(self) -> None:
             """
             Width = viewport (no horizontal overflow).
@@ -1715,12 +1960,17 @@ def create_chat_panel(parent=None):
                         wdg._constrain_inner_widths()
                     except Exception:
                         pass
-            # Activate layout, then size height to the tight content hint.
+            # Tighten the newest bubble before measuring (stream leftovers).
+            if self._widgets:
+                tail = self._widgets[-1]
+                if isinstance(tail, MessageBlock):
+                    try:
+                        tail._refit_all_bodies()
+                    except Exception:
+                        pass
+            # Activate layout, then size height to the real content bottom.
             self.v.activate()
-            hint_h = int(self.v.sizeHint().height() or 0)
-            if hint_h <= 0:
-                hint_h = int(self.container.sizeHint().height() or 1)
-            hint_h = max(1, hint_h)
+            hint_h = self._measure_content_height()
             if self.container.height() != hint_h:
                 self.container.setFixedHeight(hint_h)
             else:
@@ -2040,6 +2290,7 @@ def create_chat_panel(parent=None):
         def finish_thinking(self):
             if self._current is not None:
                 self._current.finish_thinking()
+                QtCore.QTimer.singleShot(0, self._relayout_container)
 
         def append_assistant_text(self, piece: str):
             if not self._ensure_open_assistant():
@@ -2069,6 +2320,7 @@ def create_chat_panel(parent=None):
                 self._parts().append(
                     {"kind": "tool", "name": name, "status": "running"}
                 )
+            QtCore.QTimer.singleShot(0, self._relayout_container)
             self._scroll_to_bottom()
 
         def tool_progress(
@@ -2124,6 +2376,7 @@ def create_chat_panel(parent=None):
                         if stored:
                             p["images"] = stored
                         break
+            QtCore.QTimer.singleShot(0, self._relayout_container)
             self._scroll_to_bottom()
 
         def finish_assistant(

@@ -39,6 +39,10 @@ if not exist "%CD%\scripts\install_deps.py" (
   echo [错误] 未找到 scripts\install_deps.py
   goto :END_FAIL
 )
+if not exist "%CD%\scripts\maya_discover.py" (
+  echo [错误] 未找到 scripts\maya_discover.py
+  goto :END_FAIL
+)
 if not exist "%CD%\requirements.txt" (
   echo [错误] 未找到 requirements.txt
   goto :END_FAIL
@@ -60,25 +64,22 @@ if not defined PYEXE (
 
 echo [1/4] 使用解释器: %PYEXE%
 if "!FORCE_DEPS!"=="1" echo      模式: 强制重装依赖 (--force)
+if defined MAYA_AGENT_MAYAPY_ROOTS echo      MAYA_AGENT_MAYAPY_ROOTS=%MAYA_AGENT_MAYAPY_ROOTS%
 echo.
 
-REM ---- 收集要安装的 Maya 版本 ----
+REM ---- 收集要安装的 Maya 版本（统一由 maya_discover.py 探测）----
 set "VER_LIST="
 if /I not "%TARGET_VER%"=="all" (
   set "VER_LIST=%TARGET_VER%"
 ) else (
-  for %%V in (2020 2022 2023 2024 2025 2026) do (
-    set "HIT=0"
-    if exist "%USERPROFILE%\Documents\maya\%%V" set "HIT=1"
-    reg query "HKLM\SOFTWARE\Autodesk\Maya\%%V\Setup\InstallPath" >nul 2>&1 && set "HIT=1"
-    if exist "D:\LAS\LAD\Maya\Program\%%V\Maya%%V\bin\mayapy.exe" set "HIT=1"
-    if exist "C:\Program Files\Autodesk\Maya%%V\bin\mayapy.exe" set "HIT=1"
-    if !HIT! EQU 1 set "VER_LIST=!VER_LIST! %%V"
+  for /f "usebackq delims=" %%V in (`%PYEXE% "%CD%\scripts\maya_discover.py" --print-versions 2^>nul`) do (
+    set "VER_LIST=%%V"
   )
 )
 
 if "%VER_LIST%"=="" (
   echo [警告] 未自动检测到 Maya，将默认安装到 2025。
+  echo         可设置 MAYA_AGENT_MAYAPY_ROOTS 指向自定义安装根目录。
   set "VER_LIST=2025"
 )
 
@@ -132,6 +133,8 @@ echo     1. 顶部菜单是否有「Maya Agent」
 echo     2. 工具架是否有「MayaAgent」页签
 echo     3. 对话前确认 Script Editor 无 ModuleNotFoundError: httpx
 echo.
+echo   诊断: python scripts\doctor.py
+echo.
 echo   若依赖仍缺，任选其一:
 echo     A. install.bat force
 echo     B. python scripts\install_deps.py --force
@@ -142,6 +145,9 @@ echo     A. 把项目根目录的 install_dragdrop.mel 拖进 Maya 视口
 echo     B. 在 Script Editor ^(Python^) 执行:
 echo          import maya_agent
 echo          maya_agent.reload()
+echo.
+echo   自定义 mayapy 搜索根目录:
+echo     set MAYA_AGENT_MAYAPY_ROOTS=D:\path\to\Maya2025
 echo.
 echo   卸载请双击: uninstall.bat
 echo ============================================================

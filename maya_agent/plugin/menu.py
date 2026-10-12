@@ -369,10 +369,25 @@ def remove_shelf() -> None:
     print("[Maya Agent] shelf removed")
 
 
+_INSTALL_ATTEMPTS = 0
+_MAX_INSTALL_ATTEMPTS = 8
+_BOOTSTRAP_DONE = False
+_BOOTSTRAP_IN_FLIGHT = False
+
+
+def _reset_bootstrap_state() -> None:
+    """Allow a later bootstrap / reload to install UI again."""
+    global _INSTALL_ATTEMPTS, _BOOTSTRAP_DONE, _BOOTSTRAP_IN_FLIGHT
+    _INSTALL_ATTEMPTS = 0
+    _BOOTSTRAP_DONE = False
+    _BOOTSTRAP_IN_FLIGHT = False
+
+
 def uninstall_ui() -> None:
     """Remove menu + shelf from a live Maya session."""
     if not in_maya():
         return
+    _reset_bootstrap_state()
     for name in (MENU_NAME, "MayaAgentMainMenu", "MayaAgent"):
         _delete_menu_if_exists(name)
     remove_shelf()
@@ -406,9 +421,11 @@ def reload_plugin(*_args) -> None:
 
     import maya_agent.plugin.menu as menu_mod  # noqa: F401
 
-    menu_mod._INSTALL_ATTEMPTS = 0
+    menu_mod._reset_bootstrap_state()
     menu_mod.install_menu()
     menu_mod.install_shelf()
+    menu_mod._BOOTSTRAP_DONE = True
+    menu_mod._BOOTSTRAP_IN_FLIGHT = False
     menu_mod.open_ui()
     return True
 
@@ -425,13 +442,11 @@ def show_about(*_args) -> None:
     )
 
 
-_INSTALL_ATTEMPTS = 0
-_MAX_INSTALL_ATTEMPTS = 8
-
-
 def _deferred_install(force: bool = False) -> None:
     """Install menu/shelf; retry while Maya main window / menu sets warm up."""
-    global _INSTALL_ATTEMPTS
+    global _INSTALL_ATTEMPTS, _BOOTSTRAP_DONE, _BOOTSTRAP_IN_FLIGHT
+    if _BOOTSTRAP_DONE and not force:
+        return
     if not force:
         _INSTALL_ATTEMPTS += 1
     attempt = _INSTALL_ATTEMPTS
@@ -460,9 +475,12 @@ def _deferred_install(force: bool = False) -> None:
             install_scene_hooks()
         except Exception as e:
             log.warning("scene hooks failed: %s", e)
+        _BOOTSTRAP_DONE = True
+        _BOOTSTRAP_IN_FLIGHT = False
         return
 
     if attempt >= _MAX_INSTALL_ATTEMPTS:
+        _BOOTSTRAP_IN_FLIGHT = False
         print(
             "[Maya Agent] menu still missing after retries. "
             "In Script Editor run: import maya_agent; maya_agent.reload()"
@@ -481,10 +499,22 @@ def _schedule_retry() -> None:
 
 
 def bootstrap() -> None:
-    """Called from userSetup / plug-in — deferred because UI / menu sets are not ready yet."""
+    """Called from userSetup / plug-in — deferred because UI / menu sets are not ready yet.
+
+    Idempotent: plug-in + userSetup may both call this in one session; only the
+    first successful install runs (reload_plugin / uninstall_ui reset state).
+    """
     if not in_maya():
         return
-    global _INSTALL_ATTEMPTS
+    global _INSTALL_ATTEMPTS, _BOOTSTRAP_IN_FLIGHT
+    if _BOOTSTRAP_DONE:
+        print("[Maya Agent] bootstrap skipped (already done)")
+        return
+    if _BOOTSTRAP_IN_FLIGHT:
+        print("[Maya Agent] bootstrap skipped (already in flight)")
+        return
+
+    _BOOTSTRAP_IN_FLIGHT = True
     _INSTALL_ATTEMPTS = 0
 
     # CRITICAL: cmds.evalDeferred(string) runs MEL, not Python.
@@ -498,6 +528,7 @@ def bootstrap() -> None:
         try:
             _deferred_install(force=True)
         except Exception as e:
+            _BOOTSTRAP_IN_FLIGHT = False
             log.error("bootstrap failed: %s", e)
             print("[Maya Agent] bootstrap failed:", e)
             _print_bootstrap_hint(e)

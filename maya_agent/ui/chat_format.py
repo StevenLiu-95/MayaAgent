@@ -522,72 +522,64 @@ def summarize_tool_result_views(
     name: str, result_json: str
 ) -> Tuple[str, str, str, bool, bool]:
     """
-    Returns (title, preview_html, full_html, ok, needs_expand).
-    preview_html is a shortened view for the chat card.
+    Returns (title, status_text, full_html, ok, needs_expand).
+
+    - title / status_text: collapsed header (key info only)
+    - full_html: expandable detail body (payload / raw result)
+    - needs_expand: True when there is detail beyond the status line
     """
-    title, full, ok, plain_len = _summarize_tool_result_impl(
-        name, result_json, compact=False
-    )
-    _, preview, _, _preview_len = _summarize_tool_result_impl(
-        name, result_json, compact=True
-    )
-    needs = preview != full or plain_len > 360
-    return title, preview, full, ok, needs
-
-
-def _summarize_tool_result_impl(
-    name: str, result_json: str, *, compact: bool
-) -> Tuple[str, str, bool, int]:
-    """Returns (title, body_html, ok, plain_text_length)."""
     try:
         data = json.loads(result_json) if result_json else {}
     except json.JSONDecodeError:
-        raw = result_json or ""
-        preview = escape_wrap(raw[:300] + ("…" if len(raw) > 300 else ""))
-        body = f'<p style="margin:2px 0;color:#b0b0b8;font-size:11px;">{preview}</p>'
-        return f"工具 {escape(name)}", body, False, len(raw)
+        raw = (result_json or "").strip()
+        title = f"工具 {escape(name)}"
+        if not raw:
+            return title, "", "", False, False
+        body = (
+            f'<p style="margin:2px 0;color:#b0b0b8;font-size:11px;'
+            f'word-wrap:break-word;">{escape_wrap(raw)}</p>'
+        )
+        return title, "", body, False, True
 
     ok = bool(data.get("ok", True))
-    message = data.get("message") or ""
-    error = data.get("error") or ""
+    message = str(data.get("message") or "").strip()
+    error = str(data.get("error") or "").strip()
     payload = data.get("data")
 
     title = f"{'完成' if ok else '失败'} · {escape(name)}"
+    # Collapsed header shows one status line (prefer message, else error).
+    status = message or error
+
     parts: List[str] = []
-    if message:
+    # If both message and error exist, keep error in the expandable body.
+    if error and error != status:
         parts.append(
-            f'<p style="margin:0 0 4px 0;color:#d0d0d6;">{escape_wrap(message)}</p>'
-        )
-    if error:
-        parts.append(
-            f'<p style="margin:0 0 4px 0;color:#e07070;">{escape_wrap(str(error))}</p>'
+            f'<p style="margin:0 0 4px 0;color:#e07070;">{escape_wrap(error)}</p>'
         )
 
-    summary = _format_payload(name, payload, compact=compact)
+    summary = _format_payload(name, payload, compact=False)
     if summary:
         parts.append(summary)
     elif payload is not None:
         dump = json.dumps(payload, ensure_ascii=False, indent=2)
-        limit = 280 if compact else 4000
-        clipped = dump[:limit] + ("…" if len(dump) > limit else "")
-        compact_html = escape_wrap(clipped)
+        compact_html = escape_wrap(dump)
         parts.append(
             f'<p style="margin:4px 0 0 0;color:#a8a8b0;font-size:11px;'
             f'font-family:Consolas,monospace;word-wrap:break-word;">'
             f"{compact_html.replace(chr(10), '<br/>')}</p>"
         )
 
-    body = "".join(parts) or "<i>无返回数据</i>"
-    plain = re.sub(r"<[^>]+>", " ", body)
-    plain = html.unescape(re.sub(r"\s+", " ", plain)).strip()
-    return title, body, ok, len(plain)
+    body = "".join(parts)
+    needs_expand = bool(body.strip())
+    return title, status, body, ok, needs_expand
 
 
 def _format_payload(name: str, payload: Any, *, compact: bool = True) -> str:
     if payload is None:
         return ""
 
-    clip = 160 if compact else 8000
+    # compact: short preview (legacy); full expand uses clip=0 (no truncation).
+    clip = 160 if compact else 0
 
     if name == "get_scene_info" and isinstance(payload, dict):
         counts = payload.get("counts") or {}
