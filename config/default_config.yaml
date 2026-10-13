@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.4.3"
+  version: "1.5.0"
   language: zh-CN
   theme: dark
 
@@ -206,7 +206,7 @@ web:
   max_search_results: 8
   max_images: 4
   max_download_bytes: 5000000
-  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MayaAgent/1.4"
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 MayaAgent/1.5"
 
 # Meshy AI（文生/图生 3D、Remesh、绑骨等）— https://docs.meshy.ai
 meshy:
@@ -227,3 +227,14 @@ ui:
   ui_scale: 100  # 界面整体缩放百分比（100 = 默认大小）
   composer_height: 120  # 对话输入区高度（可拖动调整）
   temp_dir: ""  # 临时文件根目录；留空 = MayaAgent 同级 /MayaAgentTempFile
+
+# MCP 本地服务（Cursor / VS Code / Claude Desktop）
+bridge:
+  enabled: true
+  auto_start: false
+  host: "127.0.0.1"
+  port: 8765
+  port_auto: true
+  confirm_mode: maya_dialog  # maya_dialog | allow
+  share_panel_agent: true
+  agent_timeout: 0  # 0 = 按 llm.timeout * rounds 估算

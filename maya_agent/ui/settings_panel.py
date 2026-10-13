@@ -329,51 +329,6 @@ def create_settings_panel(
             meshy_lay.addLayout(meshy_actions)
             root.addWidget(meshy)
 
-            adv, adv_lay = self._section(
-                t("settings.section.adv"),
-                t("settings.section.adv_hint"),
-            )
-            aform = self._form(adv_lay)
-            self.adv_path_edit = QtWidgets.QLineEdit()
-            self.adv_path_edit.setMinimumHeight(30)
-            self.adv_path_edit.setPlaceholderText(t("settings.adv_path_ph"))
-            self.adv_path_edit.setToolTip(t("settings.adv_path_tip"))
-            self.adv_path_browse = QtWidgets.QPushButton(t("settings.adv_path_browse"))
-            self.adv_path_browse.setObjectName("secondaryBtn")
-            self.adv_path_browse.setCursor(QtCore.Qt.PointingHandCursor)
-            self.adv_path_browse.setMinimumHeight(30)
-            self.adv_path_browse.setMinimumWidth(72)
-            self.adv_path_browse.clicked.connect(self._browse_adv_path)
-            adv_row = QtWidgets.QWidget()
-            adv_row_lay = QtWidgets.QHBoxLayout(adv_row)
-            adv_row_lay.setContentsMargins(0, 0, 0, 0)
-            adv_row_lay.setSpacing(8)
-            adv_row_lay.addWidget(self.adv_path_edit, 1)
-            adv_row_lay.addWidget(self.adv_path_browse, 0)
-            aform.addRow(self._field_label(t("settings.adv_path")), adv_row)
-            adv_actions = QtWidgets.QHBoxLayout()
-            adv_actions.setContentsMargins(0, 4, 0, 0)
-            adv_actions.setSpacing(10)
-            self.adv_status = QtWidgets.QLabel("")
-            self.adv_status.setObjectName("testConnStatus")
-            self.adv_status.setWordWrap(True)
-            self.adv_status.setAlignment(
-                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
-            )
-            self.adv_status.setSizePolicy(
-                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
-            )
-            adv_actions.addWidget(self.adv_status, 1)
-            self.adv_detect_btn = QtWidgets.QPushButton(t("settings.adv_detect"))
-            self.adv_detect_btn.setObjectName("secondaryBtn")
-            self.adv_detect_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self.adv_detect_btn.setMinimumWidth(96)
-            self.adv_detect_btn.setMinimumHeight(30)
-            self.adv_detect_btn.clicked.connect(self._detect_adv)
-            adv_actions.addWidget(self.adv_detect_btn, 0)
-            adv_lay.addLayout(adv_actions)
-            root.addWidget(adv)
-
             self._stretch_end(root)
             self.tabs.addTab(scroll, t("settings.tab.meshy"))
 
@@ -389,7 +344,6 @@ def create_settings_panel(
                 self.base_url_edit.text().strip(),
                 bool(self.meshy_enabled.isChecked()),
                 self.meshy_api_key_edit.text(),
-                self.adv_path_edit.text().strip(),
                 round(float(self.temp_spin.value()), 4),
                 int(self.max_tokens_spin.value()),
                 bool(self.auto_undo.isChecked()),
@@ -453,8 +407,6 @@ def create_settings_panel(
                 sig.connect(self._clear_test_status)
             self.meshy_api_key_edit.textChanged.connect(self._clear_meshy_test_status)
             self.meshy_enabled.toggled.connect(self._clear_meshy_test_status)
-            self.adv_path_edit.textChanged.connect(self._schedule_autosave)
-            self.adv_path_edit.textChanged.connect(self._clear_adv_status)
 
         def _clear_test_status(self, *_args) -> None:
             self._set_test_status("", "")
@@ -502,9 +454,6 @@ def create_settings_panel(
                 self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 30)))
                 self.meshy_enabled.setChecked(bool(self.cfg.get("meshy.enabled", True)))
                 self.meshy_api_key_edit.setText(self.cfg.get_api_key("meshy"))
-                self.adv_path_edit.setText(
-                    str(self.cfg.get("maya.advanced_skeleton_path") or "").strip()
-                )
             finally:
                 self._suppress_dirty = False
             self._mark_clean()
@@ -547,10 +496,6 @@ def create_settings_panel(
             self.cfg.set("agent.show_thinking", self.show_thinking.isChecked())
             self.cfg.set("agent.show_tool_calls", self.show_tools.isChecked())
             self.cfg.set("maya.max_tool_rounds", self.max_rounds.value())
-            self.cfg.set(
-                "maya.advanced_skeleton_path",
-                self.adv_path_edit.text().strip().replace("\\", "/"),
-            )
             self.cfg.save_user()
             self._mark_clean()
             if self._on_saved:
@@ -617,63 +562,6 @@ def create_settings_panel(
                 f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
                 f"background: transparent; border: none; padding: 0; }}"
             )
-
-        def _set_adv_status(self, text: str, kind: str = "") -> None:
-            label = getattr(self, "adv_status", None)
-            if label is None:
-                return
-            label.setText(text or "")
-            colors = {
-                "ok": "#5dca8a",
-                "fail": "#e07070",
-                "info": "#8a8a93",
-            }
-            color = colors.get(kind, "#8a8a93")
-            label.setStyleSheet(
-                f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
-                f"background: transparent; border: none; padding: 0; }}"
-            )
-
-        def _clear_adv_status(self, *_args) -> None:
-            self._set_adv_status("", "")
-
-        def _browse_adv_path(self) -> None:
-            start = self.adv_path_edit.text().strip() or ""
-            chosen = QtWidgets.QFileDialog.getExistingDirectory(
-                self,
-                t("settings.adv_path_pick"),
-                start,
-            )
-            if chosen:
-                self.adv_path_edit.setText(chosen.replace("\\", "/"))
-
-        def _detect_adv(self) -> None:
-            path = self.adv_path_edit.text().strip().replace("\\", "/")
-            self.cfg.set("maya.advanced_skeleton_path", path)
-            self._set_adv_status(t("settings.adv_detect_running"), "info")
-            btn = getattr(self, "adv_detect_btn", None)
-            if btn is not None:
-                btn.setEnabled(False)
-            try:
-                QtWidgets.QApplication.processEvents()
-                from maya_agent.tools.adv_rig import _find_adv_root, adv_tools_available
-
-                root = _find_adv_root()
-                if adv_tools_available() and root:
-                    self._set_adv_status(t("settings.adv_detect_ok").format(path=root), "ok")
-                    # Sync field if auto-discovered and user left blank
-                    if not path:
-                        self.adv_path_edit.setText(root.replace("\\", "/"))
-                else:
-                    self._set_adv_status(t("settings.adv_detect_fail"), "fail")
-            except Exception as e:
-                err = " ".join(str(e).split())
-                if len(err) > 72:
-                    err = err[:72] + "…"
-                self._set_adv_status(f"{t('settings.adv_detect_fail')} · {err}", "fail")
-            finally:
-                if btn is not None:
-                    btn.setEnabled(True)
 
         def _test_connection(self) -> None:
             pid = self.provider_combo.currentData()
@@ -812,7 +700,7 @@ def create_ui_panel(
     *,
     on_saved: Optional[Callable[..., None]] = None,
 ):
-    """Top-level settings panel (language / font / UI scale / temp dir)."""
+    """Top-level settings panel (language / font / UI scale / temp dir / ADV)."""
     init_from_config()
     QtCore, QtGui, QtWidgets, _ = import_qt()
 
@@ -942,6 +830,110 @@ def create_ui_panel(
             temp_row_lay.addWidget(self.temp_dir_browse, 0)
             tform.addRow(self._field_label(t("settings.temp_dir")), temp_row)
             root.addWidget(temp)
+
+            adv, adv_lay = self._section(
+                t("settings.section.adv"),
+                t("settings.section.adv_hint"),
+            )
+            aform = self._form(adv_lay)
+            self.adv_path_edit = QtWidgets.QLineEdit()
+            self.adv_path_edit.setMinimumHeight(30)
+            self.adv_path_edit.setPlaceholderText(t("settings.adv_path_ph"))
+            self.adv_path_edit.setToolTip(t("settings.adv_path_tip"))
+            self.adv_path_browse = QtWidgets.QPushButton(t("settings.adv_path_browse"))
+            self.adv_path_browse.setObjectName("secondaryBtn")
+            self.adv_path_browse.setCursor(QtCore.Qt.PointingHandCursor)
+            self.adv_path_browse.setMinimumHeight(30)
+            self.adv_path_browse.setMinimumWidth(72)
+            self.adv_path_browse.clicked.connect(self._browse_adv_path)
+            adv_row = QtWidgets.QWidget()
+            adv_row_lay = QtWidgets.QHBoxLayout(adv_row)
+            adv_row_lay.setContentsMargins(0, 0, 0, 0)
+            adv_row_lay.setSpacing(8)
+            adv_row_lay.addWidget(self.adv_path_edit, 1)
+            adv_row_lay.addWidget(self.adv_path_browse, 0)
+            aform.addRow(self._field_label(t("settings.adv_path")), adv_row)
+            adv_actions = QtWidgets.QHBoxLayout()
+            adv_actions.setContentsMargins(0, 4, 0, 0)
+            adv_actions.setSpacing(10)
+            self.adv_status = QtWidgets.QLabel("")
+            self.adv_status.setObjectName("testConnStatus")
+            self.adv_status.setWordWrap(True)
+            self.adv_status.setAlignment(
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+            )
+            self.adv_status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            adv_actions.addWidget(self.adv_status, 1)
+            self.adv_detect_btn = QtWidgets.QPushButton(t("settings.adv_detect"))
+            self.adv_detect_btn.setObjectName("secondaryBtn")
+            self.adv_detect_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.adv_detect_btn.setMinimumWidth(96)
+            self.adv_detect_btn.setMinimumHeight(30)
+            self.adv_detect_btn.clicked.connect(self._detect_adv)
+            adv_actions.addWidget(self.adv_detect_btn, 0)
+            adv_lay.addLayout(adv_actions)
+            root.addWidget(adv)
+
+            bridge, bridge_lay = self._section(
+                t("settings.section.bridge"),
+                t("settings.section.bridge_hint"),
+            )
+            self.bridge_enabled = QtWidgets.QCheckBox(t("settings.bridge_enabled"))
+            self.bridge_auto_start = QtWidgets.QCheckBox(t("settings.bridge_auto_start"))
+            bridge_lay.addWidget(self.bridge_enabled)
+            bridge_lay.addWidget(self.bridge_auto_start)
+            bform = self._form(bridge_lay)
+            self.bridge_port = create_toolbar_spin()
+            self.bridge_port.setRange(1024, 65535)
+            self.bridge_port.setFixedHeight(30)
+            self.bridge_port.setFixedWidth(110)
+            self.bridge_port_auto = QtWidgets.QCheckBox(t("settings.bridge_port_auto"))
+            self.bridge_confirm = create_toolbar_combo()
+            self.bridge_confirm.setMinimumHeight(30)
+            self.bridge_confirm.addItem(t("settings.bridge_confirm_dialog"), "maya_dialog")
+            self.bridge_confirm.addItem(t("settings.bridge_confirm_allow"), "allow")
+            self.bridge_share = QtWidgets.QCheckBox(t("settings.bridge_share_agent"))
+            bform.addRow(self._field_label(t("settings.bridge_port")), self.bridge_port)
+            bridge_lay.addWidget(self.bridge_port_auto)
+            bform.addRow(
+                self._field_label(t("settings.bridge_confirm")), self.bridge_confirm
+            )
+            bridge_lay.addWidget(self.bridge_share)
+            bridge_actions = QtWidgets.QHBoxLayout()
+            bridge_actions.setContentsMargins(0, 4, 0, 0)
+            bridge_actions.setSpacing(8)
+            self.bridge_status = QtWidgets.QLabel("")
+            self.bridge_status.setObjectName("testConnStatus")
+            self.bridge_status.setWordWrap(True)
+            self.bridge_status.setAlignment(
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter
+            )
+            self.bridge_status.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            )
+            bridge_actions.addWidget(self.bridge_status, 1)
+            self.bridge_start_btn = QtWidgets.QPushButton(t("settings.bridge_start"))
+            self.bridge_start_btn.setObjectName("secondaryBtn")
+            self.bridge_start_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.bridge_start_btn.setMinimumHeight(30)
+            self.bridge_start_btn.clicked.connect(self._bridge_start)
+            self.bridge_stop_btn = QtWidgets.QPushButton(t("settings.bridge_stop"))
+            self.bridge_stop_btn.setObjectName("secondaryBtn")
+            self.bridge_stop_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.bridge_stop_btn.setMinimumHeight(30)
+            self.bridge_stop_btn.clicked.connect(self._bridge_stop)
+            self.bridge_copy_btn = QtWidgets.QPushButton(t("settings.bridge_copy_mcp"))
+            self.bridge_copy_btn.setObjectName("secondaryBtn")
+            self.bridge_copy_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self.bridge_copy_btn.setMinimumHeight(30)
+            self.bridge_copy_btn.clicked.connect(self._bridge_copy_mcp)
+            bridge_actions.addWidget(self.bridge_start_btn, 0)
+            bridge_actions.addWidget(self.bridge_stop_btn, 0)
+            bridge_actions.addWidget(self.bridge_copy_btn, 0)
+            bridge_lay.addLayout(bridge_actions)
+            root.addWidget(bridge)
             root.addStretch(1)
 
             outer.addWidget(scroll, 1)
@@ -978,7 +970,95 @@ def create_ui_panel(
                 self.font_family.text().strip(),
                 int(self.ui_scale.value()),
                 self.temp_dir_edit.text().strip(),
+                self.adv_path_edit.text().strip(),
+                bool(self.bridge_enabled.isChecked()),
+                bool(self.bridge_auto_start.isChecked()),
+                int(self.bridge_port.value()),
+                bool(self.bridge_port_auto.isChecked()),
+                str(self.bridge_confirm.currentData() or "maya_dialog"),
+                bool(self.bridge_share.isChecked()),
             )
+
+        def _set_bridge_status(self, text: str, kind: str = "") -> None:
+            """Inline bridge status. kind: ok | fail | info | ''."""
+            label = getattr(self, "bridge_status", None)
+            if label is None:
+                return
+            label.setText(text or "")
+            colors = {
+                "ok": "#5dca8a",
+                "fail": "#e07070",
+                "info": "#8a8a93",
+            }
+            color = colors.get(kind, "#8a8a93")
+            label.setStyleSheet(
+                f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+                f"background: transparent; border: none; padding: 0; }}"
+            )
+
+        def _refresh_bridge_status(self) -> None:
+            try:
+                from maya_agent.bridge import status as bridge_status
+
+                st = bridge_status()
+                if st.get("running"):
+                    self._set_bridge_status(
+                        t("settings.bridge_status_on", url=st.get("base_url") or ""),
+                        "ok",
+                    )
+                else:
+                    self._set_bridge_status(t("settings.bridge_status_off"), "fail")
+            except Exception:
+                self._set_bridge_status("", "")
+
+        def _bridge_start(self) -> None:
+            self._save()
+            try:
+                from maya_agent.bridge import start
+
+                result = start()
+                if result.get("ok"):
+                    self._set_bridge_status(
+                        t(
+                            "settings.bridge_status_on",
+                            url=result.get("base_url") or "",
+                        ),
+                        "ok",
+                    )
+                else:
+                    self._set_bridge_status(
+                        t(
+                            "bridge.start_failed",
+                            error=result.get("error") or "unknown",
+                        ),
+                        "fail",
+                    )
+            except Exception as e:
+                self._set_bridge_status(str(e), "fail")
+
+        def _bridge_stop(self) -> None:
+            try:
+                from maya_agent.bridge import stop
+
+                stop()
+                self._set_bridge_status(t("settings.bridge_status_off"), "fail")
+            except Exception as e:
+                self._set_bridge_status(str(e), "fail")
+
+        def _bridge_copy_mcp(self) -> None:
+            try:
+                from maya_agent.bridge import copy_mcp_config
+
+                result = copy_mcp_config()
+                text = result.get("text") or ""
+                clip = QtWidgets.QApplication.clipboard()
+                if clip is not None and text:
+                    clip.setText(text)
+                    self._set_bridge_status(t("settings.bridge_mcp_copied"), "info")
+                else:
+                    self._set_bridge_status(t("bridge.mcp_copy_failed"), "fail")
+            except Exception as e:
+                self._set_bridge_status(str(e), "fail")
 
         def _browse_temp_dir(self) -> None:
             start = self.temp_dir_edit.text().strip() or str(default_agent_temp_root())
@@ -989,6 +1069,66 @@ def create_ui_panel(
             )
             if chosen:
                 self.temp_dir_edit.setText(chosen.replace("\\", "/"))
+
+        def _set_adv_status(self, text: str, kind: str = "") -> None:
+            label = getattr(self, "adv_status", None)
+            if label is None:
+                return
+            label.setText(text or "")
+            colors = {
+                "ok": "#5dca8a",
+                "fail": "#e07070",
+                "info": "#8a8a93",
+            }
+            color = colors.get(kind, "#8a8a93")
+            label.setStyleSheet(
+                f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+                f"background: transparent; border: none; padding: 0; }}"
+            )
+
+        def _clear_adv_status(self, *_args) -> None:
+            self._set_adv_status("", "")
+
+        def _browse_adv_path(self) -> None:
+            start = self.adv_path_edit.text().strip() or ""
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                t("settings.adv_path_pick"),
+                start,
+            )
+            if chosen:
+                self.adv_path_edit.setText(chosen.replace("\\", "/"))
+
+        def _detect_adv(self) -> None:
+            path = self.adv_path_edit.text().strip().replace("\\", "/")
+            self.cfg.set("maya.advanced_skeleton_path", path)
+            self._set_adv_status(t("settings.adv_detect_running"), "info")
+            btn = getattr(self, "adv_detect_btn", None)
+            if btn is not None:
+                btn.setEnabled(False)
+            try:
+                QtWidgets.QApplication.processEvents()
+                from maya_agent.tools.adv_rig import _find_adv_root, adv_tools_available
+
+                root = _find_adv_root()
+                if adv_tools_available() and root:
+                    self._set_adv_status(
+                        t("settings.adv_detect_ok").format(path=root), "ok"
+                    )
+                    if not path:
+                        self.adv_path_edit.setText(root.replace("\\", "/"))
+                else:
+                    self._set_adv_status(t("settings.adv_detect_fail"), "fail")
+            except Exception as e:
+                err = " ".join(str(e).split())
+                if len(err) > 72:
+                    err = err[:72] + "…"
+                self._set_adv_status(
+                    f"{t('settings.adv_detect_fail')} · {err}", "fail"
+                )
+            finally:
+                if btn is not None:
+                    btn.setEnabled(True)
 
         def _mark_clean(self) -> None:
             self._baseline = self._snapshot()
@@ -1016,6 +1156,14 @@ def create_ui_panel(
             self.font_family.textChanged.connect(self._schedule_autosave)
             self.ui_scale.valueChanged.connect(self._schedule_autosave)
             self.temp_dir_edit.textChanged.connect(self._schedule_autosave)
+            self.adv_path_edit.textChanged.connect(self._schedule_autosave)
+            self.adv_path_edit.textChanged.connect(self._clear_adv_status)
+            self.bridge_enabled.toggled.connect(self._schedule_autosave)
+            self.bridge_auto_start.toggled.connect(self._schedule_autosave)
+            self.bridge_port.valueChanged.connect(self._schedule_autosave)
+            self.bridge_port_auto.toggled.connect(self._schedule_autosave)
+            self.bridge_confirm.currentIndexChanged.connect(self._schedule_autosave)
+            self.bridge_share.toggled.connect(self._schedule_autosave)
 
         def _load(self) -> None:
             self._suppress_dirty = True
@@ -1035,6 +1183,29 @@ def create_ui_panel(
                 self.temp_dir_edit.setPlaceholderText(
                     str(default_agent_temp_root()).replace("\\", "/")
                 )
+                self.adv_path_edit.setText(
+                    str(self.cfg.get("maya.advanced_skeleton_path") or "").strip()
+                )
+                self.bridge_enabled.setChecked(
+                    bool(self.cfg.get("bridge.enabled", True))
+                )
+                self.bridge_auto_start.setChecked(
+                    bool(self.cfg.get("bridge.auto_start", False))
+                )
+                try:
+                    self.bridge_port.setValue(int(self.cfg.get("bridge.port", 8765) or 8765))
+                except (TypeError, ValueError):
+                    self.bridge_port.setValue(8765)
+                self.bridge_port_auto.setChecked(
+                    bool(self.cfg.get("bridge.port_auto", True))
+                )
+                mode = str(self.cfg.get("bridge.confirm_mode", "maya_dialog") or "maya_dialog")
+                cidx = self.bridge_confirm.findData(mode)
+                self.bridge_confirm.setCurrentIndex(cidx if cidx >= 0 else 0)
+                self.bridge_share.setChecked(
+                    bool(self.cfg.get("bridge.share_panel_agent", True))
+                )
+                self._refresh_bridge_status()
             finally:
                 self._suppress_dirty = False
             self._mark_clean()
@@ -1053,6 +1224,19 @@ def create_ui_panel(
                 "ui.temp_dir",
                 self.temp_dir_edit.text().strip().replace("\\", "/"),
             )
+            self.cfg.set(
+                "maya.advanced_skeleton_path",
+                self.adv_path_edit.text().strip().replace("\\", "/"),
+            )
+            self.cfg.set("bridge.enabled", self.bridge_enabled.isChecked())
+            self.cfg.set("bridge.auto_start", self.bridge_auto_start.isChecked())
+            self.cfg.set("bridge.port", int(self.bridge_port.value()))
+            self.cfg.set("bridge.port_auto", self.bridge_port_auto.isChecked())
+            self.cfg.set(
+                "bridge.confirm_mode",
+                str(self.bridge_confirm.currentData() or "maya_dialog"),
+            )
+            self.cfg.set("bridge.share_panel_agent", self.bridge_share.isChecked())
             ui_data = self.cfg._data.get("ui")
             if isinstance(ui_data, dict):
                 ui_data.pop("font_size", None)
@@ -1083,6 +1267,22 @@ def create_ui_panel(
             self.cfg.set("ui.font_family", defaults["font_family"])
             self.cfg.set("ui.ui_scale", defaults["ui_scale"])
             self.cfg.set("ui.temp_dir", defaults["temp_dir"])
+            self.cfg.set(
+                "maya.advanced_skeleton_path",
+                defaults.get("advanced_skeleton_path", ""),
+            )
+            self.cfg.set("bridge.enabled", defaults.get("bridge_enabled", True))
+            self.cfg.set("bridge.auto_start", defaults.get("bridge_auto_start", False))
+            self.cfg.set("bridge.port", defaults.get("bridge_port", 8765))
+            self.cfg.set("bridge.port_auto", defaults.get("bridge_port_auto", True))
+            self.cfg.set(
+                "bridge.confirm_mode",
+                defaults.get("bridge_confirm_mode", "maya_dialog"),
+            )
+            self.cfg.set(
+                "bridge.share_panel_agent",
+                defaults.get("bridge_share_agent", True),
+            )
             ui_data = self.cfg._data.get("ui")
             if isinstance(ui_data, dict):
                 ui_data.pop("font_size", None)
@@ -1117,11 +1317,32 @@ class ConfigDefaults:
             scale = max(75, min(175, int(ui.get("ui_scale", 100))))
         except (TypeError, ValueError):
             scale = 100
+        bridge = data.get("bridge") if isinstance(data, dict) else {}
+        if not isinstance(bridge, dict):
+            bridge = {}
+        maya = data.get("maya") if isinstance(data, dict) else {}
+        if not isinstance(maya, dict):
+            maya = {}
+        try:
+            bridge_port = int(bridge.get("port", 8765) or 8765)
+        except (TypeError, ValueError):
+            bridge_port = 8765
         return {
             "language": str(app.get("language") or "zh-CN"),
             "font_family": str(ui.get("font_family") or "Microsoft YaHei UI"),
             "ui_scale": scale,
             "temp_dir": str(ui.get("temp_dir") or ""),
+            "advanced_skeleton_path": str(
+                maya.get("advanced_skeleton_path") or ""
+            ),
+            "bridge_enabled": bool(bridge.get("enabled", True)),
+            "bridge_auto_start": bool(bridge.get("auto_start", False)),
+            "bridge_port": bridge_port,
+            "bridge_port_auto": bool(bridge.get("port_auto", True)),
+            "bridge_confirm_mode": str(
+                bridge.get("confirm_mode") or "maya_dialog"
+            ),
+            "bridge_share_agent": bool(bridge.get("share_panel_agent", True)),
         }
 
 
@@ -1384,7 +1605,7 @@ def create_help_panel(parent=None):
             "已安装 ADV 时自动启用：adv_rig_status、adv_auto_rig（一键）、"
             "adv_next_step（分步）、adv_import_fit_skeleton、adv_set_skin_meshes、"
             "adv_auto_place_fit、adv_build_rig、adv_bind_skin、adv_create_controller。"
-            "路径在「模型 → Meshy」页的 AdvancedSkeleton 栏配置",
+            "路径在「设置」页的 AdvancedSkeleton 栏配置",
         ),
         (
             "动画 animation",

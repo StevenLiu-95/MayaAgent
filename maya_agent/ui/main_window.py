@@ -184,12 +184,23 @@ def _create_worker(QtCore, agent: MayaAgent, text: str, stream: bool, images=Non
             self.signals = _WorkerSignals.create(QtCore)
 
         def run(self):
+            from maya_agent.bridge.agent_remote import agent_lock
+
+            lock = agent_lock()
+            # Panel must serialize with MCP chat / tool calls
+            if not lock.acquire(timeout=5.0):
+                self.signals.failed.emit(
+                    "Agent busy: MCP chat is in progress. Stop it or wait."
+                )
+                return
             try:
                 for event in agent.chat(text, stream=stream, images=images):
                     self.signals.event.emit(event)
                 self.signals.finished.emit()
             except Exception:
                 self.signals.failed.emit(traceback.format_exc())
+            finally:
+                lock.release()
 
     return Worker()
 
@@ -214,6 +225,12 @@ class MayaAgentWindow:
                 self.setMinimumHeight(520)
 
                 self.agent = MayaAgent(confirm_callback=self._confirm_destructive)
+                try:
+                    from maya_agent.bridge import register_panel_agent
+
+                    register_panel_agent(self.agent)
+                except Exception:
+                    pass
                 self.sessions = SessionManager()
                 self._session_switching = False
                 self._worker = None
@@ -1116,6 +1133,7 @@ class MayaAgentWindow:
             def _on_stop(self):
                 self._stopped_by_user = True
                 self._stream_timer.stop()
+                killed = False
                 if self._worker and self._worker.isRunning():
                     try:
                         self._worker.signals.event.disconnect(self._on_event)
@@ -1123,6 +1141,14 @@ class MayaAgentWindow:
                         pass
                     self._worker.terminate()
                     self._worker.wait(1000)
+                    killed = True
+                if killed:
+                    try:
+                        from maya_agent.bridge.agent_remote import force_reset_agent_lock
+
+                        force_reset_agent_lock()
+                    except Exception:
+                        pass
                 try:
                     self.agent.undo.cancel_open()
                 except Exception:
@@ -1378,6 +1404,12 @@ class MayaAgentWindow:
                 global _WINDOW_INSTANCE
                 try:
                     self.persist_sessions()
+                except Exception:
+                    pass
+                try:
+                    from maya_agent.bridge import unregister_panel_agent
+
+                    unregister_panel_agent(self.agent)
                 except Exception:
                     pass
                 _WINDOW_INSTANCE = None

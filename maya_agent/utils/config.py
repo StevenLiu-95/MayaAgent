@@ -137,6 +137,9 @@ class Config:
                 "auto_undo": self.get("maya.auto_undo", True),
                 "confirm_destructive": self.get("maya.confirm_destructive", True),
                 "max_tool_rounds": self.get("maya.max_tool_rounds", 30),
+                "advanced_skeleton_path": self.get(
+                    "maya.advanced_skeleton_path", ""
+                ),
             },
             "meshy": {
                 "enabled": self.get("meshy.enabled", True),
@@ -146,6 +149,16 @@ class Config:
                 "wait_timeout": self.get("meshy.wait_timeout", 600),
                 "download_dir": self.get("meshy.download_dir", ""),
                 "default_formats": self.get("meshy.default_formats", ["fbx", "glb"]),
+            },
+            "bridge": {
+                "enabled": self.get("bridge.enabled", True),
+                "auto_start": self.get("bridge.auto_start", False),
+                "host": self.get("bridge.host", "127.0.0.1"),
+                "port": int(self.get("bridge.port", 8765) or 8765),
+                "port_auto": self.get("bridge.port_auto", True),
+                "confirm_mode": self.get("bridge.confirm_mode", "maya_dialog"),
+                "share_panel_agent": self.get("bridge.share_panel_agent", True),
+                "agent_timeout": self.get("bridge.agent_timeout", 0),
             },
             "providers": {},
         }

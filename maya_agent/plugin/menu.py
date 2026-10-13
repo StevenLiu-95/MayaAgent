@@ -187,6 +187,25 @@ def install_menu() -> None:
     )
     cmds.menuItem(divider=True, parent=menu_parent)
     cmds.menuItem(
+        label=t("menu.bridge_start"),
+        parent=menu_parent,
+        command=_menu_item_cmd("bridge_start"),
+        sourceType="python",
+    )
+    cmds.menuItem(
+        label=t("menu.bridge_stop"),
+        parent=menu_parent,
+        command=_menu_item_cmd("bridge_stop"),
+        sourceType="python",
+    )
+    cmds.menuItem(
+        label=t("menu.bridge_copy_mcp"),
+        parent=menu_parent,
+        command=_menu_item_cmd("bridge_copy_mcp"),
+        sourceType="python",
+    )
+    cmds.menuItem(divider=True, parent=menu_parent)
+    cmds.menuItem(
         label=t("menu.about"),
         parent=menu_parent,
         command=_menu_item_cmd("show_about"),
@@ -320,6 +339,75 @@ def open_ui(*_args) -> None:
     show_main_window()
 
 
+def bridge_start(*_args) -> None:
+    init_from_config()
+    from maya_agent.bridge import start
+
+    result = start()
+    import maya.cmds as cmds
+
+    if result.get("ok"):
+        url = result.get("base_url") or ""
+        port = result.get("port") or ""
+        msg = t("bridge.started", url=url, port=port)
+        if result.get("already_running"):
+            msg = t("bridge.already_running", url=url)
+        cmds.confirmDialog(title=t("bridge.title"), message=msg, button=["OK"])
+        print(f"[Maya Agent] MCP: {url}")
+    else:
+        cmds.confirmDialog(
+            title=t("bridge.title"),
+            message=t("bridge.start_failed", error=result.get("error") or "unknown"),
+            button=["OK"],
+        )
+
+
+def bridge_stop(*_args) -> None:
+    init_from_config()
+    from maya_agent.bridge import stop
+
+    result = stop()
+    import maya.cmds as cmds
+
+    cmds.confirmDialog(
+        title=t("bridge.title"),
+        message=t("bridge.stopped") if result.get("stopped") else t("bridge.not_running"),
+        button=["OK"],
+    )
+    print("[Maya Agent] MCP stopped")
+
+
+def bridge_copy_mcp(*_args) -> None:
+    init_from_config()
+    from maya_agent.bridge import copy_mcp_config
+
+    result = copy_mcp_config()
+    text = result.get("text") or ""
+    import maya.cmds as cmds
+
+    try:
+        from maya_agent.utils.maya_compat import import_qt
+
+        _, _, QtWidgets, _ = import_qt()
+        clip = QtWidgets.QApplication.clipboard()
+        if clip is not None:
+            clip.setText(text)
+            cmds.confirmDialog(
+                title=t("bridge.title"),
+                message=t("bridge.mcp_copied", path=result.get("discovery") or ""),
+                button=["OK"],
+            )
+            print("[Maya Agent] MCP config copied to clipboard")
+            return
+    except Exception as e:
+        log.debug("clipboard copy failed: %s", e)
+    cmds.confirmDialog(
+        title=t("bridge.title"),
+        message=text[:1500] if text else t("bridge.mcp_copy_failed"),
+        button=["OK"],
+    )
+
+
 def remove_shelf() -> None:
     """Remove MayaAgent shelf tab and any Agent buttons left on other shelves."""
     if not in_maya():
@@ -403,6 +491,14 @@ def reload_plugin(*_args) -> None:
     """
     import sys
 
+    # Stop MCP before wiping modules (old server thread would otherwise linger)
+    try:
+        from maya_agent.bridge import stop as _bridge_stop
+
+        _bridge_stop()
+    except Exception:
+        pass
+
     # Keep project root on sys.path (junction / install path)
     root = ""
     try:
@@ -475,6 +571,19 @@ def _deferred_install(force: bool = False) -> None:
             install_scene_hooks()
         except Exception as e:
             log.warning("scene hooks failed: %s", e)
+        try:
+            from maya_agent.utils.config import get_config
+
+            if get_config().get("bridge.auto_start", False):
+                from maya_agent.bridge import start
+
+                br = start()
+                if br.get("ok"):
+                    print(f"[Maya Agent] MCP auto-started: {br.get('base_url')}")
+                else:
+                    print(f"[Maya Agent] MCP auto-start failed: {br.get('error')}")
+        except Exception as e:
+            log.warning("MCP auto_start failed: %s", e)
         _BOOTSTRAP_DONE = True
         _BOOTSTRAP_IN_FLIGHT = False
         return

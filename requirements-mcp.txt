@@ -1,0 +1,8 @@
+# System Python deps for MCP stdio proxy (scripts/maya_mcp.py).
+# Maya / mayapy does NOT need these — the in-Maya MCP HTTP service uses stdlib only.
+#
+#   pip install -r requirements-mcp.txt
+#
+# Pin to 1.x: mcp 2.x removed Server.list_tools / call_tool decorators used by maya_mcp.py
+mcp>=1.6.0,<2
+httpx>=0.24.0

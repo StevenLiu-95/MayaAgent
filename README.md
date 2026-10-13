@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.4.3** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
+**v1.5.0** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
 
 ## 核心能力
 
@@ -15,6 +15,7 @@
 | **Maya 内嵌 UI** | 停靠深色面板：**对话 / 设置 / 工具 / 帮助**；紧凑输入区；发送与停止合并为同一按钮（绿 / 红）；Enter 发送、Shift+Enter 换行 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景名.ma.mayaagent.json` |
 | **安全可逆** | 工具在 Maya 主线程执行；整轮 Undo 块（可一键回退）；危险操作确认；默认不擅自新建空场景 |
+| **MCP** | Cursor / VS Code / Claude Desktop 经 MCP 调用**同一套** Maya 工具，或远程驱动 `mayaagent_chat` 完整 Agent 循环 |
 
 **版本**：Maya **2020–2026**（自动适配 PySide2 / PySide6）
 
@@ -121,6 +122,44 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 - 「创建三点布光」
 - （附参考图）「按这张图调整角色站姿」——视觉模型可再截视口核对
 
+## MCP
+
+在 **Cursor / VS Code / Claude Desktop** 等支持 MCP 的 IDE 中控制当前 Maya 会话：工具列表与 MayaAgent 面板共用同一注册表。
+
+### 步骤
+
+1. **Maya 内启动 MCP**：菜单 **Maya Agent → 启动 MCP**（或「设置」页签中的 MCP 区块）
+2. **系统 Python 安装 MCP 依赖**（不要用 mayapy）：
+
+```bash
+pip install -r requirements-mcp.txt
+```
+
+3. **复制 MCP 配置**：菜单 **复制 MCP 配置**，粘贴到 Cursor / VS Code 的 `mcp.json`，例如：
+
+```json
+{
+  "mcpServers": {
+    "maya-agent": {
+      "command": "python",
+      "args": ["D:/path/to/MayaAgent/scripts/maya_mcp.py"]
+    }
+  }
+}
+```
+
+将路径改成你的项目根目录；`python` 需能 `import mcp` / `httpx`。
+
+4. 在 IDE 中确认 MCP 已连接，然后：
+   - 调用 `mayaagent_status` 检查服务是否在线
+   - **直接调用**任意 Maya 工具（与面板相同的工具名）
+   - 或调用 `mayaagent_chat` 走完整 MayaAgent 多轮循环
+   - `mayaagent_undo` 回退上一轮 Agent 修改
+
+发现文件：`%APPDATA%/MayaAgent/bridge.json`（含 localhost 端口与 token）。服务仅监听 `127.0.0.1`。
+
+**验收**：先在 Maya 启动 MCP → IDE 调 `mayaagent_status` → 调一个查询类工具（如场景信息）→ 再试 `mayaagent_chat`。
+
 ## 项目结构
 
 ```
@@ -128,6 +167,7 @@ MayaAgent/
 ├── config/default_config.yaml   # 默认配置（人类可读）
 ├── config/default_config.json   # 运行时加载（无第三方依赖）
 ├── maya_agent/
+│   ├── bridge/                  # 本地 HTTP MCP 服务（工具 + 远程 Agent）
 │   ├── core/                    # Agent 循环、记忆、执行器、Undo、会话
 │   ├── llm/                     # 多厂商 LLM / 视觉适配
 │   ├── tools/                   # Maya 工具（含 skeleton_templates、viewport）
@@ -138,6 +178,7 @@ MayaAgent/
 │   ├── prompts/                 # 系统提示词
 │   └── maya_plugin/             # 自动加载插件模板
 ├── scripts/
+│   ├── maya_mcp.py              # MCP stdio 代理（系统 Python）
 │   ├── install.py               # 安装 / 卸载挂钩 + Install Report
 │   ├── install_deps.py          # mayapy 依赖（ensurepip/镜像/逐包/.vendor）
 │   ├── maya_discover.py         # Maya 版本 / mayapy 统一探测
@@ -145,8 +186,9 @@ MayaAgent/
 │   └── drag_install.py          # 拖入式安装逻辑（含依赖加固）
 ├── install.bat / uninstall.bat
 ├── install_dragdrop.mel         # 拖进视口安装
-├── .vendor/                     # 依赖兜底目录（安装失败时自动生成，已 gitignore）
-└── requirements.txt
+├── requirements.txt
+├── requirements-mcp.txt         # IDE MCP 代理依赖（系统 Python）
+└── .vendor/                     # 依赖兜底目录（安装失败时自动生成，已 gitignore）
 ```
 
 ## 故障排查
@@ -162,6 +204,7 @@ MayaAgent/
 | 改代码后界面未更新 | `maya_agent.reload()`，或菜单「重新加载」 |
 | 测试连接失败 | 核对 API Key、Base URL、网络；通义等接口注意 Max Tokens 上限 |
 | 无法附带/截取图片 | 设置中将「图片输入」设为开启，或换用带 vision 的模型 |
+| MCP 连不上 / unauthorized | 先在 Maya 启动 MCP；重启 MCP 会刷新 token；确认 `pip install -r requirements-mcp.txt` 用的是 mcp.json 里的同一个 Python |
 
 ## 许可
 

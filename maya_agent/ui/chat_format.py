@@ -292,12 +292,59 @@ def extract_user_choices(text: str) -> Tuple[str, List[Dict[str, str]]]:
     return display, items[:6]
 
 
+_FENCE_OPEN_RE = re.compile(r"^(\s*)```([\w+-]*)\s*$")
+_FENCE_CLOSE_RE = re.compile(r"^\s*```\s*$")
+
+
+def split_markdown_segments(text: str) -> List[Tuple[str, ...]]:
+    """
+    Split markdown into alternating text / fenced-code segments.
+
+    Returns a list of:
+      ("text", markdown_str)
+      ("code", language, code_str)
+    """
+    raw = text or ""
+    if not raw:
+        return []
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    segments: List[Tuple[str, ...]] = []
+    buf: List[str] = []
+    i = 0
+    while i < len(lines):
+        m = _FENCE_OPEN_RE.match(lines[i])
+        if m:
+            if buf:
+                chunk = "\n".join(buf)
+                if chunk.strip():
+                    segments.append(("text", chunk))
+                buf = []
+            lang = (m.group(2) or "").strip()
+            i += 1
+            code_lines: List[str] = []
+            while i < len(lines) and not _FENCE_CLOSE_RE.match(lines[i]):
+                code_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            segments.append(("code", lang, "\n".join(code_lines)))
+            continue
+        buf.append(lines[i])
+        i += 1
+    if buf:
+        chunk = "\n".join(buf)
+        if chunk.strip():
+            segments.append(("text", chunk))
+    return segments
+
+
 def markdown_to_html(text: str) -> str:
     """
     Convert a markdown subset to HTML that Qt RichText actually renders well.
 
     Avoid relying on <ul>/<ol> CSS margins (often ignored by QLabel/QTextDocument).
     Lists are emitted as indented paragraphs with bullet glyphs.
+    Fenced code is rendered as a styled block (UI prefers CodeBlock widgets).
     """
     if not text:
         return ""
@@ -355,21 +402,30 @@ def markdown_to_html(text: str) -> str:
         raw = lines[i]
         line = raw.rstrip()
 
-        # fenced code
-        if line.strip().startswith("```"):
+        # fenced code (fallback when not extracted into CodeBlock widgets)
+        fence = _FENCE_OPEN_RE.match(line)
+        if fence:
             flush_table()
+            lang = (fence.group(2) or "").strip()
             i += 1
             code_lines = []
-            while i < len(lines) and not lines[i].strip().startswith("```"):
+            while i < len(lines) and not _FENCE_CLOSE_RE.match(lines[i]):
                 code_lines.append(lines[i])
                 i += 1
-            i += 1
-            code = escape_wrap("\n".join(code_lines))
+            if i < len(lines):
+                i += 1
+            code = escape(soft_break_long_runs("\n".join(code_lines)))
+            lang_html = (
+                f'<span style="color:#8a8a93;font-size:11px;">{escape(lang)}</span><br/>'
+                if lang
+                else ""
+            )
             out.append(
-                '<p style="margin:4px 0;padding:6px 8px;background-color:#1a1b20;'
-                "color:#d0d0d6;font-family:Consolas,'Courier New',monospace;"
-                f'font-size:12px;line-height:130%;word-wrap:break-word;">'
-                f"{code.replace(chr(10), '<br/>')}</p>"
+                '<p style="margin:6px 0;padding:10px 12px;background-color:#16171c;'
+                "border:1px solid #3a3b48;border-radius:8px;"
+                "color:#d4d4da;font-family:Consolas,'Courier New',monospace;"
+                f'font-size:12px;line-height:145%;word-wrap:break-word;">'
+                f"{lang_html}{code.replace(chr(10), '<br/>')}</p>"
             )
             prev_blank = False
             continue
@@ -492,7 +548,8 @@ def _inline_segment(text: str) -> str:
     for m in re.finditer(r"`([^`]+)`", s):
         parts.append(_format_text_with_style(s[pos : m.start()]))
         parts.append(
-            '<span style="background-color:#32333c;color:#dcc9a0;padding:0 4px;'
+            '<span style="background-color:#2a2b34;color:#e0c888;padding:1px 6px;'
+            "border:1px solid #3e3f4a;border-radius:4px;"
             f'font-family:Consolas,monospace;font-size:12px;">{_clean_code(m.group(1))}</span>'
         )
         pos = m.end()

@@ -447,7 +447,7 @@ class MeshyClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "MayaAgent/1.4 MeshyClient",
+            "User-Agent": "MayaAgent/1.5 MeshyClient",
         }
 
     def _url(self, path: str) -> str:
@@ -605,7 +605,7 @@ class MeshyClient:
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             with httpx.Client(timeout=max(self.timeout, 120.0), follow_redirects=True) as client:
-                with client.stream("GET", u, headers={"User-Agent": "MayaAgent/1.4 MeshyClient"}) as resp:
+                with client.stream("GET", u, headers={"User-Agent": "MayaAgent/1.5 MeshyClient"}) as resp:
                     if resp.status_code >= 400:
                         raise MeshyError(f"下载失败（{resp.status_code}）")
                     with open(dest, "wb") as f:
