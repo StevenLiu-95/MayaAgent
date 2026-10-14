@@ -111,6 +111,16 @@ _CHOICE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Chart / local image embeds for assistant body (parallel to CHOICES).
+_CHART_OPEN_RE = re.compile(r"\[\[\s*CHART\s*\]\]", re.IGNORECASE)
+_CHART_CLOSE_RE = re.compile(r"\[\[\s*/\s*CHART\s*\]\]", re.IGNORECASE)
+_CHART_BLOCK_RE = re.compile(
+    r"\[\[\s*CHART\s*\]\]\s*(.*?)\s*\[\[\s*/\s*CHART\s*\]\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+_HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
 
 def strip_incomplete_choices(text: str) -> str:
     """Hide an in-progress CHOICES block while the reply is still streaming."""
@@ -123,6 +133,206 @@ def strip_incomplete_choices(text: str) -> str:
             return raw[: partial.start()].rstrip()
         return raw
     return raw[: m.start()].rstrip()
+
+
+def strip_incomplete_charts(text: str) -> str:
+    """Hide an in-progress [[CHART]] block while streaming."""
+    raw = text or ""
+    m = _CHART_OPEN_RE.search(raw)
+    if not m:
+        partial = re.search(r"\[\[\s*CHAR\w*$", raw, re.I)
+        if partial:
+            return raw[: partial.start()].rstrip()
+        return raw
+    # Keep completed chart blocks; trim only an unclosed tail.
+    last_close = None
+    for cm in _CHART_CLOSE_RE.finditer(raw):
+        last_close = cm
+    if last_close and last_close.end() > m.start():
+        # There is at least one close after an open — check trailing unclosed
+        tail = raw[last_close.end() :]
+        open2 = _CHART_OPEN_RE.search(tail)
+        if not open2:
+            return raw
+        return (raw[: last_close.end()] + tail[: open2.start()]).rstrip()
+    return raw[: m.start()].rstrip()
+
+
+def strip_streaming_markers(text: str) -> str:
+    """Strip incomplete CHOICES and CHART markers during streaming."""
+    return strip_incomplete_charts(strip_incomplete_choices(text or ""))
+
+
+def format_chart_marker(path: str, title: str = "") -> str:
+    """Canonical [[CHART]] embed used in assistant body markdown."""
+    p = (path or "").replace("\\", "/").strip()
+    t = (title or "").strip()
+    if t:
+        return f"[[CHART]]{p}|{t}[[/CHART]]"
+    return f"[[CHART]]{p}[[/CHART]]"
+
+
+def normalize_local_image_path(href: str) -> Optional[str]:
+    """
+    Return a filesystem path for local / file:// image refs.
+    Remote http(s) URLs return None (stay as ordinary markdown text).
+    """
+    raw = (href or "").strip().strip("\"'")
+    if not raw:
+        return None
+    if _HTTP_URL_RE.match(raw):
+        return None
+    if raw.lower().startswith("file:"):
+        # file:///C:/path or file://localhost/C:/path or file:/C:/path
+        rest = raw.split(":", 1)[1]
+        rest = rest.lstrip("/")
+        if rest.lower().startswith("localhost/"):
+            rest = rest[10:]
+        # Windows drive: C:/... was reduced to C:/ after stripping slashes oddly
+        # file:///C:/foo → ///C:/foo → after lstrip('/') → C:/foo  (good)
+        # file:///home/a → ///home/a → home/a — restore leading /
+        if len(rest) >= 2 and rest[1] == ":":
+            path = rest
+        else:
+            path = "/" + rest if not rest.startswith("/") else rest
+        return path.replace("\\", "/")
+    # Local absolute / relative / UNC-ish paths
+    if (
+        raw.startswith("/")
+        or raw.startswith("\\\\")
+        or (len(raw) >= 2 and raw[1] == ":")
+        or "/" in raw
+        or "\\" in raw
+    ):
+        return raw.replace("\\", "/")
+    return None
+
+
+def _path_basename(path: str) -> str:
+    return (path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def text_references_path(text: str, path: str) -> bool:
+    """
+    True if markdown / CHART embeds already mention this exact path.
+
+    Basename-only matches are NOT enough — models often rewrite the parent
+    folder incorrectly (e.g. MayaAgentTempAgentTempFile), which would falsely
+    suppress the auto-append / rewrite safety net.
+    """
+    if not path:
+        return False
+    needle = path.replace("\\", "/").strip()
+    if not needle:
+        return False
+    blob = (text or "").replace("\\", "/")
+    return needle in blob
+
+
+def reconcile_chart_embeds(
+    text: str, charts: List[Dict[str, str]]
+) -> str:
+    """
+    Rewrite local image / [[CHART]] embeds whose basename matches a known
+    chart from this turn, but whose directory/path was mangled by the model.
+    """
+    body = text or ""
+    if not body or not charts:
+        return body
+
+    by_base: Dict[str, str] = {}
+    for ch in charts:
+        path = str(ch.get("path") or "").replace("\\", "/").strip()
+        if not path:
+            continue
+        base = _path_basename(path).lower()
+        if base:
+            by_base[base] = path
+
+    if not by_base:
+        return body
+
+    def _fix_md(match: "re.Match[str]") -> str:
+        alt = match.group(1)
+        href = match.group(2)
+        local = normalize_local_image_path(href)
+        if not local:
+            return match.group(0)
+        correct = by_base.get(_path_basename(local).lower())
+        if not correct or local.replace("\\", "/") == correct:
+            return match.group(0)
+        return f"![{alt}]({correct})"
+
+    def _fix_chart(match: "re.Match[str]") -> str:
+        path, title = _parse_chart_body(match.group(1))
+        if not path:
+            return match.group(0)
+        correct = by_base.get(_path_basename(path).lower())
+        if not correct or path.replace("\\", "/") == correct:
+            return match.group(0)
+        return format_chart_marker(correct, title)
+
+    body = _MD_IMAGE_RE.sub(_fix_md, body)
+    body = _CHART_BLOCK_RE.sub(_fix_chart, body)
+    return body
+
+
+def append_missing_charts(
+    text: str, charts: List[Dict[str, str]]
+) -> str:
+    """
+    Append [[CHART]] markers for charts not already referenced in ``text``.
+
+    Each chart dict: {"path": "...", "title": "..."}.
+    """
+    body = text or ""
+    extras: List[str] = []
+    for ch in charts or []:
+        path = str(ch.get("path") or "").strip().replace("\\", "/")
+        if not path:
+            continue
+        if text_references_path(body, path):
+            continue
+        if any(text_references_path(e, path) for e in extras):
+            continue
+        extras.append(format_chart_marker(path, str(ch.get("title") or "")))
+    if not extras:
+        return body
+    sep = "\n\n" if body.strip() else ""
+    return body.rstrip() + sep + "\n".join(extras)
+
+
+def ensure_charts_in_body(
+    text: str, charts: List[Dict[str, str]]
+) -> str:
+    """Fix mangled chart paths, then append any charts still missing from body."""
+    body = reconcile_chart_embeds(text or "", charts or [])
+    return append_missing_charts(body, charts or [])
+
+
+def parse_chart_tool_result(result: Any) -> Optional[Dict[str, str]]:
+    """Extract path/title from generate_chart tool JSON / dict result."""
+    data: Any = result
+    if isinstance(result, str):
+        raw = result.strip()
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("ok") is False:
+        return None
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    if not isinstance(payload, dict):
+        return None
+    path = str(payload.get("path") or "").strip()
+    if not path:
+        return None
+    title = str(payload.get("title") or "").strip()
+    return {"path": path.replace("\\", "/"), "title": title}
 
 
 def _scrub_choice_tags(text: str) -> str:
@@ -296,19 +506,75 @@ _FENCE_OPEN_RE = re.compile(r"^(\s*)```([\w+-]*)\s*$")
 _FENCE_CLOSE_RE = re.compile(r"^\s*```\s*$")
 
 
+def _parse_chart_body(body: str) -> Tuple[str, str]:
+    """Parse ``path|title`` or bare path inside a [[CHART]] block."""
+    raw = (body or "").strip()
+    if not raw:
+        return "", ""
+    if "|" in raw:
+        path, title = raw.split("|", 1)
+        return path.strip().replace("\\", "/"), title.strip()
+    return raw.replace("\\", "/"), ""
+
+
+def _split_text_with_images(chunk: str) -> List[Tuple[str, ...]]:
+    """
+    Split a text chunk into text / image segments.
+
+    Image sources:
+      - [[CHART]]path|title[[/CHART]]
+      - ![alt](local-or-file-path)  (http(s) left in surrounding text)
+    """
+    if not chunk:
+        return []
+    # Collect match spans: (start, end, alt, path)
+    hits: List[Tuple[int, int, str, str]] = []
+    for m in _CHART_BLOCK_RE.finditer(chunk):
+        path, title = _parse_chart_body(m.group(1))
+        if path:
+            hits.append((m.start(), m.end(), title or path.rsplit("/", 1)[-1], path))
+    for m in _MD_IMAGE_RE.finditer(chunk):
+        path = normalize_local_image_path(m.group(2))
+        if not path:
+            continue
+        # Skip if this span overlaps an already-captured CHART block
+        if any(s <= m.start() < e or s < m.end() <= e for s, e, _a, _p in hits):
+            continue
+        alt = (m.group(1) or "").strip() or path.rsplit("/", 1)[-1]
+        hits.append((m.start(), m.end(), alt, path))
+    if not hits:
+        return [("text", chunk)] if chunk.strip() else []
+    hits.sort(key=lambda h: h[0])
+    out: List[Tuple[str, ...]] = []
+    pos = 0
+    for start, end, alt, path in hits:
+        if start < pos:
+            continue
+        before = chunk[pos:start]
+        if before.strip():
+            out.append(("text", before))
+        out.append(("image", alt, path))
+        pos = end
+    tail = chunk[pos:]
+    if tail.strip():
+        out.append(("text", tail))
+    return out
+
+
 def split_markdown_segments(text: str) -> List[Tuple[str, ...]]:
     """
-    Split markdown into alternating text / fenced-code segments.
+    Split markdown into text / fenced-code / local-image segments.
 
     Returns a list of:
       ("text", markdown_str)
       ("code", language, code_str)
+      ("image", alt, path)
     """
     raw = text or ""
     if not raw:
         return []
     lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    segments: List[Tuple[str, ...]] = []
+    coarse: List[Tuple[str, ...]] = []
     buf: List[str] = []
     i = 0
     while i < len(lines):
@@ -317,7 +583,7 @@ def split_markdown_segments(text: str) -> List[Tuple[str, ...]]:
             if buf:
                 chunk = "\n".join(buf)
                 if chunk.strip():
-                    segments.append(("text", chunk))
+                    coarse.append(("text", chunk))
                 buf = []
             lang = (m.group(2) or "").strip()
             i += 1
@@ -327,14 +593,21 @@ def split_markdown_segments(text: str) -> List[Tuple[str, ...]]:
                 i += 1
             if i < len(lines):
                 i += 1
-            segments.append(("code", lang, "\n".join(code_lines)))
+            coarse.append(("code", lang, "\n".join(code_lines)))
             continue
         buf.append(lines[i])
         i += 1
     if buf:
         chunk = "\n".join(buf)
         if chunk.strip():
-            segments.append(("text", chunk))
+            coarse.append(("text", chunk))
+
+    segments: List[Tuple[str, ...]] = []
+    for seg in coarse:
+        if seg[0] != "text":
+            segments.append(seg)
+            continue
+        segments.extend(_split_text_with_images(seg[1]))
     return segments
 
 

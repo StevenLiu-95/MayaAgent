@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maya-agent"
-version = "1.5.0"
+version = "1.5.1"
 description = "AI-powered Maya Agent for game development workflows"
 readme = "README.md"
 requires-python = ">=3.7"
@@ -15,6 +15,7 @@ dependencies = [
     "requests>=2.28.0",
     "PyYAML>=6.0",
     "httpx>=0.24.0",
+    "matplotlib>=3.5.0",
 ]
 
 [project.optional-dependencies]

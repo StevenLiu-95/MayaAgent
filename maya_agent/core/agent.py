@@ -59,7 +59,18 @@ class MayaAgent:
         )
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
+        self._cancel_event = threading.Event()
         self._ensure_system_prompt()
+
+    def request_cancel(self) -> None:
+        """Ask the running chat loop to stop at the next safe checkpoint."""
+        self._cancel_event.set()
+
+    def clear_cancel(self) -> None:
+        self._cancel_event.clear()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
 
     def _ensure_system_prompt(self) -> None:
         prompt = get_config().system_prompt()
@@ -134,6 +145,7 @@ class MayaAgent:
           {"type":"undo_ready","can_undo": bool}
         Returns final assistant text.
         """
+        self.clear_cancel()
         attached = [img for img in (images or []) if getattr(img, "data_b64", "")]
         text = (user_text or "").strip()
         if attached and not text:
@@ -189,8 +201,36 @@ class MayaAgent:
                 "can_undo": bool(self.undo.can_undo),
             }
 
+        def _emit_cancelled(partial: str = ""):
+            nonlocal turn_opened
+            try:
+                self.undo.cancel_open()
+            except Exception:
+                pass
+            turn_opened = False
+            try:
+                self.memory.drop_incomplete_tool_round()
+            except Exception:
+                pass
+            notice = stop_notice_for_reason("user_cancel")
+            return {
+                "type": "stopped",
+                "reason": "user_cancel",
+                "content": partial or "",
+                "stop_notice": notice,
+                "model": model_name,
+                "usage": dict(turn_usage),
+                "llm_calls": llm_calls,
+            }, None
+
         try:
             for _ in range(max_rounds):
+                if self.is_cancelled():
+                    stopped, undo_evt = _emit_cancelled(final_text)
+                    if undo_evt:
+                        yield undo_evt
+                    yield stopped
+                    return stopped.get("stop_notice") or ""
                 try:
                     if use_stream:
                         gen = provider.chat(self.memory.as_list(), tools=tools, stream=True)
@@ -199,6 +239,17 @@ class MayaAgent:
                         resp: Optional[ChatResponse] = None
                         try:
                             while True:
+                                if self.is_cancelled():
+                                    try:
+                                        gen.close()
+                                    except Exception:
+                                        pass
+                                    partial = "".join(text_parts)
+                                    stopped, undo_evt = _emit_cancelled(partial)
+                                    if undo_evt:
+                                        yield undo_evt
+                                    yield stopped
+                                    return stopped.get("stop_notice") or ""
                                 piece = next(gen)
                                 if isinstance(piece, str):
                                     piece = StreamChunk(text=piece)
@@ -262,6 +313,12 @@ class MayaAgent:
                 llm_calls += 1
 
                 if resp.tool_calls:
+                    if self.is_cancelled():
+                        stopped, undo_evt = _emit_cancelled(resp.content or "")
+                        if undo_evt:
+                            yield undo_evt
+                        yield stopped
+                        return stopped.get("stop_notice") or ""
                     if auto_undo and not turn_opened:
                         self.undo.begin_turn()
                         turn_opened = True
@@ -289,11 +346,23 @@ class MayaAgent:
                     )
                     vision_batch: List[ImageAttachment] = []
                     for tc in resp.tool_calls:
+                        if self.is_cancelled():
+                            stopped, undo_evt = _emit_cancelled(resp.content or "")
+                            if undo_evt:
+                                yield undo_evt
+                            yield stopped
+                            return stopped.get("stop_notice") or ""
                         yield from self._run_one_tool(
                             tc,
                             vision_ok=vision_ok,
                             vision_batch=vision_batch,
                         )
+                    if self.is_cancelled():
+                        stopped, undo_evt = _emit_cancelled(resp.content or "")
+                        if undo_evt:
+                            yield undo_evt
+                        yield stopped
+                        return stopped.get("stop_notice") or ""
                     if vision_batch and vision_ok:
                         clipped = vision_batch[:MAX_IMAGES]
                         self.memory.add(
@@ -396,13 +465,22 @@ class MayaAgent:
         thread.start()
         try:
             while True:
-                item = progress_q.get()
+                if self.is_cancelled() and not thread.is_alive():
+                    break
+                try:
+                    item = progress_q.get(timeout=0.2)
+                except queue.Empty:
+                    if self.is_cancelled() and not thread.is_alive():
+                        break
+                    continue
                 if item is None:
                     break
                 yield item
         finally:
-            thread.join()
+            thread.join(timeout=30.0)
             reset_progress_emitter(token)
+        if self.is_cancelled():
+            return
 
         if box["error"] is not None:
             raise box["error"]
