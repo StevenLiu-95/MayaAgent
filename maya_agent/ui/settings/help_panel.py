@@ -115,6 +115,7 @@ def create_help_panel(parent=None):
             t("help.settings.1"),
             t("help.settings.2"),
             t("help.settings.meshy"),
+            t("help.settings.local"),
             t("help.settings.3"),
             t("help.settings.4"),
         ),
@@ -204,6 +205,12 @@ def create_help_panel(parent=None):
             "meshy_uv_unwrap、meshy_rig、meshy_animate、meshy_list_animations、meshy_get_task、"
             "meshy_wait_task、meshy_download_model、meshy_import_to_maya、meshy_balance"
             "（需在设置中配置 Meshy API Key；导入优先 FBX）",
+        ),
+        (
+            "本地大模型 local",
+            "local_runtime_status、local_image_to_3d、local_text_to_3d、local_auto_rig、"
+            "local_text_to_motion、local_scene_layout、local_wait_task、local_import_result"
+            "（需安装 Local Runtime 并在「模型 → 本地模型」手动下载对应权重；未下载不对 Agent 暴露）",
         ),
         (
             "脚本 scripting",

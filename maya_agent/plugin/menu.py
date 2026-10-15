@@ -206,6 +206,25 @@ def install_menu() -> None:
     )
     cmds.menuItem(divider=True, parent=menu_parent)
     cmds.menuItem(
+        label=t("menu.local_runtime_install"),
+        parent=menu_parent,
+        command=_menu_item_cmd("local_runtime_install"),
+        sourceType="python",
+    )
+    cmds.menuItem(
+        label=t("menu.local_runtime_start"),
+        parent=menu_parent,
+        command=_menu_item_cmd("local_runtime_start"),
+        sourceType="python",
+    )
+    cmds.menuItem(
+        label=t("menu.local_runtime_stop"),
+        parent=menu_parent,
+        command=_menu_item_cmd("local_runtime_stop"),
+        sourceType="python",
+    )
+    cmds.menuItem(divider=True, parent=menu_parent)
+    cmds.menuItem(
         label=t("menu.about"),
         parent=menu_parent,
         command=_menu_item_cmd("show_about"),
@@ -404,6 +423,59 @@ def bridge_copy_mcp(*_args) -> None:
     cmds.confirmDialog(
         title=t("bridge.title"),
         message=text[:1500] if text else t("bridge.mcp_copy_failed"),
+        button=["OK"],
+    )
+
+
+def local_runtime_install(*_args) -> None:
+    init_from_config()
+    import maya.cmds as cmds
+    from maya_agent.local_models.installer_bridge import run_installer
+
+    cmds.confirmDialog(
+        title="Local Runtime",
+        message="开始安装 Local Runtime（不含模型权重，可能耗时较长）…",
+        button=["OK"],
+    )
+    result = run_installer()
+    msg = result.get("message") or ""
+    if result.get("stdout"):
+        msg = (msg + "\n\n" + str(result.get("stdout")))[-1500:]
+    if not result.get("ok") and result.get("error"):
+        msg = str(result.get("error"))
+    cmds.confirmDialog(
+        title="Local Runtime",
+        message=msg or ("OK" if result.get("ok") else "failed"),
+        button=["OK"],
+    )
+
+
+def local_runtime_start(*_args) -> None:
+    init_from_config()
+    import maya.cmds as cmds
+    from maya_agent.local_models.client import start_runtime
+
+    result = start_runtime(wait_online=25.0)
+    cmds.confirmDialog(
+        title="Local Runtime",
+        message=(
+            result.get("message")
+            or result.get("error")
+            or (result.get("base_url") if result.get("ok") else "failed")
+        ),
+        button=["OK"],
+    )
+
+
+def local_runtime_stop(*_args) -> None:
+    init_from_config()
+    import maya.cmds as cmds
+    from maya_agent.local_models.client import stop_runtime
+
+    result = stop_runtime()
+    cmds.confirmDialog(
+        title="Local Runtime",
+        message=result.get("message") or "stopped",
         button=["OK"],
     )
 

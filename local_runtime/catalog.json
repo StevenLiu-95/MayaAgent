@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "backends": [
+    {
+      "id": "triposr",
+      "domain": "asset",
+      "label": "TripoSR",
+      "description": "单图生成 3D 网格（MIT，VRAM 较低）",
+      "license": "MIT",
+      "vram_gb": 6,
+      "approx_size_gb": 1.5,
+      "files": [
+        {
+          "relpath": "model.ckpt",
+          "url": "https://huggingface.co/stabilityai/TripoSR/resolve/main/model.ckpt",
+          "sha256": "",
+          "approx_bytes": 1600000000
+        }
+      ],
+      "optional_deps": ["sd_turbo"],
+      "capabilities": ["image_to_3d", "text_to_3d_via_image"]
+    },
+    {
+      "id": "hunyuan3d2",
+      "domain": "asset",
+      "label": "Hunyuan3D-2.1",
+      "description": "腾讯混元图/文生 3D（质量更高，显存需求更大）",
+      "license": "Tencent Hunyuan Community License",
+      "vram_gb": 12,
+      "approx_size_gb": 8,
+      "files": [
+        {
+          "relpath": "shapegen/.installed",
+          "url": "manifest://hunyuan3d2-shapegen",
+          "sha256": "",
+          "approx_bytes": 7000000000,
+          "hf_repo": "tencent/Hunyuan3D-2.1",
+          "hf_subdir": "hunyuan3d-dit-v2-1"
+        }
+      ],
+      "capabilities": ["text_to_3d", "image_to_3d"]
+    },
+    {
+      "id": "unirig",
+      "domain": "rigging",
+      "label": "UniRig",
+      "description": "自动预测骨架与蒙皮权重",
+      "license": "Apache-2.0 / research release",
+      "vram_gb": 8,
+      "approx_size_gb": 2.5,
+      "files": [
+        {
+          "relpath": "skeleton/.installed",
+          "url": "manifest://unirig-skeleton",
+          "sha256": "",
+          "approx_bytes": 2500000000,
+          "hf_repo": "VAST-AI/UniRig"
+        }
+      ],
+      "capabilities": ["auto_rig"]
+    },
+    {
+      "id": "mdm",
+      "domain": "animation",
+      "label": "MDM",
+      "description": "文本驱动人体运动扩散，导出 BVH",
+      "license": "MIT (research)",
+      "vram_gb": 8,
+      "approx_size_gb": 1.2,
+      "files": [
+        {
+          "relpath": "humanml_trans_enc_512/model000200000.pt",
+          "url": "https://huggingface.co/SamuelMasinter/mdm-smpl/resolve/main/humanml_trans_enc_512/model000200000.pt",
+          "sha256": "",
+          "approx_bytes": 1200000000
+        }
+      ],
+      "capabilities": ["text_to_motion"]
+    },
+    {
+      "id": "atiss",
+      "domain": "scene",
+      "label": "ATISS",
+      "description": "室内场景家具布局（摆放清单；网格可用占位体或本地 3D 后端）",
+      "license": "MIT",
+      "vram_gb": 4,
+      "approx_size_gb": 0.5,
+      "files": [
+        {
+          "relpath": "checkpoints/.installed",
+          "url": "manifest://atiss-checkpoints",
+          "sha256": "",
+          "approx_bytes": 500000000,
+          "hf_repo": "nv-tlabs/ATISS"
+        }
+      ],
+      "capabilities": ["scene_layout"]
+    },
+    {
+      "id": "sd_turbo",
+      "domain": "asset_aux",
+      "label": "SD-Turbo (文生图辅助)",
+      "description": "为仅安装 TripoSR 时提供文→图→3D 路径",
+      "license": "Stability AI Community License",
+      "vram_gb": 6,
+      "approx_size_gb": 2.5,
+      "files": [
+        {
+          "relpath": "unet/.installed",
+          "url": "manifest://sd-turbo",
+          "sha256": "",
+          "approx_bytes": 2500000000,
+          "hf_repo": "stabilityai/sd-turbo"
+        }
+      ],
+      "capabilities": ["text_to_image"],
+      "hidden": false
+    }
+  ]
+}

@@ -15,6 +15,7 @@
 | **Maya 内嵌 UI** | 停靠深色面板：**对话 / 设置 / 工具 / 帮助**；紧凑输入区；发送与停止合并为同一按钮（绿 / 红）；Enter 发送、Shift+Enter 换行 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景名.ma.mayaagent.json` |
 | **安全可逆** | 工具在 Maya 主线程执行；整轮 Undo 块（可一键回退）；危险操作确认；默认不擅自新建空场景 |
+| **本地大模型** | 独立 Local Runtime（CUDA）；白名单 TripoSR / Hunyuan3D / UniRig / MDM / ATISS；权重按需手动下载；未下载不对 Agent 暴露 |
 | **MCP** | Cursor / VS Code / Claude Desktop 经 MCP 调用**同一套** Maya 工具，或远程驱动 `mayaagent_chat` 完整 Agent 循环 |
 
 **版本**：Maya **2020–2026**（自动适配 PySide2 / PySide6）
@@ -104,8 +105,8 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 | 页签 | 内容 |
 | ---- | ---- |
 | **对话** | 多会话、流式回复、工具调用过程、快捷芯片、图片附件、发送/停止 |
-| **模型** | LLM（模型、API、图片输入、测试连接、Agent 行为）/ Meshy |
-| **设置** | 界面语言、字体、整体缩放、临时文件目录（对话附图 / Meshy / 视口截图 / 未命名会话） |
+| **模型** | LLM（模型、API、图片输入、测试连接、Agent 行为）/ Meshy / 本地模型（Runtime 安装与权重下载） |
+| **设置** | 界面语言、字体、整体缩放、临时文件目录、**模型文件目录**（本地权重） |
 | **工具** | 按类别浏览全部工具；双击名称插入输入框 |
 | **帮助** | 上手说明与功能概览 |
 
@@ -121,6 +122,17 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 - 「把当前选择导出 FBX 到桌面」
 - 「创建三点布光」
 - （附参考图）「按这张图调整角色站姿」——视觉模型可再截视口核对
+
+## 本地大模型（Local Runtime）
+
+在独立 CUDA 进程中运行白名单开源模型（**不进入 mayapy**）。一键安装器只装 Runtime + torch，**不含权重**。
+
+1. 运行项目根目录 `install_local_runtime.bat`（或菜单 **安装 Local Runtime** /「模型 → 本地模型」）
+2. 在「设置」配置 **模型文件目录**（默认：MayaAgent 同级 `MayaAgentModels`）
+3. 在「模型 → 本地模型」中**手动下载**需要的后端（TripoSR / Hunyuan3D / UniRig / MDM / ATISS 等）
+4. 启动 Local Runtime 后，对应 `local_*` 工具才会出现在 Agent 工具列表；未下载不会自动拉取
+
+权重目录结构：`{models_dir}/{backend_id}/...`。发现文件：`%APPDATA%/MayaAgent/local_runtime.json`。
 
 ## MCP
 
@@ -170,10 +182,12 @@ MayaAgent/
 │   ├── bridge/                  # 本地 HTTP MCP 服务（工具 + 远程 Agent）
 │   ├── core/                    # Agent 循环、记忆、执行器、Undo、会话
 │   ├── llm/                     # 多厂商 LLM / 视觉适配
-│   ├── tools/                   # Maya 工具（含 skeleton_templates、viewport）
+│   ├── local_models/            # 本地模型 catalog / 下载 / Runtime 客户端
+│   ├── tools/                   # Maya 工具（含 skeleton_templates、viewport、local_*）
 │   ├── ui/                      # Qt 面板（对话 / 设置 / 工具 / 帮助）
 │   ├── plugin/                  # 菜单、工具架、场景钩子
 │   └── utils/                   # 配置、日志、Maya / Qt 兼容
+├── local_runtime/               # 独立推理进程（HTTP + 白名单 backends）
 ├── resources/
 │   ├── prompts/                 # 系统提示词
 │   └── maya_plugin/             # 自动加载插件模板
@@ -183,8 +197,10 @@ MayaAgent/
 │   ├── install_deps.py          # mayapy 依赖（ensurepip/镜像/逐包/.vendor）
 │   ├── maya_discover.py         # Maya 版本 / mayapy 统一探测
 │   ├── doctor.py                # 安装健康检查（只读）
+│   ├── install_local_runtime.py # Local Runtime（torch/CUDA venv）一键安装
 │   └── drag_install.py          # 拖入式安装逻辑（含依赖加固）
 ├── install.bat / uninstall.bat
+├── install_local_runtime.bat    # 安装 Local Runtime（不含模型权重）
 ├── install_dragdrop.mel         # 拖进视口安装
 ├── requirements.txt
 ├── requirements-mcp.txt         # IDE MCP 代理依赖（系统 Python）

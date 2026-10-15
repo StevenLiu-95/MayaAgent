@@ -219,6 +219,16 @@ meshy:
   download_dir: ""  # 空则放在 MayaAgent 同级目录 meshy_downloads/
   default_formats: [fbx, glb]
 
+local:
+  enabled: true
+  models_dir: ""  # 空则使用 MayaAgent 同级 MayaAgentModels/
+  runtime_host: "127.0.0.1"
+  runtime_port: 8770
+  port_auto: true
+  auto_start: false
+  wait_timeout: 1200
+  poll_interval: 2
+
 ui:
   dock_area: right
   window_width: 420

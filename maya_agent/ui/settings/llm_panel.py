@@ -36,6 +36,7 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
 
         self._build_llm_tab()
         self._build_meshy_tab()
+        self._build_local_tab()
         self._apply_no_wheel()
 
         footer = QtWidgets.QFrame()
@@ -241,6 +242,12 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
 
         self._stretch_end(root)
         self.tabs.addTab(scroll, t("settings.tab.meshy"))
+
+    def _build_local_tab(self) -> None:
+        from maya_agent.ui.settings.local_panel import LocalModelsPage
+
+        self.local_page = LocalModelsPage(self, on_saved=self._on_saved)
+        self.tabs.addTab(self.local_page, t("settings.tab.local"))
 
     # ---- data -----------------------------------------------------------
 

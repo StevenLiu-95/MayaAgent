@@ -88,6 +88,37 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         tform.addRow(self._field_label(t("settings.temp_dir")), temp_row)
         root.addWidget(temp)
 
+        models, models_lay = self._section(
+            t("settings.section.models_dir"),
+            t("settings.section.models_dir_hint"),
+        )
+        mform = self._form(models_lay)
+        models_row = QtWidgets.QWidget()
+        models_row_lay = QtWidgets.QHBoxLayout(models_row)
+        models_row_lay.setContentsMargins(0, 0, 0, 0)
+        models_row_lay.setSpacing(8)
+        self.models_dir_edit = QtWidgets.QLineEdit()
+        self.models_dir_edit.setMinimumHeight(30)
+        try:
+            from maya_agent.utils.paths import default_models_root
+
+            self.models_dir_edit.setPlaceholderText(
+                str(default_models_root()).replace("\\", "/")
+            )
+        except Exception:
+            self.models_dir_edit.setPlaceholderText("")
+        self.models_dir_edit.setToolTip(t("settings.models_dir_tip"))
+        self.models_dir_browse = QtWidgets.QPushButton(t("settings.models_dir_browse"))
+        self.models_dir_browse.setObjectName("secondaryBtn")
+        self.models_dir_browse.setCursor(QtCore.Qt.PointingHandCursor)
+        self.models_dir_browse.setMinimumHeight(30)
+        self.models_dir_browse.setMinimumWidth(72)
+        self.models_dir_browse.clicked.connect(self._browse_models_dir)
+        models_row_lay.addWidget(self.models_dir_edit, 1)
+        models_row_lay.addWidget(self.models_dir_browse, 0)
+        mform.addRow(self._field_label(t("settings.models_dir")), models_row)
+        root.addWidget(models)
+
         adv, adv_lay = self._section(
             t("settings.section.adv"),
             t("settings.section.adv_hint"),
@@ -228,6 +259,7 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.font_family.text().strip(),
             int(self.ui_scale.value()),
             self.temp_dir_edit.text().strip(),
+            self.models_dir_edit.text().strip(),
             self.adv_path_edit.text().strip(),
             bool(self.bridge_enabled.isChecked()),
             bool(self.bridge_auto_start.isChecked()),
@@ -327,6 +359,24 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         )
         if chosen:
             self.temp_dir_edit.setText(chosen.replace("\\", "/"))
+            self._schedule_autosave()
+
+    def _browse_models_dir(self) -> None:
+        try:
+            from maya_agent.utils.paths import default_models_root
+
+            default = str(default_models_root())
+        except Exception:
+            default = ""
+        start = self.models_dir_edit.text().strip() or default
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            t("settings.models_dir_pick"),
+            start,
+        )
+        if chosen:
+            self.models_dir_edit.setText(chosen.replace("\\", "/"))
+            self._schedule_autosave()
 
     def _set_adv_status(self, text: str, kind: str = "") -> None:
         label = getattr(self, "adv_status", None)
@@ -413,7 +463,10 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         self.language_combo.currentIndexChanged.connect(self._schedule_autosave)
         self.font_family.textChanged.connect(self._schedule_autosave)
         self.ui_scale.valueChanged.connect(self._schedule_autosave)
-        self.temp_dir_edit.textChanged.connect(self._schedule_autosave)
+        # Path fields: save on editingFinished / browse only, so typing
+        # does not pop migrate dialog mid-path.
+        self.temp_dir_edit.editingFinished.connect(self._schedule_autosave)
+        self.models_dir_edit.editingFinished.connect(self._schedule_autosave)
         self.adv_path_edit.textChanged.connect(self._schedule_autosave)
         self.adv_path_edit.textChanged.connect(self._clear_adv_status)
         self.bridge_enabled.toggled.connect(self._schedule_autosave)
@@ -441,6 +494,17 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.temp_dir_edit.setPlaceholderText(
                 str(default_agent_temp_root()).replace("\\", "/")
             )
+            self.models_dir_edit.setText(
+                str(self.cfg.get("local.models_dir") or "").strip()
+            )
+            try:
+                from maya_agent.utils.paths import default_models_root
+
+                self.models_dir_edit.setPlaceholderText(
+                    str(default_models_root()).replace("\\", "/")
+                )
+            except Exception:
+                pass
             self.adv_path_edit.setText(
                 str(self.cfg.get("maya.advanced_skeleton_path") or "").strip()
             )
@@ -472,7 +536,121 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         self.cfg.reload()
         self._load()
 
+    def _ask_migrate_dir(
+        self, *, kind: str, old_path, new_path
+    ) -> str:
+        """
+        Ask whether to migrate directory contents.
+        Returns: "migrate" | "keep" | "cancel"
+        """
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Question)
+        box.setWindowTitle(t("settings.migrate_title"))
+        box.setText(
+            t(
+                "settings.migrate_body",
+                kind=kind,
+                old=str(old_path).replace("\\", "/"),
+                new=str(new_path).replace("\\", "/"),
+            )
+        )
+        btn_migrate = box.addButton(
+            t("settings.migrate_yes"), QtWidgets.QMessageBox.AcceptRole
+        )
+        btn_keep = box.addButton(
+            t("settings.migrate_no"), QtWidgets.QMessageBox.ActionRole
+        )
+        btn_cancel = box.addButton(
+            t("settings.migrate_cancel"), QtWidgets.QMessageBox.RejectRole
+        )
+        box.setDefaultButton(btn_migrate)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is btn_migrate:
+            return "migrate"
+        if clicked is btn_keep:
+            return "keep"
+        _ = btn_cancel
+        return "cancel"
+
+    def _handle_dir_migrations(self) -> bool:
+        """
+        If temp/models path changed and old dir has data, prompt to migrate.
+        Returns False if user cancelled (caller should abort save).
+        """
+        from maya_agent.utils.dir_migrate import (
+            migrate_directory_contents,
+            plan_path_change,
+        )
+        from maya_agent.utils.paths import default_models_root
+
+        plans = []
+        temp_plan = plan_path_change(
+            old_raw=str(self.cfg.get("ui.temp_dir") or "").strip(),
+            new_raw=self.temp_dir_edit.text().strip().replace("\\", "/"),
+            default=default_agent_temp_root(),
+        )
+        if temp_plan:
+            plans.append(("temp", t("settings.migrate_kind_temp"), *temp_plan))
+
+        models_plan = plan_path_change(
+            old_raw=str(self.cfg.get("local.models_dir") or "").strip(),
+            new_raw=self.models_dir_edit.text().strip().replace("\\", "/"),
+            default=default_models_root(),
+        )
+        if models_plan:
+            plans.append(
+                ("models", t("settings.migrate_kind_models"), *models_plan)
+            )
+
+        for _key, kind_label, old_path, new_path in plans:
+            choice = self._ask_migrate_dir(
+                kind=kind_label, old_path=old_path, new_path=new_path
+            )
+            if choice == "cancel":
+                # Revert edits to previously saved raw values
+                self._suppress_dirty = True
+                try:
+                    self.temp_dir_edit.setText(
+                        str(self.cfg.get("ui.temp_dir") or "").strip()
+                    )
+                    self.models_dir_edit.setText(
+                        str(self.cfg.get("local.models_dir") or "").strip()
+                    )
+                finally:
+                    self._suppress_dirty = False
+                self._mark_clean()
+                self.save_hint.setText(t("settings.migrate_cancelled"))
+                return False
+            if choice == "migrate":
+                self.save_hint.setText(t("settings.migrate_running"))
+                QtWidgets.QApplication.processEvents()
+                result = migrate_directory_contents(old_path, new_path)
+                if not result.get("ok"):
+                    errs = "; ".join(result.get("errors") or []) or result.get(
+                        "message"
+                    ) or "failed"
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        t("settings.migrate_title"),
+                        t("settings.migrate_fail", error=errs[:500]),
+                    )
+                    # Still allow saving new path so config matches user intent
+                elif result.get("skipped"):
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        t("settings.migrate_title"),
+                        t(
+                            "settings.migrate_partial",
+                            moved=len(result.get("moved") or []),
+                            skipped=len(result.get("skipped") or []),
+                        ),
+                    )
+        return True
+
     def _save(self) -> None:
+        if not self._handle_dir_migrations():
+            return
         old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
         new_lang = str(self.language_combo.currentData() or "zh-CN")
         self.cfg.set("app.language", new_lang)
@@ -481,6 +659,10 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         self.cfg.set(
             "ui.temp_dir",
             self.temp_dir_edit.text().strip().replace("\\", "/"),
+        )
+        self.cfg.set(
+            "local.models_dir",
+            self.models_dir_edit.text().strip().replace("\\", "/"),
         )
         self.cfg.set(
             "maya.advanced_skeleton_path",

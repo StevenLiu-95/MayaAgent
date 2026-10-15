@@ -150,6 +150,16 @@ class Config:
                 "download_dir": self.get("meshy.download_dir", ""),
                 "default_formats": self.get("meshy.default_formats", ["fbx", "glb"]),
             },
+            "local": {
+                "enabled": self.get("local.enabled", True),
+                "models_dir": self.get("local.models_dir", ""),
+                "runtime_host": self.get("local.runtime_host", "127.0.0.1"),
+                "runtime_port": int(self.get("local.runtime_port", 8770) or 8770),
+                "port_auto": self.get("local.port_auto", True),
+                "auto_start": self.get("local.auto_start", False),
+                "wait_timeout": self.get("local.wait_timeout", 1200),
+                "poll_interval": self.get("local.poll_interval", 2),
+            },
             "bridge": {
                 "enabled": self.get("bridge.enabled", True),
                 "auto_start": self.get("bridge.auto_start", False),
@@ -239,6 +249,13 @@ class Config:
             from maya_agent.tools.adv_rig import filter_system_prompt_adv
 
             text = filter_system_prompt_adv(text)
+        except Exception:
+            pass
+
+        try:
+            from maya_agent.local_models.availability import filter_system_prompt_local
+
+            text = filter_system_prompt_local(text)
         except Exception:
             pass
 

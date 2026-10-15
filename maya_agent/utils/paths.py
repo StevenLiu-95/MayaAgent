@@ -82,3 +82,41 @@ def agent_temp_subdir(name: str) -> Path:
     except OSError:
         pass
     return path
+
+
+def default_models_root() -> Path:
+    """Sibling of the MayaAgent project: .../MayaAgentModels."""
+    return _PROJECT_ROOT.parent / "MayaAgentModels"
+
+
+def models_root() -> Path:
+    """
+    Root directory for manually downloaded local model weights.
+
+    Reads ``local.models_dir`` when set; otherwise ``default_models_root()``.
+    """
+    raw = ""
+    try:
+        from maya_agent.utils.config import get_config
+
+        raw = str(get_config().get("local.models_dir") or "").strip()
+    except Exception:
+        raw = ""
+    if raw:
+        path = Path(os.path.expandvars(os.path.expanduser(raw)))
+    else:
+        path = default_models_root()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
+def local_runtime_install_root() -> Path:
+    """Default install location for the isolated Local Runtime venv."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "MayaAgent" / "local_runtime"

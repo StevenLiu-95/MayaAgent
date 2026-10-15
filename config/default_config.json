@@ -237,6 +237,16 @@
     "download_dir": "",
     "default_formats": ["fbx", "glb"]
   },
+  "local": {
+    "enabled": true,
+    "models_dir": "",
+    "runtime_host": "127.0.0.1",
+    "runtime_port": 8770,
+    "port_auto": true,
+    "auto_start": false,
+    "wait_timeout": 1200,
+    "poll_interval": 2
+  },
   "ui": {
     "dock_area": "right",
     "window_width": 420,

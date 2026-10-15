@@ -48,6 +48,8 @@ class RegisteredTool:
     # When False, ToolExecutor runs the handler on the worker thread
     # (HTTP / long polls). Maya cmds tools must keep the default True.
     main_thread: bool = True
+    # For category=local: gate via local_tools_gate(name) when True.
+    local_gated: bool = False
 
 
 _REGISTRY: Dict[str, RegisteredTool] = {}
@@ -61,6 +63,7 @@ def tool(
     destructive: bool = False,
     requires_vision: bool = False,
     main_thread: bool = True,
+    local_gated: bool = False,
 ):
     """Register a callable as an agent tool."""
 
@@ -74,6 +77,7 @@ def tool(
             destructive=destructive,
             requires_vision=requires_vision,
             main_thread=main_thread,
+            local_gated=local_gated or category == "local",
         )
         return fn
 
@@ -106,6 +110,14 @@ def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
     except Exception:
         adv_ok = False
 
+    local_gate = None
+    try:
+        from maya_agent.local_models.availability import local_tools_gate
+
+        local_gate = local_tools_gate
+    except Exception:
+        local_gate = None
+
     specs = []
     for t in _REGISTRY.values():
         if t.requires_vision and not vision:
@@ -114,6 +126,9 @@ def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
             continue
         if t.category == "adv" and not adv_ok:
             continue
+        if t.local_gated or t.category == "local":
+            if local_gate is None or not local_gate(t.name):
+                continue
         specs.append(
             ToolSpec(name=t.name, description=t.description, parameters=t.parameters)
         )
