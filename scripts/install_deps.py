@@ -9,7 +9,7 @@ Maya's bundled pip often breaks on Windows when IE/WinINET proxy is enabled
 3. Tries multiple PyPI mirrors (official → Tsinghua → Aliyun)
 4. Falls back to per-package install, then host-Python wheel download
 5. Last resort: install into project ``.vendor`` (injected on Maya Agent import)
-6. Verifies critical imports (httpx / requests / yaml)
+6. Verifies critical imports (httpx / requests / yaml / matplotlib)
 """
 
 from __future__ import annotations
@@ -45,14 +45,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 VENDOR_DIR = PROJECT_ROOT / ".vendor"
 
-# Packages we must be able to import after install (module name, pip name)
+# Packages we must be able to import after install (module name, pip name).
+# matplotlib is required for generate_chart; omitting it caused install.bat to
+# report success while charts stayed broken whenever httpx was already present.
 CRITICAL_IMPORTS: Tuple[Tuple[str, str], ...] = (
     ("httpx", "httpx"),
     ("requests", "requests"),
     ("yaml", "PyYAML"),
+    ("matplotlib", "matplotlib"),
 )
 
-# Minimal set required for chat (yaml is optional for config JSON)
+# Minimal set required for chat (yaml / charts optional for config JSON)
 CHAT_CRITICAL: Tuple[Tuple[str, str], ...] = (
     ("httpx", "httpx"),
     ("requests", "requests"),
@@ -598,7 +601,7 @@ def install_to_vendor(req: Path, *, force: bool = False) -> bool:
     env = _proxy_env(proxy)
     pkgs = package_names_from_req(req)
     if not pkgs:
-        pkgs = ["httpx", "requests", "PyYAML"]
+        pkgs = [pip for _mod, pip in CRITICAL_IMPORTS]
 
     for label, index in PIP_INDEXES:
         cmd = [
@@ -619,13 +622,13 @@ def install_to_vendor(req: Path, *, force: bool = False) -> bool:
         proc = _run(cmd, env=env, timeout=600)
         _print_proc(proc)
         if proc.returncode == 0:
-            # Verify in host process with vendor path
+            # Verify full critical set (incl. matplotlib for charts)
             ensure_vendor_on_sys_path()
-            missing = verify_imports_in_process(critical=CHAT_CRITICAL)
+            missing = verify_imports_in_process(critical=CRITICAL_IMPORTS)
             if not missing:
                 print(f"  [成功] vendor 依赖已就绪 → {VENDOR_DIR}")
                 return True
-    missing = verify_imports_in_process(critical=CHAT_CRITICAL)
+    missing = verify_imports_in_process(critical=CRITICAL_IMPORTS)
     if missing:
         print(f"  [失败] vendor 仍缺: {', '.join(missing)}")
         return False
@@ -708,21 +711,24 @@ def install_for_mayapy(
         print("  [步骤 4/4] 项目 .vendor 兜底（不依赖 mayapy site-packages）…")
         if install_to_vendor(req, force=force):
             # Also confirm mayapy can see vendor when we inject path
-            left = verify_imports(mayapy, critical=CHAT_CRITICAL, extra_paths=[VENDOR_DIR])
+            left = verify_imports(
+                mayapy, critical=CRITICAL_IMPORTS, extra_paths=[VENDOR_DIR]
+            )
             if not left:
                 print("  [成功] mayapy 可通过 .vendor 导入关键包")
                 return True
             # Vendor works in-process; Maya Agent __init__ will inject path
-            if not verify_imports_in_process(critical=CHAT_CRITICAL):
+            if not verify_imports_in_process(critical=CRITICAL_IMPORTS):
                 print("  [成功] .vendor 可用（Maya Agent 启动时自动注入）")
                 return True
 
     left = verify_imports(mayapy, extra_paths=[VENDOR_DIR] if VENDOR_DIR.is_dir() else None)
     if left:
         print(f"  [失败] 仍缺失: {', '.join(left)}")
+        crit = " ".join(pip for _mod, pip in CRITICAL_IMPORTS)
         print(
             f'  可手动执行:\n'
-            f'    "{mayapy}" -m pip install --upgrade httpx requests PyYAML\n'
+            f'    "{mayapy}" -m pip install --upgrade {crit}\n'
             f"  或重新运行 install.bat / scripts/install_deps.py --force"
         )
         return False

@@ -318,7 +318,7 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
         return
     root_fwd = str(root).replace("\\", "/")
     mod.write_text(
-        f"+ MayaAgent 1.5.1 {root_fwd}\n"
+        f"+ MayaAgent 1.5.2 {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",
@@ -694,7 +694,8 @@ def install_python_deps(
     report: InstallReport | None = None,
 ) -> int:
     """
-    Install httpx / requests / PyYAML into each Maya mayapy (and .vendor fallback).
+    Install critical deps (httpx / requests / PyYAML / matplotlib) into each
+    Maya mayapy (and .vendor fallback).
 
     Returns number of version failures (0 = all ok).
     """

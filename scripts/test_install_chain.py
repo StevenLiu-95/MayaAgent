@@ -254,6 +254,11 @@ def test_install_deps_proxy_detect() -> None:
     pkgs = mod.package_names_from_req(ROOT / "requirements.txt")
     if "httpx" not in pkgs:
         _fail("package_names_from_req", pkgs)
+    if "matplotlib" not in pkgs:
+        _fail("package_names_from_req missing matplotlib", pkgs)
+    crit_mods = {mod_name for mod_name, _pip in mod.CRITICAL_IMPORTS}
+    if "matplotlib" not in crit_mods:
+        _fail("CRITICAL_IMPORTS missing matplotlib", sorted(crit_mods))
     _ok("install_deps helpers")
 
 

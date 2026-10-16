@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.5.0"
+  version: "1.5.2"
   language: zh-CN
   theme: dark
 
@@ -213,7 +213,12 @@ meshy:
   enabled: true
   base_url: https://api.meshy.ai/openapi
   api_key_env: MESHY_API_KEY
-  timeout: 60
+  timeout: 60  # 普通 GET / 小 JSON
+  # 本地 FBX/图片会转成 data URI 上传；写超时过短会出现 The write operation timed out
+  upload_timeout: 180  # 大文件上传的最低写超时（秒）
+  upload_timeout_per_mb: 15  # 按请求体 MB 追加写超时
+  upload_timeout_max: 900  # 写超时上限
+  upload_retries: 2  # 上传超时/断连时的额外重试次数
   poll_interval: 5
   wait_timeout: 600
   download_dir: ""  # 空则放在 MayaAgent 同级目录 meshy_downloads/

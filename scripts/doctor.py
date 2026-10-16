@@ -147,12 +147,15 @@ def _check_shared_plugin(install_mod) -> List[Tuple[str, str, str]]:
     return rows
 
 
-def _probe_httpx(mayapy: Optional[Path], vendor: Path) -> Tuple[str, str, str]:
+def _probe_module(
+    module: str, mayapy: Optional[Path], vendor: Path
+) -> Tuple[str, str, str]:
+    """Check that ``module`` imports under mayapy (with optional .vendor) or host."""
     vendor_s = str(vendor.resolve()) if vendor.is_dir() else ""
     if mayapy and mayapy.is_file():
         code = (
             (f"import sys; sys.path.insert(0, r'{vendor_s}'); " if vendor_s else "")
-            + "import httpx; print('ok')"
+            + f"import {module}; print('ok')"
         )
         try:
             proc = subprocess.run(
@@ -164,19 +167,32 @@ def _probe_httpx(mayapy: Optional[Path], vendor: Path) -> Tuple[str, str, str]:
                 timeout=60,
             )
             if proc.returncode == 0:
-                return _ok("httpx (mayapy)", str(mayapy))
-            return _fail("httpx (mayapy)", (proc.stderr or proc.stdout or "import failed")[:200])
+                return _ok(f"{module} (mayapy)", str(mayapy))
+            return _fail(
+                f"{module} (mayapy)",
+                (proc.stderr or proc.stdout or "import failed")[:200],
+            )
         except Exception as e:
-            return _fail("httpx (mayapy)", str(e))
+            return _fail(f"{module} (mayapy)", str(e))
     # Host process + vendor
     if vendor_s and vendor_s not in sys.path:
         sys.path.insert(0, vendor_s)
     try:
-        import httpx  # noqa: F401
-
-        return _ok("httpx (host/.vendor)", vendor_s or "(site-packages)")
+        __import__(module)
+        return _ok(f"{module} (host/.vendor)", vendor_s or "(site-packages)")
     except ImportError:
-        return _fail("httpx", "not importable — run install.bat force or --vendor-only")
+        return _fail(
+            module,
+            "not importable — run install.bat force or --vendor-only",
+        )
+
+
+def _probe_httpx(mayapy: Optional[Path], vendor: Path) -> Tuple[str, str, str]:
+    return _probe_module("httpx", mayapy, vendor)
+
+
+def _probe_matplotlib(mayapy: Optional[Path], vendor: Path) -> Tuple[str, str, str]:
+    return _probe_module("matplotlib", mayapy, vendor)
 
 
 def run_doctor(versions: Optional[Sequence[str]] = None) -> int:
@@ -195,7 +211,12 @@ def run_doctor(versions: Optional[Sequence[str]] = None) -> int:
     if vendor.is_dir():
         rows.append(_ok(".vendor", str(vendor)))
     else:
-        rows.append(_warn(".vendor", "not present (ok if mayapy site-packages has httpx)"))
+        rows.append(
+            _warn(
+                ".vendor",
+                "not present (ok if mayapy site-packages has httpx/matplotlib)",
+            )
+        )
 
     install_mod = _load_install_mod()
     rows.extend(_check_shared_plugin(install_mod))
@@ -224,6 +245,7 @@ def run_doctor(versions: Optional[Sequence[str]] = None) -> int:
         vrows.append(_check_module(modules))
         vrows.append(_check_plugin_prefs(install_mod, ver))
         vrows.append(_probe_httpx(mp, vendor))
+        vrows.append(_probe_matplotlib(mp, vendor))
         for status, label, detail in vrows:
             print(f"  [{status:4}] {label}: {detail}")
             rows.append((status, f"{ver}/{label}", detail))

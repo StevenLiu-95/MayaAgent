@@ -103,7 +103,7 @@ if !DEP_RC! NEQ 0 (
   if !ERRORLEVEL! EQU 0 (
     echo   [成功] .vendor 已就绪；Maya Agent 启动时会自动注入该路径。
   ) else (
-    echo   [警告] .vendor 也失败。菜单仍可出现；对话需要 httpx。
+    echo   [警告] .vendor 也失败。菜单仍可出现；对话需要 httpx，图表需要 matplotlib。
     echo          可稍后执行: install.bat force
   )
 ) else (
@@ -131,7 +131,7 @@ echo ============================================================
 echo   请完全退出并重启 Maya，然后检查:
 echo     1. 顶部菜单是否有「Maya Agent」
 echo     2. 工具架是否有「MayaAgent」页签
-echo     3. 对话前确认 Script Editor 无 ModuleNotFoundError: httpx
+echo     3. 对话前确认 Script Editor 无 ModuleNotFoundError: httpx / matplotlib
 echo.
 echo   诊断: python scripts\doctor.py
 echo.

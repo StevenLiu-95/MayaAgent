@@ -586,6 +586,7 @@ def meshy_remesh(
         "Meshy 格式转换。input_task_id 或 model_url/path + target_formats（必填）。"
         "本地 FBX→GLB（供绑骨）时，FBX 必须用 export_fbx(embed_textures=true) 嵌入贴图；"
         "仅外部贴图路径的 FBX 上传后会丢贴图，后续绑骨导入必为白模。"
+        "大文件会自动加长上传写超时并重试；若仍超时可缩小嵌入贴图后再导出。"
     ),
     parameters=obj_schema(
         {

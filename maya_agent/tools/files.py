@@ -286,9 +286,42 @@ def save_chat_images(limit: int = 4) -> ToolResult:
 
 
 @tool(
+    name="list_chat_files",
+    description=(
+        "列出最近对话中用户附加文件落盘后的本地路径（保存在 chat_files/）。"
+        "用户通过「+」或拖入附加的非图片文件，发送后可在此查询。"
+    ),
+    parameters=obj_schema(
+        {"limit": {"type": "integer", "default": 10}},
+    ),
+    category="files",
+    main_thread=False,
+)
+def list_chat_files(limit: int = 10) -> ToolResult:
+    try:
+        items = fsutil.list_staged_chat_files(limit=limit)
+        return ToolResult(
+            ok=True,
+            data={
+                "count": len(items),
+                "files": items,
+                "directory": str(fsutil.chat_files_dir()).replace("\\", "/"),
+            },
+            message=(
+                f"共 {len(items)} 个对话附件"
+                if items
+                else "暂无落盘的对话附件（请先在输入框附加文件并发送）"
+            ),
+        )
+    except Exception as e:
+        return _err(e)
+
+
+@tool(
     name="get_workspace_info",
     description=(
-        "返回 Agent 文件工作区根路径、chat_images/temp 目录，以及可写白名单根列表。"
+        "返回 Agent 文件工作区根路径、chat_images/chat_files/temp 目录，"
+        "以及可写白名单根列表。"
     ),
     parameters=obj_schema({}),
     category="files",
@@ -300,6 +333,7 @@ def get_workspace_info() -> ToolResult:
         data: Dict[str, Any] = {
             "workspace_root": str(fsutil.workspace_root()).replace("\\", "/"),
             "chat_images_dir": str(fsutil.chat_images_dir()).replace("\\", "/"),
+            "chat_files_dir": str(fsutil.chat_files_dir()).replace("\\", "/"),
             "temp_dir": str(fsutil.temp_dir()).replace("\\", "/"),
             "write_roots": roots,
         }

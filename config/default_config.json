@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.5.1",
+    "version": "1.5.2",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -232,6 +232,10 @@
     "base_url": "https://api.meshy.ai/openapi",
     "api_key_env": "MESHY_API_KEY",
     "timeout": 60,
+    "upload_timeout": 180,
+    "upload_timeout_per_mb": 15,
+    "upload_timeout_max": 900,
+    "upload_retries": 2,
     "poll_interval": 5,
     "wait_timeout": 600,
     "download_dir": "",

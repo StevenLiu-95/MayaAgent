@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from maya_agent import __app_name__, __version__
 from maya_agent.core.agent import MayaAgent
 from maya_agent.core.session_manager import SessionManager
@@ -29,6 +31,7 @@ from maya_agent.utils.maya_compat import (
 )
 from maya_agent.llm.base import stop_notice_for_reason
 from maya_agent.llm.vision import model_supports_vision
+from maya_agent.tools.fsutil import MAX_CHAT_FILES, stage_chat_files
 from maya_agent.ui.image_attach import (
     MAX_IMAGES,
     attachment_from_path,
@@ -187,6 +190,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._stream_buf = ""
         self._thinking_buf = ""
         self._pending_images = []
+        self._pending_files = []  # [{path, name, size_bytes}, ...]
         self._vision_enabled = False
         self._stream_timer = QtCore.QTimer(self)
         self._stream_timer.setSingleShot(True)
@@ -356,26 +360,37 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._quick_body.hide()
         composer_layout.addWidget(self._quick_body)
 
+        # Compact by default (chip 68 + margins 8); grow only when h-scrollbar appears.
+        self._ATTACH_STRIP_BASE_H = 76
+        self._ATTACH_STRIP_BAR_H = 10
         self._image_strip = QtWidgets.QScrollArea()
         self._image_strip.setObjectName("imageStrip")
         self._image_strip.setWidgetResizable(True)
         self._image_strip.setFrameShape(QtWidgets.QFrame.NoFrame)
         self._image_strip.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self._image_strip.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self._image_strip.setFixedHeight(64)
+        self._image_strip.setFixedHeight(self._ATTACH_STRIP_BASE_H)
         self._image_strip.hide()
         strip_host = QtWidgets.QWidget()
         strip_host.setObjectName("imageStripHost")
         self._image_strip_lay = QtWidgets.QHBoxLayout(strip_host)
-        self._image_strip_lay.setContentsMargins(2, 2, 2, 2)
-        self._image_strip_lay.setSpacing(6)
+        self._image_strip_lay.setContentsMargins(2, 4, 2, 4)
+        self._image_strip_lay.setSpacing(8)
+        self._image_strip_lay.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._image_strip_lay.addStretch(1)
         self._image_strip.setWidget(strip_host)
+        # Prefer horizontal wheel over QScrollArea's default vertical handling.
+        self._image_strip.installEventFilter(self)
+        self._image_strip.viewport().installEventFilter(self)
+        strip_host.installEventFilter(self)
+        self._image_strip.horizontalScrollBar().rangeChanged.connect(
+            lambda *_args: self._sync_attach_strip_height()
+        )
         composer_layout.addWidget(self._image_strip)
 
         self.input_edit = QtWidgets.QPlainTextEdit()
         self.input_edit.setObjectName("composerInput")
-        self.input_edit.setPlaceholderText(t("composer.placeholder_vision"))
+        self.input_edit.setPlaceholderText(t("composer.placeholder_attach"))
         self.input_edit.setMinimumHeight(48)
         self.input_edit.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
@@ -394,7 +409,8 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self.image_btn.setObjectName("attachBtn")
         self.image_btn.setFixedSize(26, 26)
         self.image_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.image_btn.clicked.connect(self._on_pick_images)
+        self.image_btn.setToolTip(t("composer.attach_tip"))
+        self.image_btn.clicked.connect(self._on_pick_attachments)
 
         self.status_label = create_animated_status(composer)
         self.status_label.setObjectName("composerStatus")
@@ -569,6 +585,17 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         return self.help_panel
 
     def eventFilter(self, obj, event):
+        strip = getattr(self, "_image_strip", None)
+        if (
+            strip is not None
+            and obj is strip
+            and event.type() == QtCore.QEvent.Resize
+        ):
+            # Width changes may show/hide the h-bar; sync after layout settles.
+            QtCore.QTimer.singleShot(0, self._sync_attach_strip_height)
+        if event.type() == QtCore.QEvent.Wheel and self._is_attach_strip_target(obj):
+            if self._scroll_attach_strip_horizontal(event):
+                return True
         if self._is_composer_target(obj) and event.type() == QtCore.QEvent.KeyPress:
             mods = event.modifiers()
             ctrl_v = event.key() == QtCore.Qt.Key_V and bool(
@@ -597,11 +624,11 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             QtCore.QEvent.DragEnter,
             QtCore.QEvent.DragMove,
         ):
-            if self._drop_has_images(event):
+            if self._drop_has_local_files(event):
                 event.acceptProposedAction()
                 return True
         if self._is_composer_target(obj) and event.type() == QtCore.QEvent.Drop:
-            if self._take_dropped_images(event):
+            if self._take_dropped_files(event):
                 event.acceptProposedAction()
                 return True
         return super().eventFilter(obj, event)
@@ -611,6 +638,74 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         if edit is None:
             return False
         return obj is edit or obj is edit.viewport()
+
+    def _is_attach_strip_target(self, obj) -> bool:
+        strip = getattr(self, "_image_strip", None)
+        if strip is None or obj is None:
+            return False
+        if obj is strip or obj is strip.viewport():
+            return True
+        host = strip.widget()
+        if host is not None and obj is host:
+            return True
+        # Chips / remove buttons live under the host — still treat as strip.
+        try:
+            w = obj
+            while w is not None:
+                if w is host or w is strip:
+                    return True
+                w = w.parentWidget()
+        except Exception:
+            pass
+        return False
+
+    def _scroll_attach_strip_horizontal(self, event) -> bool:
+        strip = getattr(self, "_image_strip", None)
+        if strip is None or not strip.isVisible():
+            return False
+        from maya_agent.ui.qt_wheel import scroll_area_horizontal_by_wheel
+
+        if scroll_area_horizontal_by_wheel(strip, event):
+            try:
+                event.accept()
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _attach_strip_needs_scrollbar(self) -> bool:
+        strip = getattr(self, "_image_strip", None)
+        if strip is None:
+            return False
+        try:
+            bar = strip.horizontalScrollBar()
+            if bar is None:
+                return False
+            if int(bar.maximum()) > int(bar.minimum()):
+                return True
+            # Fallback: content wider than viewport before range updates.
+            host = strip.widget()
+            if host is None:
+                return False
+            return int(host.sizeHint().width()) > int(strip.viewport().width())
+        except Exception:
+            return False
+
+    def _sync_attach_strip_height(self) -> None:
+        """Tight height by default; expand only while the h-scrollbar is needed."""
+        strip = getattr(self, "_image_strip", None)
+        if strip is None:
+            return
+        base = int(getattr(self, "_ATTACH_STRIP_BASE_H", 76) or 76)
+        bar_h = int(getattr(self, "_ATTACH_STRIP_BAR_H", 10) or 10)
+        if not strip.isVisible():
+            if strip.height() != base:
+                strip.setFixedHeight(base)
+            return
+        need_bar = self._attach_strip_needs_scrollbar()
+        target = base + (bar_h if need_bar else 0)
+        if int(strip.height()) != target:
+            strip.setFixedHeight(target)
 
     def _show_welcome(self):
         self.chat.clear()
@@ -901,40 +996,27 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._vision_enabled = model_supports_vision(pid, model)
         busy = bool(self._worker and self._worker.isRunning())
         if hasattr(self, "image_btn"):
-            self.image_btn.setEnabled(self._vision_enabled and not busy)
-            if self._vision_enabled:
-                self.image_btn.setToolTip(t("composer.attach_tip"))
-                self.input_edit.setPlaceholderText(
-                    t("composer.placeholder_vision")
-                )
-            else:
-                self.image_btn.setToolTip(t("composer.attach_disabled_tip"))
-                self.input_edit.setPlaceholderText(t("composer.placeholder"))
+            self.image_btn.setEnabled(not busy)
+            self.image_btn.setToolTip(t("composer.attach_tip"))
+        if hasattr(self, "input_edit"):
+            self.input_edit.setPlaceholderText(t("composer.placeholder_attach"))
+        # Vision-only image payloads cannot be sent without a vision model —
+        # demote them to path-based file attachments when possible is not available
+        # (ImageAttachment has no original path), so clear pending images.
         if not self._vision_enabled and self._pending_images:
             self._pending_images = []
-            self._rebuild_image_strip()
+            self._rebuild_attach_strip()
 
-    def _on_pick_images(self):
-        if not self._vision_enabled:
-            return
+    def _on_pick_attachments(self):
         paths, _selected = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            t("composer.pick_images"),
+            t("composer.pick_files"),
             "",
-            t("composer.image_filter"),
+            t("composer.file_filter"),
         )
         if not paths:
             return
-        added = []
-        errors = []
-        for path in paths:
-            try:
-                added.append(attachment_from_path(path))
-            except Exception as e:
-                errors.append(str(e))
-        self._add_pending_images(added)
-        if errors:
-            self.status_label.set_idle(errors[0])
+        self._ingest_local_paths(paths)
 
     def _try_paste_images(self) -> bool:
         try:
@@ -949,42 +1031,72 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._add_pending_images(found)
         return True
 
-    def _drop_has_images(self, event) -> bool:
+    def _drop_has_local_files(self, event) -> bool:
         mime = event.mimeData()
         if mime is None or not mime.hasUrls():
             return False
         for url in mime.urls():
-            if url.isLocalFile() and is_image_path(url.toLocalFile()):
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if path and QtCore.QFileInfo(path).isFile():
                 return True
         return False
 
-    def _take_dropped_images(self, event) -> bool:
-        if not self._drop_has_images(event):
+    def _take_dropped_files(self, event) -> bool:
+        if not self._drop_has_local_files(event):
             return False
-        if not self._vision_enabled:
-            self.status_label.set_idle(t("status.no_vision"))
-            return True
         mime = event.mimeData()
         if mime is None:
             return False
-        added = []
-        errors = []
+        paths = []
         for url in mime.urls() or []:
             if not url.isLocalFile():
                 continue
             path = url.toLocalFile()
-            if not is_image_path(path):
-                continue
-            try:
-                added.append(attachment_from_path(path))
-            except Exception as e:
-                errors.append(str(e))
-        if not added and not errors:
+            if path and QtCore.QFileInfo(path).isFile():
+                paths.append(path)
+        if not paths:
             return False
-        self._add_pending_images(added)
+        self._ingest_local_paths(paths)
+        return True
+
+    def _file_ref_from_path(self, path: str) -> Optional[dict]:
+        info = QtCore.QFileInfo(path)
+        if not info.isFile():
+            return None
+        abs_path = info.absoluteFilePath().replace("\\", "/")
+        return {
+            "path": abs_path,
+            "name": info.fileName() or abs_path.rsplit("/", 1)[-1],
+            "size_bytes": int(info.size()),
+        }
+
+    def _ingest_local_paths(self, paths) -> None:
+        """Classify paths into vision images (when supported) or file attachments."""
+        images = []
+        files = []
+        errors = []
+        for path in paths or []:
+            path = (path or "").strip()
+            if not path:
+                continue
+            if is_image_path(path) and self._vision_enabled:
+                try:
+                    images.append(attachment_from_path(path))
+                    continue
+                except Exception as e:
+                    # Fall through: still attach as a file path for tools.
+                    errors.append(str(e))
+            ref = self._file_ref_from_path(path)
+            if ref is None:
+                errors.append(t("status.file_missing", path=path))
+                continue
+            files.append(ref)
+        self._add_pending_images(images)
+        self._add_pending_files(files)
         if errors:
             self.status_label.set_idle(errors[0])
-        return True
 
     def _add_pending_images(self, images) -> None:
         if not images:
@@ -998,56 +1110,259 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self.status_label.set_idle(t("status.max_images", n=MAX_IMAGES))
             extra = extra[:room]
         self._pending_images.extend(extra)
-        self._rebuild_image_strip()
+        self._rebuild_attach_strip()
 
-    def _rebuild_image_strip(self) -> None:
+    def _add_pending_files(self, files) -> None:
+        if not files:
+            return
+        existing = {str(f.get("path") or "") for f in self._pending_files}
+        room = MAX_CHAT_FILES - len(self._pending_files)
+        if room <= 0:
+            self.status_label.set_idle(t("status.max_files", n=MAX_CHAT_FILES))
+            return
+        extra = []
+        for f in files:
+            p = str(f.get("path") or "")
+            if not p or p in existing:
+                continue
+            existing.add(p)
+            extra.append(f)
+            if len(extra) >= room:
+                if len(files) > len(extra):
+                    self.status_label.set_idle(
+                        t("status.max_files", n=MAX_CHAT_FILES)
+                    )
+                break
+        if not extra:
+            return
+        self._pending_files.extend(extra)
+        self._rebuild_attach_strip()
+
+    def _format_size(self, size_bytes: int) -> str:
+        try:
+            n = int(size_bytes or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 1024:
+            return f"{n} B"
+        if n < 1024 * 1024:
+            return f"{n / 1024:.1f} KB"
+        if n < 1024 * 1024 * 1024:
+            return f"{n / (1024 * 1024):.1f} MB"
+        return f"{n / (1024 * 1024 * 1024):.1f} GB"
+
+    @staticmethod
+    def _file_ext_style(name: str):
+        """Return (badge_text, bg_hex, fg_hex) for a file chip badge."""
+        ext = ""
+        raw = name or ""
+        if "." in raw:
+            ext = raw.rsplit(".", 1)[-1].lower().strip()
+        badge = (ext[:4].upper() if ext else "FILE") or "FILE"
+        # (extensions, bg, fg)
+        groups = (
+            (
+                {"mp4", "mov", "avi", "mkv", "webm", "wmv", "m4v"},
+                "#3a2848",
+                "#e0b8ff",
+            ),
+            (
+                {
+                    "fbx",
+                    "obj",
+                    "abc",
+                    "glb",
+                    "gltf",
+                    "usd",
+                    "usda",
+                    "usdc",
+                    "ma",
+                    "mb",
+                    "blend",
+                    "stl",
+                    "ply",
+                },
+                "#1e3648",
+                "#9fd0f5",
+            ),
+            (
+                {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tga", "exr", "tif", "tiff"},
+                "#1e3a2a",
+                "#9fd4b0",
+            ),
+            (
+                {"wav", "mp3", "flac", "ogg", "aac", "aiff"},
+                "#3a3420",
+                "#e8d080",
+            ),
+            (
+                {"py", "mel", "js", "ts", "json", "yaml", "yml", "xml", "cs", "cpp", "h"},
+                "#282848",
+                "#b8b8f0",
+            ),
+            (
+                {"zip", "rar", "7z", "tar", "gz"},
+                "#3a2e20",
+                "#e0b888",
+            ),
+            (
+                {"txt", "md", "csv", "log", "pdf", "doc", "docx"},
+                "#243038",
+                "#a8c8d8",
+            ),
+        )
+        for exts, bg, fg in groups:
+            if ext in exts:
+                return badge, bg, fg
+        return badge, "#2a2b34", "#b4b4bc"
+
+    def _make_remove_btn(self, on_click) -> "QtWidgets.QPushButton":
+        remove = QtWidgets.QPushButton("×")
+        remove.setObjectName("imageChipRemove")
+        remove.setFixedSize(18, 18)
+        remove.setCursor(QtCore.Qt.PointingHandCursor)
+        remove.setToolTip(t("composer.remove_attach"))
+        remove.clicked.connect(on_click)
+        return remove
+
+    def _make_file_chip(self, fref: dict, index: int) -> "QtWidgets.QFrame":
+        name = fref.get("name") or t("composer.file_alt")
+        size_text = self._format_size(int(fref.get("size_bytes") or 0))
+        path = fref.get("path") or ""
+        badge_text, bg, fg = self._file_ext_style(name)
+
+        chip = QtWidgets.QFrame()
+        chip.setObjectName("fileChip")
+        chip.setFixedSize(168, 60)
+        chip.setAttribute(QtCore.Qt.WA_Hover, True)
+        tip = name if not path else f"{name}\n{size_text}\n{path}"
+        chip.setToolTip(tip)
+        chip.setCursor(QtCore.Qt.ArrowCursor)
+
+        root = QtWidgets.QGridLayout(chip)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        body = QtWidgets.QWidget(chip)
+        row = QtWidgets.QHBoxLayout(body)
+        row.setContentsMargins(8, 8, 22, 8)
+        row.setSpacing(8)
+
+        badge = QtWidgets.QLabel(badge_text)
+        badge.setObjectName("fileChipBadge")
+        badge.setFixedSize(40, 40)
+        badge.setAlignment(QtCore.Qt.AlignCenter)
+        badge.setStyleSheet(
+            f"QLabel#fileChipBadge {{"
+            f" background-color: {bg}; color: {fg};"
+            f" border: none; border-radius: 8px;"
+            f" font-size: 10px; font-weight: 700;"
+            f" }}"
+        )
+
+        text_col = QtWidgets.QVBoxLayout()
+        text_col.setContentsMargins(0, 2, 0, 2)
+        text_col.setSpacing(2)
+
+        name_lbl = QtWidgets.QLabel()
+        name_lbl.setObjectName("fileChipName")
+        name_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        fm = name_lbl.fontMetrics()
+        name_lbl.setText(fm.elidedText(name, QtCore.Qt.ElideMiddle, 108))
+        name_lbl.setToolTip(name)
+
+        meta_lbl = QtWidgets.QLabel(size_text)
+        meta_lbl.setObjectName("fileChipMeta")
+        meta_lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        text_col.addWidget(name_lbl)
+        text_col.addWidget(meta_lbl)
+        row.addWidget(badge, 0, QtCore.Qt.AlignVCenter)
+        row.addLayout(text_col, 1)
+
+        remove = self._make_remove_btn(
+            lambda checked=False, i=index: self._remove_pending_file(i)
+        )
+        root.addWidget(body, 0, 0)
+        root.addWidget(remove, 0, 0, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
+        return chip
+
+    def _rebuild_attach_strip(self) -> None:
         lay = self._image_strip_lay
         while lay.count() > 1:
             item = lay.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        if not self._pending_images:
+        has_any = bool(self._pending_images or self._pending_files)
+        if not has_any:
             self._image_strip.hide()
+            self._sync_attach_strip_height()
             return
         for idx, img in enumerate(self._pending_images):
             chip = QtWidgets.QFrame()
             chip.setObjectName("imageChip")
             chip.setFixedSize(68, 68)
+            chip.setAttribute(QtCore.Qt.WA_Hover, True)
+            chip.setToolTip(img.name or img.mime or t("composer.image_alt"))
             box = QtWidgets.QGridLayout(chip)
-            box.setContentsMargins(2, 2, 2, 2)
+            box.setContentsMargins(4, 4, 4, 4)
             box.setSpacing(0)
             from maya_agent.ui.image_viewer import make_clickable_thumb
 
             thumb = make_clickable_thumb(
                 img,
-                edge=60,
-                fixed_w=64,
-                fixed_h=64,
+                edge=56,
+                fixed_w=60,
+                fixed_h=60,
                 parent=chip,
                 gallery=list(self._pending_images),
                 index=idx,
                 tooltip=img.name or img.mime or t("composer.image_alt"),
                 stylesheet=(
-                    "QLabel { background:transparent; border:none; border-radius:6px; }"
+                    "QLabel {"
+                    " background:#14151a; border:none; border-radius:6px;"
+                    " }"
                 ),
             )
-            remove = QtWidgets.QPushButton("×")
-            remove.setObjectName("imageChipRemove")
-            remove.setFixedSize(16, 16)
-            remove.setCursor(QtCore.Qt.PointingHandCursor)
-            remove.clicked.connect(
+            remove = self._make_remove_btn(
                 lambda checked=False, i=idx: self._remove_pending_image(i)
             )
             box.addWidget(thumb, 0, 0)
             box.addWidget(remove, 0, 0, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
+            chip.installEventFilter(self)
+            lay.insertWidget(lay.count() - 1, chip)
+        for idx, fref in enumerate(self._pending_files):
+            chip = self._make_file_chip(fref, idx)
+            chip.installEventFilter(self)
             lay.insertWidget(lay.count() - 1, chip)
         self._image_strip.show()
+        # Height depends on whether content overflows — update after layout.
+        self._sync_attach_strip_height()
+        QtCore.QTimer.singleShot(0, self._sync_attach_strip_height)
 
     def _remove_pending_image(self, index: int) -> None:
         if 0 <= index < len(self._pending_images):
             del self._pending_images[index]
-            self._rebuild_image_strip()
+            self._rebuild_attach_strip()
+
+    def _remove_pending_file(self, index: int) -> None:
+        if 0 <= index < len(self._pending_files):
+            del self._pending_files[index]
+            self._rebuild_attach_strip()
+
+    def _build_file_attachment_note(self, staged: list) -> str:
+        if not staged:
+            return ""
+        lines = [t("composer.attached_files_header")]
+        for item in staged:
+            name = item.get("original_name") or item.get("name") or ""
+            path = item.get("path") or ""
+            if name and path:
+                lines.append(f"- {name}: {path}")
+            elif path:
+                lines.append(f"- {path}")
+        return "\n".join(lines)
 
     def _confirm_destructive(self, name: str, args: dict) -> bool:
         # 「允许本轮对话执行」后，本轮内后续危险工具不再弹窗
@@ -1108,6 +1423,9 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._cancel_pending_save()
         self.sessions.reset_active()
         self.agent.reset()
+        self._pending_images = []
+        self._pending_files = []
+        self._rebuild_attach_strip()
         self._show_welcome()
         self._persist_active_session(refresh_combo=True)
         self.status_label.set_idle(t("status.cleared"))
@@ -1189,12 +1507,13 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._apply_send_stop_style(busy)
         self.input_edit.setReadOnly(busy)
         if hasattr(self, "image_btn"):
-            self.image_btn.setEnabled(self._vision_enabled and not busy)
+            self.image_btn.setEnabled(not busy)
 
     def _on_send(self):
         text = self.input_edit.toPlainText().strip()
         images = list(self._pending_images)
-        if not text and not images:
+        files = list(self._pending_files)
+        if not text and not images and not files:
             return
         if self._worker and self._worker.isRunning():
             return
@@ -1214,7 +1533,43 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self._refresh_image_input()
             return
 
-        display = text or t("composer.view_image")
+        staged_files = []
+        if files:
+            try:
+                staged_files = stage_chat_files([f.get("path") for f in files])
+            except Exception as e:
+                self.status_label.set_idle(str(e))
+                return
+            if not staged_files:
+                self.status_label.set_idle(t("status.attach_failed"))
+                return
+
+        file_note = self._build_file_attachment_note(staged_files)
+        if text and file_note:
+            agent_text = f"{text}\n\n{file_note}"
+        elif file_note:
+            agent_text = file_note
+        elif text:
+            agent_text = text
+        else:
+            agent_text = t("composer.view_image")
+
+        if text:
+            display = text
+            if staged_files:
+                names = ", ".join(
+                    (x.get("original_name") or x.get("name") or "")
+                    for x in staged_files
+                )
+                display = f"{text}\n{t('composer.attached_files_short', names=names)}"
+        elif staged_files:
+            names = ", ".join(
+                (x.get("original_name") or x.get("name") or "") for x in staged_files
+            )
+            display = t("composer.attached_files_short", names=names)
+        else:
+            display = t("composer.view_image")
+
         self.chat.add_user(display, images=images or None)
         self.chat.begin_assistant()
         self._stream_buf = ""
@@ -1223,13 +1578,14 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._stopped_by_user = False
         self.input_edit.clear()
         self._pending_images = []
-        self._rebuild_image_strip()
+        self._pending_files = []
+        self._rebuild_attach_strip()
         self._set_busy(True)
         self.status_label.set_thinking()
 
         stream = bool(get_config().get("agent.stream", True))
         self._worker = create_agent_worker(
-            self.agent, display, stream, images or None, parent=self
+            self.agent, agent_text, stream, images or None, parent=self
         )
         self._worker.signals.event.connect(self._on_event)
         self._worker.signals.finished.connect(self._on_finished)

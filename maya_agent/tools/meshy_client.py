@@ -137,12 +137,102 @@ def meshy_cfg() -> Dict[str, Any]:
         "enabled": bool(cfg.get("meshy.enabled", True)),
         "base_url": str(cfg.get("meshy.base_url") or "https://api.meshy.ai/openapi").rstrip("/"),
         "api_key_env": str(cfg.get("meshy.api_key_env") or "MESHY_API_KEY"),
+        # Default for small JSON GETs / lightweight POSTs.
         "timeout": float(cfg.get("meshy.timeout", 60) or 60),
+        # Local model/image uploads use data: URIs — need a longer *write* budget.
+        "upload_timeout": float(cfg.get("meshy.upload_timeout", 180) or 180),
+        "upload_timeout_per_mb": float(cfg.get("meshy.upload_timeout_per_mb", 15) or 15),
+        "upload_timeout_max": float(cfg.get("meshy.upload_timeout_max", 900) or 900),
+        "upload_retries": int(cfg.get("meshy.upload_retries", 2) or 2),
         "poll_interval": float(cfg.get("meshy.poll_interval", 5) or 5),
         "wait_timeout": float(cfg.get("meshy.wait_timeout", 600) or 600),
         "download_dir": str(cfg.get("meshy.download_dir") or ""),
         "default_formats": list(cfg.get("meshy.default_formats") or ["fbx", "glb"]),
     }
+
+
+def estimate_data_uri_payload_bytes(json_body: Optional[Dict[str, Any]]) -> int:
+    """Sum lengths of ``data:`` URI strings in a request body (approx. wire size)."""
+    if not json_body:
+        return 0
+
+    total = 0
+
+    def _walk(value: Any) -> None:
+        nonlocal total
+        if isinstance(value, str):
+            if value.startswith("data:"):
+                total += len(value)
+        elif isinstance(value, dict):
+            for v in value.values():
+                _walk(v)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                _walk(v)
+
+    _walk(json_body)
+    return total
+
+
+def httpx_timeout_for_payload(
+    payload_bytes: int,
+    *,
+    base_timeout: Optional[float] = None,
+) -> httpx.Timeout:
+    """
+    Build an httpx timeout.
+
+    Large data-URI bodies fail with ``The write operation timed out`` when a
+    single scalar timeout (default 60s) is applied to the write phase.
+    """
+    conf = meshy_cfg()
+    base = float(base_timeout if base_timeout is not None else conf["timeout"])
+    if payload_bytes <= 256 * 1024:
+        return httpx.Timeout(base)
+
+    upload_base = float(conf["upload_timeout"])
+    per_mb = float(conf["upload_timeout_per_mb"])
+    upload_max = float(conf["upload_timeout_max"])
+    mb = payload_bytes / (1024.0 * 1024.0)
+    write = min(upload_max, max(upload_base, mb * per_mb))
+    # After the body is sent, Meshy usually returns a task id quickly.
+    read = max(base, 120.0)
+    return httpx.Timeout(connect=30.0, read=read, write=write, pool=30.0)
+
+
+def _is_transient_upload_error(exc: BaseException) -> bool:
+    """True when a create/upload failure is worth retrying (no response yet)."""
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, MeshyError):
+        msg = str(exc).lower()
+        return (
+            "请求超时" in str(exc)
+            or "timed out" in msg
+            or "disconnected" in msg
+            or "网络错误" in str(exc)
+        )
+    return False
+
+
+def _format_upload_timeout_error(
+    exc: BaseException,
+    *,
+    payload_bytes: int,
+    timeout: httpx.Timeout,
+    attempts: int,
+) -> str:
+    mb = payload_bytes / (1024.0 * 1024.0)
+    write = getattr(timeout, "write", None)
+    write_s = f"{float(write):.0f}s" if write is not None else "默认"
+    hint = (
+        f"本地上传约 {mb:.1f}MB（data URI），写超时 {write_s}，已重试 {max(0, attempts - 1)} 次仍失败。"
+        "可增大 meshy.upload_timeout / upload_timeout_per_mb，"
+        "或用更小的嵌入贴图 FBX（export_fbx embed_textures=true）后再 convert。"
+    )
+    return f"Meshy 请求超时：{exc}。{hint}"
 
 
 def get_meshy_api_key() -> str:
@@ -438,6 +528,7 @@ class MeshyClient:
             )
         self.base_url = conf["base_url"]
         self.timeout = conf["timeout"]
+        self.upload_retries = int(conf.get("upload_retries", 2) or 2)
         self.poll_interval = conf["poll_interval"]
         self.wait_timeout = conf["wait_timeout"]
         self.default_formats = list(conf["default_formats"] or ["fbx", "glb"])
@@ -462,44 +553,142 @@ class MeshyClient:
         *,
         json_body: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        timeout: Optional[httpx.Timeout] = None,
+        retries: int = 0,
     ) -> Tuple[Any, httpx.Headers]:
         url = self._url(path)
-        try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-                resp = client.request(
-                    method.upper(),
-                    url,
-                    headers=self._headers(),
-                    json=json_body,
-                    params=params,
+        payload_bytes = estimate_data_uri_payload_bytes(json_body)
+        req_timeout = timeout or httpx_timeout_for_payload(
+            payload_bytes, base_timeout=self.timeout
+        )
+        attempts = max(1, int(retries) + 1)
+        last_exc: Optional[BaseException] = None
+
+        for attempt in range(attempts):
+            try:
+                with httpx.Client(timeout=req_timeout, follow_redirects=True) as client:
+                    resp = client.request(
+                        method.upper(),
+                        url,
+                        headers=self._headers(),
+                        json=json_body,
+                        params=params,
+                    )
+            except httpx.TimeoutException as e:
+                last_exc = e
+                if attempt + 1 < attempts and _is_transient_upload_error(e):
+                    log.warning(
+                        "Meshy timeout %s %s attempt %s/%s (payload≈%.1fMB write=%s): %s",
+                        method,
+                        path,
+                        attempt + 1,
+                        attempts,
+                        payload_bytes / (1024.0 * 1024.0),
+                        getattr(req_timeout, "write", None),
+                        e,
+                    )
+                    time.sleep(min(8.0, 1.5 * (2**attempt)))
+                    continue
+                if payload_bytes > 256 * 1024:
+                    raise MeshyError(
+                        _format_upload_timeout_error(
+                            e,
+                            payload_bytes=payload_bytes,
+                            timeout=req_timeout,
+                            attempts=attempts,
+                        )
+                    ) from e
+                raise MeshyError(f"Meshy 请求超时：{e}") from e
+            except httpx.HTTPError as e:
+                last_exc = e
+                if attempt + 1 < attempts and _is_transient_upload_error(e):
+                    log.warning(
+                        "Meshy transport error %s %s attempt %s/%s: %s",
+                        method,
+                        path,
+                        attempt + 1,
+                        attempts,
+                        e,
+                    )
+                    time.sleep(min(8.0, 1.5 * (2**attempt)))
+                    continue
+                if payload_bytes > 256 * 1024 and _is_transient_upload_error(e):
+                    raise MeshyError(
+                        f"Meshy 网络错误：{e}。"
+                        f"本地上传约 {payload_bytes / (1024.0 * 1024.0):.1f}MB（data URI），"
+                        f"已重试 {max(0, attempts - 1)} 次。"
+                        "可增大 meshy.upload_timeout，或减小嵌入贴图后的 FBX 体积。"
+                    ) from e
+                raise MeshyError(f"Meshy 网络错误：{e}") from e
+
+            body: Any
+            try:
+                body = resp.json() if resp.content else None
+            except Exception:
+                body = (resp.text or "")[:500]
+
+            if resp.status_code >= 400:
+                if resp.status_code == 401:
+                    mark_meshy_key_invalid(self.api_key)
+                # 5xx on create/upload: retry — task id not confirmed yet.
+                if (
+                    resp.status_code >= 500
+                    and attempt + 1 < attempts
+                    and method.upper() == "POST"
+                ):
+                    log.warning(
+                        "Meshy HTTP %s on %s %s attempt %s/%s — retrying",
+                        resp.status_code,
+                        method,
+                        path,
+                        attempt + 1,
+                        attempts,
+                    )
+                    time.sleep(min(8.0, 1.5 * (2**attempt)))
+                    continue
+                raise MeshyError(
+                    _format_http_error(resp.status_code, body),
+                    status_code=resp.status_code,
+                    payload=body,
                 )
-        except httpx.TimeoutException as e:
-            raise MeshyError(f"Meshy 请求超时：{e}") from e
-        except httpx.HTTPError as e:
-            raise MeshyError(f"Meshy 网络错误：{e}") from e
+            mark_meshy_key_valid(self.api_key)
+            if attempt > 0:
+                log.info(
+                    "Meshy %s %s succeeded on attempt %s/%s",
+                    method,
+                    path,
+                    attempt + 1,
+                    attempts,
+                )
+            return body, resp.headers
 
-        body: Any
-        try:
-            body = resp.json() if resp.content else None
-        except Exception:
-            body = (resp.text or "")[:500]
-
-        if resp.status_code >= 400:
-            if resp.status_code == 401:
-                mark_meshy_key_invalid(self.api_key)
-            raise MeshyError(
-                _format_http_error(resp.status_code, body),
-                status_code=resp.status_code,
-                payload=body,
-            )
-        mark_meshy_key_valid(self.api_key)
-        return body, resp.headers
+        # Unreachable, but keeps type-checkers happy
+        raise MeshyError(f"Meshy 请求失败：{last_exc}")
 
     def create(self, kind: str, body: Dict[str, Any]) -> str:
         path = KIND_PATHS.get(kind)
         if not path:
             raise MeshyError(f"未知任务类型: {kind}。可选: {', '.join(sorted(KIND_PATHS))}")
-        data, _ = self.request("POST", path, json_body=body or {})
+        payload = body or {}
+        payload_bytes = estimate_data_uri_payload_bytes(payload)
+        retries = self.upload_retries if payload_bytes > 256 * 1024 else 0
+        if payload_bytes > 256 * 1024:
+            mb = payload_bytes / (1024.0 * 1024.0)
+            to = httpx_timeout_for_payload(payload_bytes, base_timeout=self.timeout)
+            log.info(
+                "Meshy create %s with data-URI upload ≈%.1fMB (write_timeout=%ss, retries=%s)",
+                kind,
+                mb,
+                getattr(to, "write", None),
+                retries,
+            )
+        data, _ = self.request(
+            "POST",
+            path,
+            json_body=payload,
+            timeout=httpx_timeout_for_payload(payload_bytes, base_timeout=self.timeout),
+            retries=retries,
+        )
         task_id = ""
         if isinstance(data, dict):
             task_id = str(data.get("result") or data.get("id") or "")

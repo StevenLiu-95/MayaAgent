@@ -1209,12 +1209,19 @@ def _ensure_bound_to_influences(
     influences: Sequence[str],
     *,
     max_influences: int = 4,
-) -> str:
-    """Return skinCluster on mesh; bind to influences if missing."""
+) -> Tuple[str, bool]:
+    """
+    Return ``(skinCluster, newly_bound)``.
+
+    Bind happens at whatever pose the joints are in *now*. Callers that share
+    the source skeleton MUST sync ``bindPreMatrix`` from the source skinCluster
+    afterwards (see ``_sync_bind_pre_matrices``), otherwise Meshy/animated
+    imports create a wrong bind pose and the mesh stretches.
+    """
     c = _cmds()
     tf = _mesh_transform(mesh)
     try:
-        return _skin_cluster(tf)
+        return _skin_cluster(tf), False
     except ValueError:
         pass
     joints = [j for j in influences if c.objExists(j)]
@@ -1231,10 +1238,149 @@ def _ensure_bound_to_influences(
         dropoffRate=4.0,
         removeUnusedInfluence=False,
     )
-    return sc[0] if isinstance(sc, (list, tuple)) else str(sc)
+    name = sc[0] if isinstance(sc, (list, tuple)) else str(sc)
+    return name, True
 
 
-def _do_copy_skin_weights(source: str, destination: str, *, no_mirror: bool = True) -> Dict[str, Any]:
+def _matrix_flat(value: Any) -> List[float]:
+    """Normalize cmds.getAttr matrix result to 16 floats."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1 and isinstance(value[0], (list, tuple)):
+            return [float(x) for x in value[0]]
+        if len(value) == 16:
+            return [float(x) for x in value]
+        # Some Maya builds return tuple-of-tuples
+        flat: List[float] = []
+        for row in value:
+            if isinstance(row, (list, tuple)):
+                flat.extend(float(x) for x in row)
+            else:
+                flat.append(float(row))
+        return flat
+    return [float(x) for x in value]
+
+
+def _influence_index_by_long(skin: str) -> Dict[str, int]:
+    c = _cmds()
+    influences = list(c.skinCluster(skin, query=True, influence=True) or [])
+    out: Dict[str, int] = {}
+    for i, joint in enumerate(influences):
+        out[joint] = i
+        try:
+            out[_long(joint)] = i
+        except Exception:
+            pass
+    return out
+
+
+def _match_dest_influence_index(
+    src_joint: str,
+    dst_by_long: Dict[str, int],
+    dst_influences: Sequence[str],
+) -> Optional[int]:
+    if src_joint in dst_by_long:
+        return dst_by_long[src_joint]
+    # Resolve aliases via Maya ls only when needed (same node, different path form).
+    try:
+        key = _long(src_joint)
+        if key in dst_by_long:
+            return dst_by_long[key]
+    except Exception:
+        pass
+    short = src_joint.split("|")[-1]
+    candidates = [
+        i for i, j in enumerate(dst_influences) if j.split("|")[-1] == short
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _set_bind_pre_matrix(skin: str, index: int, matrix16: Sequence[float]) -> None:
+    """Write bindPreMatrix, disconnecting any incoming driver first."""
+    c = _cmds()
+    plug = f"{skin}.bindPreMatrix[{int(index)}]"
+    incoming = c.listConnections(plug, source=True, destination=False, plugs=True) or []
+    for src_plug in incoming:
+        try:
+            c.disconnectAttr(src_plug, plug)
+        except Exception:
+            pass
+    flat = [float(x) for x in matrix16]
+    if len(flat) != 16:
+        raise ValueError(f"bindPreMatrix 需要 16 个浮点，得到 {len(flat)}")
+    c.setAttr(plug, *flat, type="matrix")
+
+
+def _sync_bind_pre_matrices(source_skin: str, dest_skin: str) -> Dict[str, Any]:
+    """
+    Copy ``bindPreMatrix`` from source → dest for shared influence joints.
+
+    When ``transfer_skin_weights`` auto-binds destinations while the skeleton is
+    on an animated frame, Maya records the *current* pose as bind. Weight copy
+    alone does not fix that; syncing bindPreMatrix from the source skinCluster
+    restores the correct bind without moving joints or changing currentTime.
+    """
+    c = _cmds()
+    if not c.objExists(source_skin) or not c.objExists(dest_skin):
+        raise ValueError(f"skinCluster 不存在: {source_skin} / {dest_skin}")
+    if source_skin == dest_skin:
+        return {
+            "synced_count": 0,
+            "matched": 0,
+            "skipped_same_cluster": True,
+            "max_diff_before": 0.0,
+            "missing": [],
+        }
+
+    src_inf = list(c.skinCluster(source_skin, query=True, influence=True) or [])
+    dst_inf = list(c.skinCluster(dest_skin, query=True, influence=True) or [])
+    dst_by_long = _influence_index_by_long(dest_skin)
+
+    synced = 0
+    matched = 0
+    missing: List[str] = []
+    max_diff = 0.0
+    for si, sj in enumerate(src_inf):
+        di = _match_dest_influence_index(sj, dst_by_long, dst_inf)
+        if di is None:
+            missing.append(sj)
+            continue
+        matched += 1
+        src_m = _matrix_flat(c.getAttr(f"{source_skin}.bindPreMatrix[{si}]"))
+        dst_m = _matrix_flat(c.getAttr(f"{dest_skin}.bindPreMatrix[{di}]"))
+        if len(src_m) != 16:
+            continue
+        if len(dst_m) == 16:
+            diff = max(abs(a - b) for a, b in zip(src_m, dst_m))
+        else:
+            diff = 1.0
+        max_diff = max(max_diff, diff)
+        if diff > 1e-5:
+            _set_bind_pre_matrix(dest_skin, di, src_m)
+            synced += 1
+
+    return {
+        "source_skin": source_skin,
+        "dest_skin": dest_skin,
+        "synced_count": synced,
+        "matched": matched,
+        "influence_count": len(src_inf),
+        "missing": missing[:12],
+        "max_diff_before": round(max_diff, 6),
+        "skipped_same_cluster": False,
+    }
+
+
+def _do_copy_skin_weights(
+    source: str,
+    destination: str,
+    *,
+    no_mirror: bool = True,
+    sync_bind_prematrix: bool = True,
+) -> Dict[str, Any]:
     c = _cmds()
     src = _mesh_transform(source)
     dst = _mesh_transform(destination)
@@ -1247,7 +1393,15 @@ def _do_copy_skin_weights(source: str, destination: str, *, no_mirror: bool = Tr
         surfaceAssociation="closestPoint",
         influenceAssociation=["closestJoint", "oneToOne", "label"],
     )
-    return {"source": src, "destination": dst, "source_skin": ss, "dest_skin": ds}
+    out: Dict[str, Any] = {
+        "source": src,
+        "destination": dst,
+        "source_skin": ss,
+        "dest_skin": ds,
+    }
+    if sync_bind_prematrix:
+        out["bind_prematrix_sync"] = _sync_bind_pre_matrices(ss, ds)
+    return out
 
 
 @tool(
@@ -1336,7 +1490,9 @@ def align_skinned_rig(
     description=(
         "在两网格间传递蒙皮权重（copySkinWeights，按最近点 + 最近关节）。"
         "默认 align=true：先把源侧 Armature+蒙皮网格一起对齐到目标再拷贝（修复 Meshy 错位）。"
-        "对齐会保留，拷完不能把骨架移回。多目标请用 transfer_skin_weights。"
+        "默认 sync_bind_prematrix=true：共享影响骨时把源 bindPreMatrix 同步到目标，"
+        "避免在动画帧下误绑定导致拉丝变形。对齐会保留，拷完不能把骨架移回。"
+        "多目标请用 transfer_skin_weights。"
     ),
     parameters=obj_schema(
         {
@@ -1356,6 +1512,11 @@ def align_skinned_rig(
             },
             "uniform_scale": {"type": "boolean", "default": True},
             "max_pivot_error": {"type": "number", "default": 2.0},
+            "sync_bind_prematrix": {
+                "type": "boolean",
+                "default": True,
+                "description": "共享影响骨时同步源 bindPreMatrix 到目标（推荐保持开启）",
+            },
         },
         required=["source", "destination"],
     ),
@@ -1371,6 +1532,7 @@ def copy_skin_weights(
     match: str = "feet",
     uniform_scale: bool = True,
     max_pivot_error: float = 2.0,
+    sync_bind_prematrix: bool = True,
 ) -> ToolResult:
     try:
         _require_maya()
@@ -1386,7 +1548,12 @@ def copy_skin_weights(
                 uniform_scale=bool(uniform_scale),
                 max_pivot_error=float(max_pivot_error),
             )
-        data = _do_copy_skin_weights(src, dst, no_mirror=no_mirror)
+        data = _do_copy_skin_weights(
+            src,
+            dst,
+            no_mirror=no_mirror,
+            sync_bind_prematrix=bool(sync_bind_prematrix),
+        )
         data["aligned"] = bool(align)
         if align_info:
             data["align"] = align_info
@@ -1397,6 +1564,12 @@ def copy_skin_weights(
                 f"feet_error={align_info['feet_error']} "
                 f"overlap={align_info.get('overlap_ratio')}"
             )
+        sync = data.get("bind_prematrix_sync") or {}
+        if sync.get("synced_count"):
+            msg += (
+                f"；已同步 bindPreMatrix×{sync['synced_count']}"
+                f"（绑定前最大偏差 {sync.get('max_diff_before')}）"
+            )
         return ToolResult(ok=True, data=data, message=msg)
     except Exception as e:
         return ToolResult(ok=False, error=str(e))
@@ -1406,7 +1579,8 @@ def copy_skin_weights(
     name="transfer_skin_weights",
     description=(
         "批量：Meshy 合并蒙皮体 → 原始分件。默认先把 Armature+源网格对齐到分件包围盒，"
-        "再自动 bind 并 closestPoint 拷权重。对齐保留，勿移回错位骨架。"
+        "再自动 bind 并 closestPoint 拷权重；随后把源 bindPreMatrix 同步到各目标，"
+        "即使当前帧在动画姿态也不会写错绑定位姿。对齐保留，勿移回错位骨架。"
     ),
     parameters=obj_schema(
         {
@@ -1435,6 +1609,11 @@ def copy_skin_weights(
             },
             "max_influences": {"type": "integer", "default": 4},
             "no_mirror": {"type": "boolean", "default": True},
+            "sync_bind_prematrix": {
+                "type": "boolean",
+                "default": True,
+                "description": "拷权重后同步源 bindPreMatrix（修复动画帧误绑定；推荐开启）",
+            },
         },
         required=["source", "destinations"],
     ),
@@ -1452,6 +1631,7 @@ def transfer_skin_weights(
     auto_bind: bool = True,
     max_influences: int = 4,
     no_mirror: bool = True,
+    sync_bind_prematrix: bool = True,
 ) -> ToolResult:
     try:
         _require_maya()
@@ -1474,13 +1654,28 @@ def transfer_skin_weights(
 
         results: List[Dict[str, Any]] = []
         errors: List[str] = []
+        newly_bound = 0
+        sync_fixed = 0
+        sync_max_diff = 0.0
         for dst in dests:
             try:
                 if auto_bind:
-                    _ensure_bound_to_influences(
+                    _sc, created = _ensure_bound_to_influences(
                         dst, influences, max_influences=max_influences
                     )
-                info = _do_copy_skin_weights(src, dst, no_mirror=no_mirror)
+                    if created:
+                        newly_bound += 1
+                info = _do_copy_skin_weights(
+                    src,
+                    dst,
+                    no_mirror=no_mirror,
+                    sync_bind_prematrix=bool(sync_bind_prematrix),
+                )
+                sync = info.get("bind_prematrix_sync") or {}
+                sync_fixed += int(sync.get("synced_count") or 0)
+                sync_max_diff = max(
+                    sync_max_diff, float(sync.get("max_diff_before") or 0.0)
+                )
                 results.append(info)
             except Exception as e:
                 errors.append(f"{dst}: {e}")
@@ -1493,15 +1688,26 @@ def transfer_skin_weights(
             "errors": errors,
             "influence_count": len(influences),
             "aligned": bool(align),
+            "newly_bound": newly_bound,
+            "bind_prematrix_synced_total": sync_fixed,
+            "bind_prematrix_max_diff_before": round(sync_max_diff, 6),
+            "sync_bind_prematrix": bool(sync_bind_prematrix),
         }
         if align_info:
             data["align"] = align_info
         msg = f"已传递权重 {src} → {len(results)}/{len(dests)} 个网格"
+        if newly_bound:
+            msg += f"；新绑定 {newly_bound} 个"
         if align_info:
             msg += (
                 f"；movers={align_info.get('movers')} "
                 f"feet_error={align_info['feet_error']} "
                 f"overlap={align_info.get('overlap_ratio')}"
+            )
+        if sync_bind_prematrix and sync_fixed:
+            msg += (
+                f"；已同步 bindPreMatrix×{sync_fixed}"
+                f"（绑定前最大偏差 {round(sync_max_diff, 6)}）"
             )
         if errors:
             msg += f"；失败 {len(errors)} 个"

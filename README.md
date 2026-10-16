@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.5.1** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
+**v1.5.2** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
 
 ## 核心能力
 
@@ -34,7 +34,7 @@ set MAYA_AGENT_MAYAPY_ROOTS=D:\LAS\LAD\Maya\Program\2025\Maya2025
 install.bat
 ```
 
-安装结束会打印 **Install Report**（每版本 hooks / deps / mayapy / load_path）。挂钩失败为错误；仅依赖失败时菜单通常仍可用，对话需 `httpx`。
+安装结束会打印 **Install Report**（每版本 hooks / deps / mayapy / load_path）。挂钩失败为错误；仅依赖失败时菜单通常仍可用。对话需 `httpx`，统计图表需 `matplotlib`（均在安装必检列表中）。
 
 诊断（只读）：
 
@@ -53,7 +53,7 @@ python scripts/doctor.py --maya-version 2025
 
 适合：`install.bat` 后插件列表已有 MayaAgent、但菜单/工具架未出现；或想跳过重启马上使用。
 
-### 依赖（对话必需 httpx）
+### 依赖（对话必需 httpx；图表必需 matplotlib）
 
 `install.bat` / `install.py` 会自动安装。失败时的加固路径：
 
@@ -198,7 +198,7 @@ MayaAgent/
 | 安装状态不明 | 运行 `python scripts/doctor.py`，对照 Install Report |
 | 插件列表有 MayaAgent，但无菜单/工具架 | 拖入 `install_dragdrop.mel`，或 Script Editor（**Python**）执行 `import maya_agent; maya_agent.reload()` |
 | 未检测到 mayapy / 自定义安装路径 | 设置 `MAYA_AGENT_MAYAPY_ROOTS` 后重跑 `install.bat` |
-| `No module named 'httpx'` / pip SSL / 代理报错 | 运行 `install.bat force`，或 `python scripts/install_deps.py --force`；仍失败则 `--vendor-only`。菜单不依赖 PyYAML |
+| `No module named 'httpx'` / `matplotlib` / pip SSL / 代理报错 | 运行 `install.bat force`，或 `python scripts/install_deps.py --force`；仍失败则 `--vendor-only`。菜单不依赖 PyYAML |
 | `No module named 'yaml'` | 默认配置为 JSON，菜单可用；可选装 PyYAML，或同上走 `.vendor` |
 | `install_dragdrop.mel` Syntax error | 确认拖入的是项目根目录最新版；MEL 需用 `+` 拼接字符串，勿用 Script Editor 的 MEL 模式粘贴 Python |
 | 改代码后界面未更新 | `maya_agent.reload()`，或菜单「重新加载」 |

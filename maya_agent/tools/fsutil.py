@@ -23,10 +23,14 @@ DEFAULT_READ_MAX = 512_000  # ~500 KB text
 HARD_READ_MAX = 2_000_000
 DEFAULT_LIST_LIMIT = 200
 
-# Process-local index of recently staged chat images (newest last).
+# Process-local index of recently staged chat images / files (newest last).
 _RECENT_CHAT_IMAGES: List[Dict[str, Any]] = []
+_RECENT_CHAT_FILES: List[Dict[str, Any]] = []
 _LAST_USER_ATTACHMENTS: List[Any] = []
 _CHAT_INDEX_NAME = "index.json"
+_CHAT_FILES_INDEX_NAME = "index.json"
+MAX_CHAT_FILES = 10
+MAX_CHAT_FILE_BYTES = 500_000_000  # 500 MB per file
 
 
 class FsError(Exception):
@@ -37,16 +41,21 @@ def workspace_root() -> Path:
     """
     Agent file workspace under the configured temp root.
 
-    Layout: ``{agent_temp_root}/`` with ``temp/`` and ``chat_images/``.
+    Layout: ``{agent_temp_root}/`` with ``temp/``, ``chat_images/``, ``chat_files/``.
     """
     root = agent_temp_root()
     (root / "temp").mkdir(parents=True, exist_ok=True)
     (root / "chat_images").mkdir(parents=True, exist_ok=True)
+    (root / "chat_files").mkdir(parents=True, exist_ok=True)
     return root
 
 
 def chat_images_dir() -> Path:
     return agent_temp_subdir("chat_images")
+
+
+def chat_files_dir() -> Path:
+    return agent_temp_subdir("chat_files")
 
 
 def temp_dir() -> Path:
@@ -519,3 +528,121 @@ def stage_images_from_memory_messages(messages: Sequence[Any]) -> List[Dict[str,
         if images:
             return stage_chat_images(images)
     return []
+
+
+def _chat_files_index_path() -> Path:
+    return chat_files_dir() / _CHAT_FILES_INDEX_NAME
+
+
+def _load_chat_files_index() -> List[Dict[str, Any]]:
+    path = _chat_files_index_path()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict) and x.get("path")]
+    except Exception:
+        pass
+    return []
+
+
+def _save_chat_files_index(items: List[Dict[str, Any]]) -> None:
+    trimmed = items[-40:]
+    try:
+        _chat_files_index_path().write_text(
+            json.dumps(trimmed, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        log.debug("save chat files index failed: %s", e)
+
+
+def _safe_filename_stem(name: str) -> str:
+    stem = Path(name).stem if name else "file"
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in stem)[:40] or "file"
+
+
+def stage_chat_files(paths: Iterable[str]) -> List[Dict[str, Any]]:
+    """
+    Copy user-attached local files into chat_files/ under the agent temp root.
+
+    Returns list of {path, name, size_bytes, original_path, original_name, staged_at}.
+    Skips missing paths; raises FsError only when a single file exceeds size limit.
+    """
+    global _RECENT_CHAT_FILES
+    out: List[Dict[str, Any]] = []
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    for idx, raw_path in enumerate(paths or []):
+        src = Path(os.path.expanduser(str(raw_path or "").strip()))
+        if not src.is_file():
+            log.warning("stage chat file skipped (missing): %s", raw_path)
+            continue
+        try:
+            src = src.resolve()
+            size = src.stat().st_size
+        except OSError as e:
+            log.warning("stage chat file skipped: %s (%s)", raw_path, e)
+            continue
+        if size > MAX_CHAT_FILE_BYTES:
+            raise FsError(
+                f"文件过大（{size} bytes），上限约 {MAX_CHAT_FILE_BYTES // 1_000_000} MB："
+                f"{src.name}"
+            )
+        safe = _safe_filename_stem(src.name)
+        suffix = src.suffix[:32] if src.suffix else ""
+        filename = f"{stamp}_{idx:02d}_{safe}{suffix}"
+        dest = chat_files_dir() / filename
+        try:
+            shutil.copy2(str(src), str(dest))
+        except OSError as e:
+            log.warning("stage chat file failed: %s", e)
+            continue
+        item = {
+            "path": str(dest).replace("\\", "/"),
+            "name": filename,
+            "size_bytes": size,
+            "original_path": str(src).replace("\\", "/"),
+            "original_name": src.name,
+            "staged_at": time.time(),
+        }
+        out.append(item)
+        _RECENT_CHAT_FILES.append(item)
+    if out:
+        disk = _load_chat_files_index()
+        disk.extend(out)
+        _save_chat_files_index(disk)
+        _RECENT_CHAT_FILES = _RECENT_CHAT_FILES[-40:]
+    return out
+
+
+def latest_chat_file_paths(limit: int = 10) -> List[str]:
+    limit = max(1, min(int(limit), 40))
+    items = list(_RECENT_CHAT_FILES)
+    if len(items) < limit:
+        for it in _load_chat_files_index():
+            p = it.get("path")
+            if p and not any(x.get("path") == p for x in items):
+                items.append(it)
+    items = sorted(items, key=lambda x: float(x.get("staged_at") or 0))
+    paths: List[str] = []
+    for it in reversed(items):
+        p = str(it.get("path") or "")
+        if p and Path(p).is_file() and p not in paths:
+            paths.append(p)
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def list_staged_chat_files(limit: int = 20) -> List[Dict[str, Any]]:
+    paths = latest_chat_file_paths(limit=limit)
+    result: List[Dict[str, Any]] = []
+    by_path = {
+        str(x.get("path")): x for x in (_RECENT_CHAT_FILES + _load_chat_files_index())
+    }
+    for p in paths:
+        meta = dict(by_path.get(p) or {})
+        meta.update(file_info(p))
+        result.append(meta)
+    return result

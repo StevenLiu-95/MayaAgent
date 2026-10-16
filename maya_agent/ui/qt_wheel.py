@@ -40,6 +40,19 @@ def _scroll_area_by_wheel(area: QtWidgets.QAbstractScrollArea, event) -> bool:
     return _nudge_bar(area.horizontalScrollBar(), event, vertical=False)
 
 
+def scroll_area_horizontal_by_wheel(
+    area: QtWidgets.QAbstractScrollArea, event
+) -> bool:
+    """
+    Map mouse-wheel delta to the horizontal scrollbar only.
+
+    Vertical wheel notches (common on mice) still move the bar sideways.
+    """
+    if area is None or event is None:
+        return False
+    return _nudge_bar(area.horizontalScrollBar(), event, vertical=False)
+
+
 def _nudge_bar(bar, event, *, vertical: bool) -> bool:
     if bar is None:
         return False

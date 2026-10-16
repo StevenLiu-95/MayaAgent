@@ -103,7 +103,8 @@ def _load_install_deps_module(root: Path):
 
 def _install_runtime_deps(root: Path, ver: str) -> tuple[bool, str]:
     """
-    Install httpx/requests into this Maya's mayapy, with .vendor fallback.
+    Install critical runtime deps (httpx / matplotlib / …) into this Maya's
+    mayapy, with .vendor fallback.
 
     Returns (ok, note_for_user).
     """
@@ -145,8 +146,9 @@ def _install_runtime_deps(root: Path, ver: str) -> tuple[bool, str]:
         if vendor.is_dir() and str(vendor) not in sys.path:
             sys.path.insert(0, str(vendor))
 
+    critical = list(getattr(deps, "CRITICAL_IMPORTS", (("httpx", "httpx"), ("requests", "requests"))))
     missing = []
-    for mod_name in ("httpx", "requests"):
+    for mod_name, _pip in critical:
         try:
             __import__(mod_name)
         except ImportError:
@@ -155,7 +157,8 @@ def _install_runtime_deps(root: Path, ver: str) -> tuple[bool, str]:
     if not missing:
         return True, ""
     note = (
-        f"\n\n注意: 对话依赖未就绪（缺 {', '.join(missing)}）。\n"
+        f"\n\n注意: 运行依赖未就绪（缺 {', '.join(missing)}）。\n"
+        f"对话需要 httpx；统计图表需要 matplotlib。\n"
         f"请在项目根目录运行 install.bat force，或:\n"
         f"  python scripts/install_deps.py --maya-version {ver} --force\n"
         f"  python scripts/install_deps.py --vendor-only"
