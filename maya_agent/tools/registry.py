@@ -89,7 +89,7 @@ def all_tools() -> List[RegisteredTool]:
 
 
 def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
-    """Return OpenAI-style tool schemas. Vision-only / unavailable Meshy/ADV tools omitted."""
+    """Return OpenAI-style tool schemas. Vision-only / unavailable Meshy/Tripo/ADV tools omitted."""
     meshy_ok = True
     try:
         from maya_agent.tools.meshy_client import meshy_tools_available
@@ -97,6 +97,14 @@ def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
         meshy_ok = meshy_tools_available()
     except Exception:
         meshy_ok = False
+
+    tripo_ok = True
+    try:
+        from maya_agent.tools.tripo_client import tripo_tools_available
+
+        tripo_ok = tripo_tools_available()
+    except Exception:
+        tripo_ok = False
 
     adv_ok = True
     try:
@@ -111,6 +119,8 @@ def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
         if t.requires_vision and not vision:
             continue
         if t.category == "meshy" and not meshy_ok:
+            continue
+        if t.category == "tripo" and not tripo_ok:
             continue
         if t.category == "adv" and not adv_ok:
             continue

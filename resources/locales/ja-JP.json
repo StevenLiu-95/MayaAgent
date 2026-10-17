@@ -163,6 +163,7 @@
   "help.settings.1": "LLM: provider, model, API key, Base URL, image input, Temperature, Max Tokens; Test connection",
   "help.settings.2": "The LLM tab also has Agent behavior: auto undo, confirm destructive, streaming, show thinking/tools, max tool rounds",
   "help.settings.meshy": "Meshy: dedicated tab for enable toggle and API key, with a connection/balance test",
+  "help.settings.tripo": "Tripo: configure enable switch and API key on its tab; test connection (balance)",
   "help.settings.3": "Language, font, UI scale, and temp directory live on the top-level Settings tab",
   "help.settings.4": "Reset defaults restores factory values but keeps saved API keys",
   "help.ui.title": "Settings",
@@ -179,5 +180,14 @@
   "about.body": "Maya Agent v{version}\nAI assistant for Maya game development pipelines.",
   "yes": "はい",
   "no": "いいえ",
-  "help.ui.3": "Temp directory: chat images, Meshy downloads, viewport captures, untitled sessions; blank uses MayaAgentTempFile next to MayaAgent"
+  "help.ui.3": "Temp directory: chat images, Meshy downloads, viewport captures, untitled sessions; blank uses MayaAgentTempFile next to MayaAgent",
+  "settings.tab.tripo": "Tripo",
+  "settings.section.tripo": "Tripo AI",
+  "settings.section.tripo_hint": "Text/Image to 3D, texture, remesh, rigging, retarget, and more. Create an API key in the Tripo Developer Platform. Docs: https://developers.tripo3d.com/zh/docs",
+  "settings.tripo_enabled": "Enable Tripo tools",
+  "settings.tripo_enabled_hint": "When off, Tripo tool calls return an error",
+  "settings.tripo_api_key": "Tripo API Key",
+  "settings.tripo_api_key_ph": "tsk_… or console key",
+  "settings.tripo_test": "Test Tripo",
+  "settings.tripo_test_running": "Checking balance…"
 }

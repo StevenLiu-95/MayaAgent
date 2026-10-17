@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.5.2** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
+**v1.5.3** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
 
 ## 核心能力
 
@@ -12,6 +12,7 @@
 | **视觉理解** | 对话可附带参考图；支持视觉的模型可调用 `capture_viewport`（单视角）/ `capture_viewport_views`（多视角）截取视口对比，也可 `search_images` / `fetch_image` 拉取网络参考图；设置中可开关「图片输入」 |
 | **网络检索** | `web_search` / `fetch_webpage` 查文档与规范；`search_images` 搜图；Agent 可按需主动调用（可在配置 `web.enabled` 关闭） |
 | **多模型** | 默认 DeepSeek；另有 OpenAI / Azure / Claude / Gemini、通义、智谱、Kimi、豆包、百川、硅基流动、Cursor 代理、Ollama 与自定义 OpenAI 兼容接口 |
+| **云端 AI 3D** | **Meshy** / **Tripo**（文/图/多视图生 3D、贴图、减面、绑骨、动画等）；设置页独立配置 API Key；任务轮询后下载 FBX 导入 Maya |
 | **Maya 内嵌 UI** | 停靠深色面板：**对话 / 设置 / 工具 / 帮助**；紧凑输入区；发送与停止合并为同一按钮（绿 / 红）；Enter 发送、Shift+Enter 换行 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景名.ma.mayaagent.json` |
 | **安全可逆** | 工具在 Maya 主线程执行；整轮 Undo 块（可一键回退）；危险操作确认；默认不擅自新建空场景 |
@@ -97,14 +98,16 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 
 面板 → **模型 → LLM** → 选服务商、填 API Key → 点「测试连接」（结果显示在按钮左侧，成功绿 / 失败红）。修改会自动保存；可用「恢复默认」重置参数（API Key 保留）。
 
-也可设环境变量，例如 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`。
+也可设环境变量，例如 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`MESHY_API_KEY`、`TRIPO_API_KEY`。
+
+Tripo（[开发者文档](https://developers.tripo3d.com/zh/docs)）：面板 → **模型 → Tripo** → 填 API Key →「测试连接」。默认 Base URL 为国区 `https://openapi.tripo3d.com/v3`（国际站可在配置中改为 `https://openapi.tripo3d.ai/v3`）。
 
 ## 界面
 
 | 页签 | 内容 |
 | ---- | ---- |
 | **对话** | 多会话、流式回复、工具调用过程、快捷芯片、图片附件、发送/停止 |
-| **模型** | LLM（模型、API、图片输入、测试连接、Agent 行为）/ Meshy |
+| **模型** | LLM（模型、API、图片输入、测试连接、Agent 行为）/ Meshy / Tripo |
 | **设置** | 界面语言、字体、整体缩放、临时文件目录（对话附图 / Meshy / 视口截图 / 未命名会话） |
 | **工具** | 按类别浏览全部工具；双击名称插入输入框 |
 | **帮助** | 上手说明与功能概览 |
@@ -156,6 +159,8 @@ pip install -r requirements-mcp.txt
    - 或调用 `mayaagent_chat` 走完整 MayaAgent 多轮循环
    - `mayaagent_undo` 回退上一轮 Agent 修改
 
+MCP 连接时会把与面板相同的系统提示词（`resources/prompts/system_zh.md` + 运行时环境）注入为 server `instructions`；也可随时调用 `mayaagent_system_prompt` 刷新。修改该 md 后，面板与 IDE 两侧都会生效（IDE 侧需重连 MCP 或调该工具以拿到最新全文）。
+
 发现文件：`%APPDATA%/MayaAgent/bridge.json`（含 localhost 端口与 token）。服务仅监听 `127.0.0.1`。
 
 **验收**：先在 Maya 启动 MCP → IDE 调 `mayaagent_status` → 调一个查询类工具（如场景信息）→ 再试 `mayaagent_chat`。
@@ -170,7 +175,7 @@ MayaAgent/
 │   ├── bridge/                  # 本地 HTTP MCP 服务（工具 + 远程 Agent）
 │   ├── core/                    # Agent 循环、记忆、执行器、Undo、会话
 │   ├── llm/                     # 多厂商 LLM / 视觉适配
-│   ├── tools/                   # Maya 工具（含 skeleton_templates、viewport）
+│   ├── tools/                   # Maya 工具（含 meshy/tripo、skeleton_templates、viewport）
 │   ├── ui/                      # Qt 面板（对话 / 设置 / 工具 / 帮助）
 │   ├── plugin/                  # 菜单、工具架、场景钩子
 │   └── utils/                   # 配置、日志、Maya / Qt 兼容

@@ -29,7 +29,7 @@ from maya_agent.llm.registry import create_provider
 from maya_agent.tools.registry import ToolResult, ensure_tools_loaded, tool_specs
 from maya_agent.utils.config import get_config
 from maya_agent.utils.logger import get_logger
-from maya_agent.utils.maya_compat import in_maya, maya_version
+from maya_agent.utils.maya_compat import in_maya
 
 log = get_logger("maya_agent.agent")
 
@@ -73,21 +73,9 @@ class MayaAgent:
         return self._cancel_event.is_set()
 
     def _ensure_system_prompt(self) -> None:
-        prompt = get_config().system_prompt()
-        adv_line = "- AdvancedSkeleton: 不可用（adv_* 已隐藏；可用 auto_rig_character）\n"
-        try:
-            from maya_agent.tools.adv_rig import adv_tools_available, _find_adv_root
+        from maya_agent.core.system_prompt import build_system_prompt
 
-            if adv_tools_available():
-                adv_line = f"- AdvancedSkeleton: 可用（{_find_adv_root()}）；优先 adv_auto_rig / adv_next_step\n"
-        except Exception:
-            pass
-        env = (
-            f"\n\n## 运行环境\n- Maya: {maya_version() if in_maya() else '未在 Maya 内'}\n"
-            f"{adv_line}"
-            f"- 工具数量: {len(tool_specs())}\n"
-        )
-        full = prompt + env
+        full = build_system_prompt()
         for i, m in enumerate(self.memory.messages):
             if m.role == "system":
                 # Refresh when Meshy availability / tool count changes mid-session

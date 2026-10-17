@@ -236,6 +236,13 @@ class Config:
             pass
 
         try:
+            from maya_agent.tools.tripo_client import filter_system_prompt_tripo
+
+            text = filter_system_prompt_tripo(text)
+        except Exception:
+            pass
+
+        try:
             from maya_agent.tools.adv_rig import filter_system_prompt_adv
 
             text = filter_system_prompt_adv(text)

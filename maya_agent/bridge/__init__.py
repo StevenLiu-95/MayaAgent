@@ -50,6 +50,20 @@ def copy_mcp_config() -> Dict[str, Any]:
     from maya_agent.bridge.protocol import mcp_config_snippet
     from maya_agent.utils.paths import project_root
 
+    # Keep Cursor alwaysApply rule in sync with system_zh.md
+    try:
+        from pathlib import Path
+        import runpy
+
+        sync = project_root() / "scripts" / "sync_cursor_maya_rules.py"
+        if sync.is_file():
+            ns = runpy.run_path(str(sync))
+            fn = ns.get("sync")
+            if callable(fn):
+                fn()
+    except Exception:
+        pass
+
     snippet = mcp_config_snippet(project_root=str(project_root()), python_exe="python")
     text = json.dumps(snippet, ensure_ascii=False, indent=2)
     return {

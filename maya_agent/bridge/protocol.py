@@ -68,7 +68,8 @@ def normalize_path(path: str) -> str:
 def match_route(method: str, path: str) -> Optional[str]:
     """
     Map method+path to a route id, or None if unknown.
-    Route ids: health, tools, tools_call, agent_chat, agent_undo, mcp_config
+    Route ids: health, tools, tools_call, agent_chat, agent_undo, mcp_config,
+    system_prompt
     """
     m = (method or "GET").upper()
     p = normalize_path(path)
@@ -84,6 +85,8 @@ def match_route(method: str, path: str) -> Optional[str]:
         return "agent_undo"
     if p == f"{API_PREFIX}/mcp-config" and m == "GET":
         return "mcp_config"
+    if p == f"{API_PREFIX}/system-prompt" and m == "GET":
+        return "system_prompt"
     return None
 
 

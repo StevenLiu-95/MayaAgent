@@ -174,6 +174,8 @@ def _build_handler(state: BridgeState):
                 return self._agent_undo()
             if route == "mcp_config":
                 return self._mcp_config()
+            if route == "system_prompt":
+                return self._system_prompt()
             return error_body("not found", status=404)
 
         def _health(self) -> Tuple[int, bytes, str]:
@@ -308,6 +310,18 @@ def _build_handler(state: BridgeState):
                         "3) 将 mcp 片段写入 Cursor/VS Code 的 mcp.json"
                     ),
                     "maya_python": py,
+                }
+            )
+
+        def _system_prompt(self) -> Tuple[int, bytes, str]:
+            from maya_agent.core.system_prompt import build_system_prompt
+
+            text = build_system_prompt()
+            return json_bytes(
+                {
+                    "ok": True,
+                    "prompt": text,
+                    "source": "build_system_prompt",
                 }
             )
 

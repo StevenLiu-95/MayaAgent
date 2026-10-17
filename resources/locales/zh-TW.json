@@ -167,6 +167,7 @@
   "help.settings.1": "LLM：服務商、模型、API Key、Base URL、圖片輸入、Temperature、Max Tokens；支援測試連線",
   "help.settings.2": "LLM 頁籤同時包含 Agent 行為：自動 Undo、危險確認、串流輸出、顯示思考/工具、最大工具輪次",
   "help.settings.meshy": "Meshy：獨立頁籤配置啟用開關與 API Key，可測試連線（餘額）",
+  "help.settings.tripo": "Tripo：独立页签配置启用开关与 API Key，可测试连接（余额）",
   "help.settings.3": "語言、字體、介面大小與臨時目錄請到一級「設定」頁籤",
   "help.settings.4": "底部「恢复默认」会重置参数为出厂值，但不会删除已保存的 API Key",
   "help.ui.title": "設定",
@@ -183,5 +184,14 @@
   "about.body": "Maya Agent v{version}\n面向 Maya 游戏开发管线的 AI 助手。",
   "yes": "是",
   "no": "否",
-  "help.ui.3": "臨時檔案目錄：對話附圖、Meshy 下載、視口截圖、未命名工作階段等；留空則用 MayaAgent 同級的 MayaAgentTempFile"
+  "help.ui.3": "臨時檔案目錄：對話附圖、Meshy 下載、視口截圖、未命名工作階段等；留空則用 MayaAgent 同級的 MayaAgentTempFile",
+  "settings.tab.tripo": "Tripo",
+  "settings.section.tripo": "Tripo AI",
+  "settings.section.tripo_hint": "文生/图生 3D、贴图、减面、绑骨、动画重定向等。需在 Tripo 开发者平台创建 API Key。文档：https://developers.tripo3d.com/zh/docs",
+  "settings.tripo_enabled": "启用 Tripo 工具",
+  "settings.tripo_enabled_hint": "关闭后 Agent 调用 Tripo 工具会报错提示",
+  "settings.tripo_api_key": "Tripo API Key",
+  "settings.tripo_api_key_ph": "tsk_… 或控制台密钥",
+  "settings.tripo_test": "测试 Tripo",
+  "settings.tripo_test_running": "正在查询余额…"
 }

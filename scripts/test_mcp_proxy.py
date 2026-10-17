@@ -76,6 +76,19 @@ class _FakeBridge(BaseHTTPRequestHandler):
                 return
             self._send(200, {"ok": True, "tools": FAKE_TOOLS})
             return
+        if path == "/v1/system-prompt":
+            if not self._auth_ok():
+                self._send(401, {"ok": False, "error": "unauthorized"})
+                return
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "prompt": "FAKE_SYSTEM_PROMPT\n\n## 运行环境\n- Maya: fake\n",
+                    "source": "build_system_prompt",
+                },
+            )
+            return
         self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -149,6 +162,12 @@ def test_bridge_client_against_fake() -> None:
 
         status_text = mcp_mod._run_meta("mayaagent_status", {})
         assert "maya-agent-bridge" in status_text
+        prompt_text = mcp_mod._run_meta("mayaagent_system_prompt", {})
+        assert "FAKE_SYSTEM_PROMPT" in prompt_text
+        assert "build_system_prompt" in prompt_text
+        prompt_live, src = mcp_mod.resolve_system_prompt()
+        assert "FAKE_SYSTEM_PROMPT" in prompt_live
+        assert src == "build_system_prompt" or src == "maya_bridge"
         chat_text = mcp_mod._run_meta("mayaagent_chat", {"text": "hi"})
         assert "hello from fake agent" in chat_text
         undo_text = mcp_mod._run_meta("mayaagent_undo", {})

@@ -39,6 +39,7 @@ def test_protocol_routes() -> None:
     assert match_route("POST", "/v1/agent/chat") == "agent_chat"
     assert match_route("POST", "/v1/agent/undo") == "agent_undo"
     assert match_route("GET", "/v1/mcp-config") == "mcp_config"
+    assert match_route("GET", "/v1/system-prompt") == "system_prompt"
     assert match_route("GET", "/v1/nope") is None
 
     token = new_token()
@@ -154,6 +155,17 @@ def test_http_server_health_auth() -> None:
         names = {t.get("name") for t in tools if isinstance(t, dict)}
         # scene tools should be present when modules load
         assert any(names), "empty tool names"
+
+        req = urllib.request.Request(
+            f"{base}/v1/system-prompt",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            prompt_payload = json.loads(resp.read().decode("utf-8"))
+        assert prompt_payload.get("ok") is True
+        prompt_text = prompt_payload.get("prompt") or ""
+        assert "Maya" in prompt_text or "maya" in prompt_text.lower()
+        assert "## 运行环境" in prompt_text
 
         st = status()
         assert st.get("running") is True

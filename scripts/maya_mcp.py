@@ -161,6 +161,9 @@ class BridgeClient:
     def agent_undo(self) -> Dict[str, Any]:
         return self.request("POST", "/v1/agent/undo", json_body={}, timeout=60.0)
 
+    def system_prompt(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/system-prompt", timeout=30.0)
+
 
 CLIENT = BridgeClient()
 
@@ -170,6 +173,15 @@ META_TOOLS = [
         "description": (
             "Check whether the Maya Agent MCP service is running. "
             "Returns Maya version, tool count, and service URL."
+        ),
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "mayaagent_system_prompt",
+        "description": (
+            "Return the current MayaAgent system prompt (same text as the Maya panel). "
+            "Use when you need to refresh rules after MCP reconnect, or verify "
+            "resources/prompts/system_zh.md content."
         ),
         "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -206,6 +218,39 @@ META_TOOLS = [
 ]
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _local_prompt_fallback() -> str:
+    """Read resources/prompts/system_zh.md when Maya bridge is offline."""
+    path = _project_root() / "resources" / "prompts" / "system_zh.md"
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return (
+        "你是 Maya Agent，面向 Autodesk Maya 游戏管线的 AI 助手。"
+        "（无法加载 system_zh.md；请先在 Maya 中启动 MCP。）"
+    )
+
+
+def resolve_system_prompt() -> Tuple[str, str]:
+    """
+    Return (prompt_text, source).
+    Prefer live Maya ``build_system_prompt`` via HTTP; fall back to local md.
+    """
+    try:
+        data = CLIENT.system_prompt()
+        text = str(data.get("prompt") or "").strip()
+        if text:
+            return text, str(data.get("source") or "maya_bridge")
+    except Exception:
+        pass
+    return _local_prompt_fallback(), "local_system_zh.md"
+
+
 def _text_result(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
@@ -215,6 +260,9 @@ def _text_result(payload: Any) -> str:
 def _run_meta(name: str, arguments: Dict[str, Any]) -> str:
     if name == "mayaagent_status":
         return _text_result(CLIENT.health())
+    if name == "mayaagent_system_prompt":
+        text, source = resolve_system_prompt()
+        return _text_result({"ok": True, "prompt": text, "source": source})
     if name == "mayaagent_chat":
         text = str((arguments or {}).get("text") or "")
         images = (arguments or {}).get("images")
@@ -320,12 +368,16 @@ def main() -> None:
         return [TextContent(type="text", text=text)]
 
     async def _amain() -> None:
+        # Same rules as Maya panel: live build_system_prompt, else local md.
+        instructions, src = resolve_system_prompt()
+        header = (
+            "MayaAgent MCP — follow these rules when controlling Maya "
+            f"(source={src}). They match the Maya panel system prompt.\n\n"
+        )
+        init = server.create_initialization_options()
+        init = init.model_copy(update={"instructions": header + instructions})
         async with stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                server.create_initialization_options(),
-            )
+            await server.run(read_stream, write_stream, init)
 
     anyio.run(_amain)
 

@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.5.2",
+    "version": "1.5.3",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -239,6 +239,22 @@
     "poll_interval": 5,
     "wait_timeout": 600,
     "download_dir": "",
+    "default_formats": ["fbx", "glb"]
+  },
+  "tripo": {
+    "enabled": true,
+    "base_url": "https://openapi.tripo3d.com/v3",
+    "api_key_env": "TRIPO_API_KEY",
+    "timeout": 60,
+    "upload_timeout": 180,
+    "upload_timeout_per_mb": 15,
+    "upload_timeout_max": 900,
+    "upload_retries": 2,
+    "poll_interval": 5,
+    "wait_timeout": 600,
+    "download_dir": "",
+    "default_model": "v3.1-20260211",
+    "default_image_model": "seedream_v4",
     "default_formats": ["fbx", "glb"]
   },
   "ui": {

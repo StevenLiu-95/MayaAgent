@@ -1262,6 +1262,63 @@ def _matrix_flat(value: Any) -> List[float]:
     return [float(x) for x in value]
 
 
+# Default max |src_scale/dst_scale| deviation before skipping bindPreMatrix sync.
+# Tripo/Meshy merged bodies often sit at world scale ~100 while original parts are 1.
+WORLD_SCALE_SYNC_THRESHOLD = 1.15
+
+
+def uniform_scale_from_matrix16(m16: Sequence[float]) -> float:
+    """Approximate uniform world scale from a 4x4 matrix (row-major, 16 floats)."""
+    if len(m16) < 12:
+        return 1.0
+    sx = (float(m16[0]) ** 2 + float(m16[1]) ** 2 + float(m16[2]) ** 2) ** 0.5
+    sy = (float(m16[4]) ** 2 + float(m16[5]) ** 2 + float(m16[6]) ** 2) ** 0.5
+    sz = (float(m16[8]) ** 2 + float(m16[9]) ** 2 + float(m16[10]) ** 2) ** 0.5
+    return max((sx + sy + sz) / 3.0, 1e-8)
+
+
+def world_scale_ratio_compatible(
+    src_scale: float,
+    dst_scale: float,
+    *,
+    threshold: float = WORLD_SCALE_SYNC_THRESHOLD,
+) -> bool:
+    """True when src/dst world scales are close enough to safely sync bindPreMatrix."""
+    if src_scale <= 0 or dst_scale <= 0:
+        return False
+    ratio = float(src_scale) / float(dst_scale)
+    lo = 1.0 / float(threshold)
+    return lo <= ratio <= float(threshold)
+
+
+def _mesh_uniform_world_scale(mesh: str) -> float:
+    """World-space uniform scale of a mesh transform (Maya)."""
+    c = _cmds()
+    tf = _mesh_transform(mesh)
+    m = _matrix_flat(c.getAttr(f"{tf}.worldMatrix[0]"))
+    return uniform_scale_from_matrix16(m)
+
+
+def _bind_prematrix_scale_gate(
+    source_mesh: str,
+    dest_mesh: str,
+    *,
+    threshold: float = WORLD_SCALE_SYNC_THRESHOLD,
+) -> Dict[str, Any]:
+    """Decide whether bindPreMatrix sync is safe between two meshes."""
+    src_s = _mesh_uniform_world_scale(source_mesh)
+    dst_s = _mesh_uniform_world_scale(dest_mesh)
+    ratio = src_s / dst_s if dst_s else float("inf")
+    ok = world_scale_ratio_compatible(src_s, dst_s, threshold=threshold)
+    return {
+        "ok": ok,
+        "src_scale": round(src_s, 6),
+        "dst_scale": round(dst_s, 6),
+        "ratio": round(ratio, 6),
+        "threshold": float(threshold),
+    }
+
+
 def _influence_index_by_long(skin: str) -> Dict[str, int]:
     c = _cmds()
     influences = list(c.skinCluster(skin, query=True, influence=True) or [])
@@ -1380,6 +1437,7 @@ def _do_copy_skin_weights(
     *,
     no_mirror: bool = True,
     sync_bind_prematrix: bool = True,
+    scale_threshold: float = WORLD_SCALE_SYNC_THRESHOLD,
 ) -> Dict[str, Any]:
     c = _cmds()
     src = _mesh_transform(source)
@@ -1400,7 +1458,27 @@ def _do_copy_skin_weights(
         "dest_skin": ds,
     }
     if sync_bind_prematrix:
-        out["bind_prematrix_sync"] = _sync_bind_pre_matrices(ss, ds)
+        gate = _bind_prematrix_scale_gate(src, dst, threshold=scale_threshold)
+        if not gate["ok"]:
+            out["bind_prematrix_sync"] = {
+                "skipped": True,
+                "reason": "world_scale_mismatch",
+                "src_scale": gate["src_scale"],
+                "dst_scale": gate["dst_scale"],
+                "ratio": gate["ratio"],
+                "threshold": gate["threshold"],
+                "synced_count": 0,
+                "matched": 0,
+                "missing": [],
+                "max_diff_before": 0.0,
+            }
+        else:
+            sync = _sync_bind_pre_matrices(ss, ds)
+            sync["skipped"] = False
+            sync["src_scale"] = gate["src_scale"]
+            sync["dst_scale"] = gate["dst_scale"]
+            sync["ratio"] = gate["ratio"]
+            out["bind_prematrix_sync"] = sync
     return out
 
 
@@ -1491,8 +1569,9 @@ def align_skinned_rig(
         "在两网格间传递蒙皮权重（copySkinWeights，按最近点 + 最近关节）。"
         "默认 align=true：先把源侧 Armature+蒙皮网格一起对齐到目标再拷贝（修复 Meshy 错位）。"
         "默认 sync_bind_prematrix=true：共享影响骨时把源 bindPreMatrix 同步到目标，"
-        "避免在动画帧下误绑定导致拉丝变形。对齐会保留，拷完不能把骨架移回。"
-        "多目标请用 transfer_skin_weights。"
+        "避免在动画帧下误绑定导致拉丝变形；若源/目标世界均匀尺度比超过阈值（默认 1.15），"
+        "自动跳过 sync（防止 Tripo 等 scale≈100 合并体写坏原分件）。"
+        "对齐会保留，拷完不能把骨架移回。多目标请用 transfer_skin_weights。"
     ),
     parameters=obj_schema(
         {
@@ -1565,7 +1644,13 @@ def copy_skin_weights(
                 f"overlap={align_info.get('overlap_ratio')}"
             )
         sync = data.get("bind_prematrix_sync") or {}
-        if sync.get("synced_count"):
+        if sync.get("skipped") and sync.get("reason") == "world_scale_mismatch":
+            msg += (
+                f"；已跳过 bindPreMatrix 同步（世界尺度不匹配 "
+                f"src={sync.get('src_scale')} dst={sync.get('dst_scale')} "
+                f"ratio={sync.get('ratio')}，依赖目标在 bind pose 下的矩阵）"
+            )
+        elif sync.get("synced_count"):
             msg += (
                 f"；已同步 bindPreMatrix×{sync['synced_count']}"
                 f"（绑定前最大偏差 {sync.get('max_diff_before')}）"
@@ -1578,9 +1663,10 @@ def copy_skin_weights(
 @tool(
     name="transfer_skin_weights",
     description=(
-        "批量：Meshy 合并蒙皮体 → 原始分件。默认先把 Armature+源网格对齐到分件包围盒，"
+        "批量：Meshy/Tripo 合并蒙皮体 → 原始分件。默认先把 Armature+源网格对齐到分件包围盒，"
         "再自动 bind 并 closestPoint 拷权重；随后把源 bindPreMatrix 同步到各目标，"
-        "即使当前帧在动画姿态也不会写错绑定位姿。对齐保留，勿移回错位骨架。"
+        "即使当前帧在动画姿态也不会写错绑定位姿。"
+        "若源/目标世界尺度比超过阈值则自动跳过 sync，避免炸模。对齐保留，勿移回错位骨架。"
     ),
     parameters=obj_schema(
         {
@@ -1657,6 +1743,7 @@ def transfer_skin_weights(
         newly_bound = 0
         sync_fixed = 0
         sync_max_diff = 0.0
+        sync_skipped_scale = 0
         for dst in dests:
             try:
                 if auto_bind:
@@ -1672,6 +1759,8 @@ def transfer_skin_weights(
                     sync_bind_prematrix=bool(sync_bind_prematrix),
                 )
                 sync = info.get("bind_prematrix_sync") or {}
+                if sync.get("skipped") and sync.get("reason") == "world_scale_mismatch":
+                    sync_skipped_scale += 1
                 sync_fixed += int(sync.get("synced_count") or 0)
                 sync_max_diff = max(
                     sync_max_diff, float(sync.get("max_diff_before") or 0.0)
@@ -1691,6 +1780,7 @@ def transfer_skin_weights(
             "newly_bound": newly_bound,
             "bind_prematrix_synced_total": sync_fixed,
             "bind_prematrix_max_diff_before": round(sync_max_diff, 6),
+            "bind_prematrix_skipped_scale_mismatch": sync_skipped_scale,
             "sync_bind_prematrix": bool(sync_bind_prematrix),
         }
         if align_info:
@@ -1703,6 +1793,11 @@ def transfer_skin_weights(
                 f"；movers={align_info.get('movers')} "
                 f"feet_error={align_info['feet_error']} "
                 f"overlap={align_info.get('overlap_ratio')}"
+            )
+        if sync_bind_prematrix and sync_skipped_scale:
+            msg += (
+                f"；已跳过 bindPreMatrix 同步×{sync_skipped_scale}"
+                f"（世界尺度不匹配，依赖目标 bind pose 矩阵）"
             )
         if sync_bind_prematrix and sync_fixed:
             msg += (

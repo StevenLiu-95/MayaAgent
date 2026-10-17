@@ -115,6 +115,7 @@ def create_help_panel(parent=None):
             t("help.settings.1"),
             t("help.settings.2"),
             t("help.settings.meshy"),
+            t("help.settings.tripo"),
             t("help.settings.3"),
             t("help.settings.4"),
         ),
@@ -204,6 +205,17 @@ def create_help_panel(parent=None):
             "meshy_uv_unwrap、meshy_rig、meshy_animate、meshy_list_animations、meshy_get_task、"
             "meshy_wait_task、meshy_download_model、meshy_import_to_maya、meshy_balance"
             "（需在设置中配置 Meshy API Key；导入优先 FBX）",
+        ),
+        (
+            "Tripo AI tripo",
+            "tripo_text_to_model、tripo_image_to_model、tripo_multiview_to_model、"
+            "tripo_text_to_image、tripo_image_to_image、tripo_image_to_multiview、tripo_edit_multiview、"
+            "tripo_texture、tripo_convert、tripo_mesh_segment、tripo_mesh_complete、tripo_mesh_decimate、"
+            "tripo_rig_check、tripo_rig、tripo_retarget、tripo_list_animations、"
+            "tripo_prepare_rig_export、tripo_apply_to_meshes、tripo_apply_animation、"
+            "tripo_get_task、tripo_wait_task、tripo_list_tasks、tripo_upload_file、"
+            "tripo_download、tripo_import_to_maya、tripo_balance、tripo_usage"
+            "（需在设置中配置 Tripo API Key；导入优先 FBX）",
         ),
         (
             "脚本 scripting",

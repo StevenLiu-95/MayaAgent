@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.5.2"
+  version: "1.5.3"
   language: zh-CN
   theme: dark
 
@@ -222,6 +222,22 @@ meshy:
   poll_interval: 5
   wait_timeout: 600
   download_dir: ""  # 空则放在 MayaAgent 同级目录 meshy_downloads/
+  default_formats: [fbx, glb]
+
+tripo:
+  enabled: true
+  base_url: https://openapi.tripo3d.com/v3  # 国际站可改为 https://openapi.tripo3d.ai/v3
+  api_key_env: TRIPO_API_KEY
+  timeout: 60
+  upload_timeout: 180
+  upload_timeout_per_mb: 15
+  upload_timeout_max: 900
+  upload_retries: 2
+  poll_interval: 5
+  wait_timeout: 600
+  download_dir: ""  # 空 → agent_temp/tripo_downloads
+  default_model: v3.1-20260211
+  default_image_model: seedream_v4
   default_formats: [fbx, glb]
 
 ui:

@@ -1,4 +1,4 @@
-"""LLM / Meshy settings panel."""
+"""LLM / Meshy / Tripo settings panel."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
 
         self._build_llm_tab()
         self._build_meshy_tab()
+        self._build_tripo_tab()
         self._apply_no_wheel()
 
         footer = QtWidgets.QFrame()
@@ -242,6 +243,54 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         self._stretch_end(root)
         self.tabs.addTab(scroll, t("settings.tab.meshy"))
 
+    def _build_tripo_tab(self) -> None:
+        scroll, root = self._scroll_page()
+
+        tripo, tripo_lay = self._section(
+            t("settings.section.tripo"),
+            t("settings.section.tripo_hint"),
+        )
+        self.tripo_enabled = QtWidgets.QCheckBox(t("settings.tripo_enabled"))
+        tripo_lay.addWidget(
+            self._option_row(
+                self.tripo_enabled, t("settings.tripo_enabled_hint")
+            )
+        )
+        tform = self._form(tripo_lay)
+        self.tripo_api_key_edit = QtWidgets.QLineEdit()
+        self.tripo_api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.tripo_api_key_edit.setPlaceholderText(t("settings.tripo_api_key_ph"))
+        self.tripo_api_key_edit.setMinimumHeight(30)
+        tform.addRow(
+            self._field_label(t("settings.tripo_api_key")),
+            self.tripo_api_key_edit,
+        )
+        tripo_actions = QtWidgets.QHBoxLayout()
+        tripo_actions.setContentsMargins(0, 4, 0, 0)
+        tripo_actions.setSpacing(10)
+        self.tripo_test_status = QtWidgets.QLabel("")
+        self.tripo_test_status.setObjectName("testConnStatus")
+        self.tripo_test_status.setWordWrap(True)
+        self.tripo_test_status.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+        )
+        self.tripo_test_status.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+        )
+        tripo_actions.addWidget(self.tripo_test_status, 1)
+        self.tripo_test_btn = QtWidgets.QPushButton(t("settings.tripo_test"))
+        self.tripo_test_btn.setObjectName("secondaryBtn")
+        self.tripo_test_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.tripo_test_btn.setMinimumWidth(96)
+        self.tripo_test_btn.setMinimumHeight(30)
+        self.tripo_test_btn.clicked.connect(self._test_tripo)
+        tripo_actions.addWidget(self.tripo_test_btn, 0)
+        tripo_lay.addLayout(tripo_actions)
+        root.addWidget(tripo)
+
+        self._stretch_end(root)
+        self.tabs.addTab(scroll, t("settings.tab.tripo"))
+
     # ---- data -----------------------------------------------------------
 
     def _snapshot(self) -> tuple:
@@ -254,6 +303,8 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.base_url_edit.text().strip(),
             bool(self.meshy_enabled.isChecked()),
             self.meshy_api_key_edit.text(),
+            bool(self.tripo_enabled.isChecked()),
+            self.tripo_api_key_edit.text(),
             round(float(self.temp_spin.value()), 4),
             int(self.max_tokens_spin.value()),
             bool(self.auto_undo.isChecked()),
@@ -296,6 +347,8 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.base_url_edit.textChanged,
             self.meshy_enabled.toggled,
             self.meshy_api_key_edit.textChanged,
+            self.tripo_enabled.toggled,
+            self.tripo_api_key_edit.textChanged,
             self.temp_spin.valueChanged,
             self.max_tokens_spin.valueChanged,
             self.auto_undo.toggled,
@@ -317,12 +370,17 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             sig.connect(self._clear_test_status)
         self.meshy_api_key_edit.textChanged.connect(self._clear_meshy_test_status)
         self.meshy_enabled.toggled.connect(self._clear_meshy_test_status)
+        self.tripo_api_key_edit.textChanged.connect(self._clear_tripo_test_status)
+        self.tripo_enabled.toggled.connect(self._clear_tripo_test_status)
 
     def _clear_test_status(self, *_args) -> None:
         self._set_test_status("", "")
 
     def _clear_meshy_test_status(self, *_args) -> None:
         self._set_meshy_test_status("", "")
+
+    def _clear_tripo_test_status(self, *_args) -> None:
+        self._set_tripo_test_status("", "")
 
     def _on_provider_changed(self) -> None:
         pid = self.provider_combo.currentData()
@@ -364,6 +422,8 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.max_rounds.setValue(int(self.cfg.get("maya.max_tool_rounds", 30)))
             self.meshy_enabled.setChecked(bool(self.cfg.get("meshy.enabled", True)))
             self.meshy_api_key_edit.setText(self.cfg.get_api_key("meshy"))
+            self.tripo_enabled.setChecked(bool(self.cfg.get("tripo.enabled", True)))
+            self.tripo_api_key_edit.setText(self.cfg.get_api_key("tripo"))
         finally:
             self._suppress_dirty = False
         self._mark_clean()
@@ -396,6 +456,17 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                 from maya_agent.tools.meshy_client import clear_meshy_key_validity
 
                 clear_meshy_key_validity()
+            except Exception:
+                pass
+        old_tripo_key = self.cfg.get_api_key("tripo")
+        new_tripo_key = self.tripo_api_key_edit.text().strip()
+        self.cfg.set("tripo.enabled", self.tripo_enabled.isChecked())
+        self.cfg.set_api_key("tripo", new_tripo_key)
+        if new_tripo_key != old_tripo_key:
+            try:
+                from maya_agent.tools.tripo_client import clear_tripo_key_validity
+
+                clear_tripo_key_validity()
             except Exception:
                 pass
         self.cfg.set("maya.auto_undo", self.auto_undo.isChecked())
@@ -459,6 +530,22 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
 
     def _set_meshy_test_status(self, text: str, kind: str = "") -> None:
         label = getattr(self, "meshy_test_status", None)
+        if label is None:
+            return
+        label.setText(text or "")
+        colors = {
+            "ok": COLOR_TEST_OK,
+            "fail": COLOR_TEST_FAIL,
+            "info": COLOR_MUTED,
+        }
+        color = colors.get(kind, COLOR_MUTED)
+        label.setStyleSheet(
+            f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+            f"background: transparent; border: none; padding: 0; }}"
+        )
+
+    def _set_tripo_test_status(self, text: str, kind: str = "") -> None:
+        label = getattr(self, "tripo_test_status", None)
         if label is None:
             return
         label.setText(text or "")
@@ -574,6 +661,64 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             if len(err) > 72:
                 err = err[:72] + "…"
             self._set_meshy_test_status(f"连接失败 · {err}", "fail")
+        finally:
+            if btn is not None:
+                btn.setEnabled(True)
+
+    def _test_tripo(self) -> None:
+        key = self.tripo_api_key_edit.text().strip()
+        enabled = self.tripo_enabled.isChecked()
+        self._set_tripo_test_status(t("settings.tripo_test_running"), "info")
+        btn = getattr(self, "tripo_test_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+        try:
+            QtWidgets.QApplication.processEvents()
+            if not enabled:
+                self._set_tripo_test_status("Tripo 已关闭", "fail")
+                return
+            if key:
+                self.cfg.set_api_key("tripo", key)
+            self.cfg.set("tripo.enabled", True)
+            from maya_agent.tools.tripo_client import TripoClient, TripoError
+
+            try:
+                data = TripoClient(api_key=key or None).balance()
+            except TripoError as e:
+                from maya_agent.tools.tripo_client import mark_tripo_key_invalid
+
+                if getattr(e, "status_code", 0) == 401 or "401" in str(e):
+                    mark_tripo_key_invalid(key or None)
+                err = " ".join(str(e).split())
+                if len(err) > 72:
+                    err = err[:72] + "…"
+                self._set_tripo_test_status(f"连接失败 · {err}", "fail")
+                return
+            from maya_agent.tools.tripo_client import mark_tripo_key_valid
+
+            mark_tripo_key_valid(key or None)
+            preview = ""
+            if isinstance(data, dict):
+                for k in ("balance", "frozen", "credits"):
+                    if k in data and data[k] is not None:
+                        preview = f"{k}={data[k]}"
+                        break
+                if not preview:
+                    preview = ", ".join(
+                        f"{k}={data[k]}" for k in list(data.keys())[:3]
+                    )
+            msg = "连接成功"
+            if preview:
+                one = " ".join(str(preview).split())
+                if len(one) > 48:
+                    one = one[:48] + "…"
+                msg = f"连接成功 · {one}"
+            self._set_tripo_test_status(msg, "ok")
+        except Exception as e:
+            err = " ".join(str(e).split())
+            if len(err) > 72:
+                err = err[:72] + "…"
+            self._set_tripo_test_status(f"连接失败 · {err}", "fail")
         finally:
             if btn is not None:
                 btn.setEnabled(True)
