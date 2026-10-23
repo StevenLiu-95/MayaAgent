@@ -116,6 +116,7 @@ def create_help_panel(parent=None):
             t("help.settings.2"),
             t("help.settings.meshy"),
             t("help.settings.tripo"),
+            t("help.settings.hunyuan"),
             t("help.settings.3"),
             t("help.settings.4"),
         ),
@@ -152,7 +153,12 @@ def create_help_panel(parent=None):
         ),
         (
             "UV",
-            "auto_unwrap_uv、layout_uv、check_uv_overlaps",
+            "一键：prepare_game_uv（切缝→展开→优化→Layout→质检）。"
+            "拆分：cut_uv_edges、sew_uv_edges、get_uv_info；"
+            "展开：auto_unwrap_uv、unfold_uv、optimize_uv；"
+            "排布/密度：layout_uv、set_texel_density；"
+            "质检：check_uv_quality（check_uv_overlaps 为旧名别名）；"
+            "截图：capture_uv_layout（UV 线框图，非视口）",
         ),
         (
             "绑骨 rigging",
@@ -216,6 +222,16 @@ def create_help_panel(parent=None):
             "tripo_get_task、tripo_wait_task、tripo_list_tasks、tripo_upload_file、"
             "tripo_download、tripo_import_to_maya、tripo_balance、tripo_usage"
             "（需在设置中配置 Tripo API Key；导入优先 FBX）",
+        ),
+        (
+            "混元3D Hunyuan",
+            "hunyuan_text_to_3d_pro、hunyuan_image_to_3d_pro、hunyuan_multiview_to_3d_pro、"
+            "hunyuan_text_to_3d_rapid、hunyuan_image_to_3d_rapid、hunyuan_profile_to_3d、"
+            "hunyuan_texture、hunyuan_reduce_face、hunyuan_part、hunyuan_uv、"
+            "hunyuan_auto_rig、hunyuan_list_motions、hunyuan_motion、"
+            "hunyuan_get_job、hunyuan_wait_job、hunyuan_convert、hunyuan_download、"
+            "hunyuan_import_to_maya、hunyuan_test_connection、hunyuan_list_profile_templates"
+            "（需 SecretId/SecretKey；3D 输入仅公网 file_url 或上游 JobId 串联；导入优先 FBX）",
         ),
         (
             "脚本 scripting",

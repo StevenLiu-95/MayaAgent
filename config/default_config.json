@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.5.3",
+    "version": "1.5.4",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -256,6 +256,19 @@
     "default_model": "v3.1-20260211",
     "default_image_model": "seedream_v4",
     "default_formats": ["fbx", "glb"]
+  },
+  "hunyuan": {
+    "enabled": true,
+    "endpoint": "ai3d.tencentcloudapi.com",
+    "region": "ap-guangzhou",
+    "version": "2025-05-13",
+    "secret_id_env": "TENCENTCLOUD_SECRET_ID",
+    "secret_key_env": "TENCENTCLOUD_SECRET_KEY",
+    "timeout": 60,
+    "poll_interval": 5,
+    "wait_timeout": 600,
+    "download_dir": "",
+    "default_formats": ["fbx", "glb", "obj"]
   },
   "ui": {
     "dock_area": "right",

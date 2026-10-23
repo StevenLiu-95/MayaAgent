@@ -466,10 +466,6 @@ class MessageBlock(QtWidgets.QWidget):
                 gallery=images,
                 index=idx,
                 tooltip=tip,
-                stylesheet=(
-                    "QLabel { background:#1a1b20; border:1px solid #4a5d78;"
-                    " border-radius:8px; }"
-                ),
             )
             lay.insertWidget(lay.count() - 1, label)
         self._image_host.setMinimumHeight(0)
@@ -566,17 +562,13 @@ class MessageBlock(QtWidgets.QWidget):
 
         thumb = make_clickable_thumb(
             att,
-            edge=280,
+            edge=360,
             fixed_w=360,
-            fixed_h=220,
+            fixed_h=360,
             parent=host,
             gallery=[att],
             index=0,
             tooltip=label_text,
-            stylesheet=(
-                "QLabel { background:#1a1b20; border:1px solid #4a5d78;"
-                " border-radius:8px; }"
-            ),
         )
         lay.addWidget(thumb, 0, QtCore.Qt.AlignLeft)
         host.show()

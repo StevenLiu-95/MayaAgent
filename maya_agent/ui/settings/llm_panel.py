@@ -1,4 +1,4 @@
-"""LLM / Meshy / Tripo settings panel."""
+"""LLM / Meshy / Tripo / Hunyuan settings panel."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         self._build_llm_tab()
         self._build_meshy_tab()
         self._build_tripo_tab()
+        self._build_hunyuan_tab()
         self._apply_no_wheel()
 
         footer = QtWidgets.QFrame()
@@ -291,6 +292,72 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         self._stretch_end(root)
         self.tabs.addTab(scroll, t("settings.tab.tripo"))
 
+    def _build_hunyuan_tab(self) -> None:
+        scroll, root = self._scroll_page()
+        hunyuan, hunyuan_lay = self._section(
+            t("settings.section.hunyuan"),
+            t("settings.section.hunyuan_hint"),
+        )
+        self.hunyuan_enabled = QtWidgets.QCheckBox(t("settings.hunyuan_enabled"))
+        hunyuan_lay.addWidget(
+            self._option_row(
+                self.hunyuan_enabled, t("settings.hunyuan_enabled_hint")
+            )
+        )
+        hform = self._form(hunyuan_lay)
+        self.hunyuan_secret_id_edit = QtWidgets.QLineEdit()
+        self.hunyuan_secret_id_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.hunyuan_secret_id_edit.setPlaceholderText(
+            t("settings.hunyuan_secret_id_ph")
+        )
+        self.hunyuan_secret_id_edit.setMinimumHeight(30)
+        hform.addRow(
+            self._field_label(t("settings.hunyuan_secret_id")),
+            self.hunyuan_secret_id_edit,
+        )
+        self.hunyuan_secret_key_edit = QtWidgets.QLineEdit()
+        self.hunyuan_secret_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.hunyuan_secret_key_edit.setPlaceholderText(
+            t("settings.hunyuan_secret_key_ph")
+        )
+        self.hunyuan_secret_key_edit.setMinimumHeight(30)
+        hform.addRow(
+            self._field_label(t("settings.hunyuan_secret_key")),
+            self.hunyuan_secret_key_edit,
+        )
+        self.hunyuan_region_edit = QtWidgets.QLineEdit()
+        self.hunyuan_region_edit.setPlaceholderText(t("settings.hunyuan_region_ph"))
+        self.hunyuan_region_edit.setMinimumHeight(30)
+        hform.addRow(
+            self._field_label(t("settings.hunyuan_region")),
+            self.hunyuan_region_edit,
+        )
+        hunyuan_actions = QtWidgets.QHBoxLayout()
+        hunyuan_actions.setContentsMargins(0, 4, 0, 0)
+        hunyuan_actions.setSpacing(10)
+        self.hunyuan_test_status = QtWidgets.QLabel("")
+        self.hunyuan_test_status.setObjectName("testConnStatus")
+        self.hunyuan_test_status.setWordWrap(True)
+        self.hunyuan_test_status.setAlignment(
+            QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+        )
+        self.hunyuan_test_status.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+        )
+        hunyuan_actions.addWidget(self.hunyuan_test_status, 1)
+        self.hunyuan_test_btn = QtWidgets.QPushButton(t("settings.hunyuan_test"))
+        self.hunyuan_test_btn.setObjectName("secondaryBtn")
+        self.hunyuan_test_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.hunyuan_test_btn.setMinimumWidth(96)
+        self.hunyuan_test_btn.setMinimumHeight(30)
+        self.hunyuan_test_btn.clicked.connect(self._test_hunyuan)
+        hunyuan_actions.addWidget(self.hunyuan_test_btn, 0)
+        hunyuan_lay.addLayout(hunyuan_actions)
+        root.addWidget(hunyuan)
+
+        self._stretch_end(root)
+        self.tabs.addTab(scroll, t("settings.tab.hunyuan"))
+
     # ---- data -----------------------------------------------------------
 
     def _snapshot(self) -> tuple:
@@ -305,6 +372,10 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.meshy_api_key_edit.text(),
             bool(self.tripo_enabled.isChecked()),
             self.tripo_api_key_edit.text(),
+            bool(self.hunyuan_enabled.isChecked()),
+            self.hunyuan_secret_id_edit.text(),
+            self.hunyuan_secret_key_edit.text(),
+            self.hunyuan_region_edit.text().strip(),
             round(float(self.temp_spin.value()), 4),
             int(self.max_tokens_spin.value()),
             bool(self.auto_undo.isChecked()),
@@ -349,6 +420,10 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.meshy_api_key_edit.textChanged,
             self.tripo_enabled.toggled,
             self.tripo_api_key_edit.textChanged,
+            self.hunyuan_enabled.toggled,
+            self.hunyuan_secret_id_edit.textChanged,
+            self.hunyuan_secret_key_edit.textChanged,
+            self.hunyuan_region_edit.textChanged,
             self.temp_spin.valueChanged,
             self.max_tokens_spin.valueChanged,
             self.auto_undo.toggled,
@@ -372,6 +447,10 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         self.meshy_enabled.toggled.connect(self._clear_meshy_test_status)
         self.tripo_api_key_edit.textChanged.connect(self._clear_tripo_test_status)
         self.tripo_enabled.toggled.connect(self._clear_tripo_test_status)
+        self.hunyuan_secret_id_edit.textChanged.connect(self._clear_hunyuan_test_status)
+        self.hunyuan_secret_key_edit.textChanged.connect(self._clear_hunyuan_test_status)
+        self.hunyuan_region_edit.textChanged.connect(self._clear_hunyuan_test_status)
+        self.hunyuan_enabled.toggled.connect(self._clear_hunyuan_test_status)
 
     def _clear_test_status(self, *_args) -> None:
         self._set_test_status("", "")
@@ -381,6 +460,9 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
 
     def _clear_tripo_test_status(self, *_args) -> None:
         self._set_tripo_test_status("", "")
+
+    def _clear_hunyuan_test_status(self, *_args) -> None:
+        self._set_hunyuan_test_status("", "")
 
     def _on_provider_changed(self) -> None:
         pid = self.provider_combo.currentData()
@@ -424,6 +506,18 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             self.meshy_api_key_edit.setText(self.cfg.get_api_key("meshy"))
             self.tripo_enabled.setChecked(bool(self.cfg.get("tripo.enabled", True)))
             self.tripo_api_key_edit.setText(self.cfg.get_api_key("tripo"))
+            self.hunyuan_enabled.setChecked(
+                bool(self.cfg.get("hunyuan.enabled", True))
+            )
+            self.hunyuan_secret_id_edit.setText(
+                self.cfg.get_api_key("hunyuan_secret_id")
+            )
+            self.hunyuan_secret_key_edit.setText(
+                self.cfg.get_api_key("hunyuan_secret_key")
+            )
+            self.hunyuan_region_edit.setText(
+                str(self.cfg.get("hunyuan.region") or "ap-guangzhou")
+            )
         finally:
             self._suppress_dirty = False
         self._mark_clean()
@@ -467,6 +561,24 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                 from maya_agent.tools.tripo_client import clear_tripo_key_validity
 
                 clear_tripo_key_validity()
+            except Exception:
+                pass
+        old_hy_id = self.cfg.get_api_key("hunyuan_secret_id")
+        old_hy_key = self.cfg.get_api_key("hunyuan_secret_key")
+        new_hy_id = self.hunyuan_secret_id_edit.text().strip()
+        new_hy_key = self.hunyuan_secret_key_edit.text().strip()
+        self.cfg.set("hunyuan.enabled", self.hunyuan_enabled.isChecked())
+        self.cfg.set(
+            "hunyuan.region",
+            self.hunyuan_region_edit.text().strip() or "ap-guangzhou",
+        )
+        self.cfg.set_api_key("hunyuan_secret_id", new_hy_id)
+        self.cfg.set_api_key("hunyuan_secret_key", new_hy_key)
+        if new_hy_id != old_hy_id or new_hy_key != old_hy_key:
+            try:
+                from maya_agent.tools.hunyuan_client import clear_hunyuan_key_validity
+
+                clear_hunyuan_key_validity()
             except Exception:
                 pass
         self.cfg.set("maya.auto_undo", self.auto_undo.isChecked())
@@ -719,6 +831,78 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             if len(err) > 72:
                 err = err[:72] + "…"
             self._set_tripo_test_status(f"连接失败 · {err}", "fail")
+        finally:
+            if btn is not None:
+                btn.setEnabled(True)
+
+    def _set_hunyuan_test_status(self, text: str, kind: str = "") -> None:
+        label = getattr(self, "hunyuan_test_status", None)
+        if label is None:
+            return
+        label.setText(text or "")
+        colors = {
+            "ok": COLOR_TEST_OK,
+            "fail": COLOR_TEST_FAIL,
+            "info": COLOR_MUTED,
+        }
+        color = colors.get(kind, COLOR_MUTED)
+        label.setStyleSheet(
+            f"QLabel#testConnStatus {{ color: {color}; font-size: 12px; "
+            f"background: transparent; border: none; padding: 0; }}"
+        )
+
+    def _test_hunyuan(self) -> None:
+        sid = self.hunyuan_secret_id_edit.text().strip()
+        skey = self.hunyuan_secret_key_edit.text().strip()
+        region = self.hunyuan_region_edit.text().strip() or "ap-guangzhou"
+        enabled = self.hunyuan_enabled.isChecked()
+        self._set_hunyuan_test_status(t("settings.hunyuan_test_running"), "info")
+        btn = getattr(self, "hunyuan_test_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+        try:
+            QtWidgets.QApplication.processEvents()
+            if not enabled:
+                self._set_hunyuan_test_status("混元已关闭", "fail")
+                return
+            if sid:
+                self.cfg.set_api_key("hunyuan_secret_id", sid)
+            if skey:
+                self.cfg.set_api_key("hunyuan_secret_key", skey)
+            self.cfg.set("hunyuan.enabled", True)
+            self.cfg.set("hunyuan.region", region)
+            from maya_agent.tools.hunyuan_client import (
+                HunyuanClient,
+                HunyuanError,
+                mark_hunyuan_key_invalid,
+                mark_hunyuan_key_valid,
+            )
+
+            try:
+                data = HunyuanClient(
+                    secret_id=sid or None, secret_key=skey or None
+                ).test_connection()
+            except HunyuanError as e:
+                if (e.error_code or "").startswith("AuthFailure") or "鉴权失败" in str(
+                    e
+                ):
+                    mark_hunyuan_key_invalid(sid or None)
+                err = " ".join(str(e).split())
+                if len(err) > 72:
+                    err = err[:72] + "…"
+                self._set_hunyuan_test_status(f"连接失败 · {err}", "fail")
+                return
+            mark_hunyuan_key_valid(sid or None)
+            msg = str((data or {}).get("message") or "连接成功")
+            one = " ".join(msg.split())
+            if len(one) > 64:
+                one = one[:64] + "…"
+            self._set_hunyuan_test_status(one, "ok")
+        except Exception as e:
+            err = " ".join(str(e).split())
+            if len(err) > 72:
+                err = err[:72] + "…"
+            self._set_hunyuan_test_status(f"连接失败 · {err}", "fail")
         finally:
             if btn is not None:
                 btn.setEnabled(True)

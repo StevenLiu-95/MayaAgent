@@ -150,6 +150,9 @@ def show_image_viewer(
 
             bar = QtWidgets.QHBoxLayout()
             bar.setSpacing(8)
+            self._copy_btn = QtWidgets.QPushButton("复制图片")
+            self._copy_btn.setObjectName("viewerBtn")
+            self._copy_btn.clicked.connect(self._copy_image)
             self._prev_btn = QtWidgets.QPushButton("← 上一张")
             self._prev_btn.setObjectName("viewerBtn")
             self._prev_btn.clicked.connect(lambda: self._nav(-1))
@@ -170,6 +173,7 @@ def show_image_viewer(
             self._save_btn = QtWidgets.QPushButton("保存图片")
             self._save_btn.setObjectName("viewerBtn")
             self._save_btn.clicked.connect(self._save_image)
+            bar.addWidget(self._copy_btn)
             bar.addWidget(self._prev_btn)
             bar.addStretch(1)
             bar.addWidget(self._zoom_out)
@@ -197,7 +201,9 @@ def show_image_viewer(
             self._next_btn.setEnabled(multi and self._index < len(self._items) - 1)
             self._prev_btn.setVisible(multi)
             self._next_btn.setVisible(multi)
-            self._save_btn.setEnabled(not self._source.isNull())
+            has_img = not self._source.isNull()
+            self._copy_btn.setEnabled(has_img)
+            self._save_btn.setEnabled(has_img)
             self._fit = True
             self._zoom = 1.0
             self._dragging = False
@@ -227,6 +233,28 @@ def show_image_viewer(
                 else:
                     name += ".jpg"
             return name
+
+        def _title_base(self) -> str:
+            return (
+                self._title_lbl.text()
+                .split("  ·  已保存")[0]
+                .split("  ·  已复制")[0]
+            )
+
+        def _copy_image(self) -> None:
+            if self._source is None or self._source.isNull():
+                QtWidgets.QMessageBox.warning(self, "复制图片", "当前没有可复制的图片。")
+                return
+            clip = QtWidgets.QApplication.clipboard()
+            if clip is None:
+                QtWidgets.QMessageBox.warning(self, "复制图片", "无法访问系统剪贴板。")
+                return
+            try:
+                clip.setImage(self._source)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "复制图片", f"复制失败：{e}")
+                return
+            self._title_lbl.setText(f"{self._title_base()}  ·  已复制")
 
         def _save_image(self) -> None:
             if self._source is None or self._source.isNull():
@@ -274,9 +302,7 @@ def show_image_viewer(
                     )
                     return
             if ok:
-                self._title_lbl.setText(
-                    f"{self._title_lbl.text().split('  ·  已保存')[0]}  ·  已保存"
-                )
+                self._title_lbl.setText(f"{self._title_base()}  ·  已保存")
 
         def _viewport_size(self):
             vp = self._scroll.viewport().size()
@@ -504,27 +530,45 @@ def make_clickable_thumb(
 ):
     """
     Build a QLabel thumbnail that opens the image viewer on left-click.
+
+    ``fixed_w`` / ``fixed_h`` (or ``edge``) are maximum bounds — the label
+    sizes to the scaled pixmap so the image keeps its aspect ratio with no
+    letterbox / border frame.
     """
     from maya_agent.ui.image_attach import pixmap_from_attachment
 
     QtCore, _QtGui, QtWidgets, _ = import_qt()
     label = QtWidgets.QLabel(parent)
-    fw = fixed_w if fixed_w is not None else edge
-    fh = fixed_h if fixed_h is not None else edge
-    label.setFixedSize(fw, fh)
+    max_w = int(fixed_w if fixed_w is not None else edge)
+    max_h = int(fixed_h if fixed_h is not None else edge)
+    max_w = max(max_w, 1)
+    max_h = max(max_h, 1)
     label.setAlignment(QtCore.Qt.AlignCenter)
     label.setCursor(QtCore.Qt.PointingHandCursor)
+    # Transparent by default — no dark frame around the pixmap.
     label.setStyleSheet(
         stylesheet
-        or (
-            "QLabel { background:#1a1b20; border:1px solid #4a5d78;"
-            " border-radius:8px; }"
-        )
+        if stylesheet
+        else "QLabel { background: transparent; border: none; padding: 0; }"
     )
-    pix = pixmap_from_attachment(attachment, edge=edge)
+    # Decode large enough, then fit into max_w × max_h keeping aspect ratio.
+    pix = pixmap_from_attachment(attachment, edge=max(max_w, max_h, edge))
     if pix is not None and not pix.isNull():
+        pw, ph = int(pix.width()), int(pix.height())
+        if pw > max_w or ph > max_h:
+            scale = min(max_w / float(pw), max_h / float(ph))
+            tw = max(1, int(round(pw * scale)))
+            th = max(1, int(round(ph * scale)))
+            pix = pix.scaled(
+                tw,
+                th,
+                QtCore.Qt.KeepAspectRatio,
+                QtCore.Qt.SmoothTransformation,
+            )
+        label.setFixedSize(pix.width(), pix.height())
         label.setPixmap(pix)
     else:
+        label.setFixedSize(max_w, max_h)
         label.setText("图片")
     tip = tooltip or attachment.name or attachment.mime or "图片"
     if "单击查看" not in tip:

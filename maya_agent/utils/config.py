@@ -243,6 +243,13 @@ class Config:
             pass
 
         try:
+            from maya_agent.tools.hunyuan_client import filter_system_prompt_hunyuan
+
+            text = filter_system_prompt_hunyuan(text)
+        except Exception:
+            pass
+
+        try:
             from maya_agent.tools.adv_rig import filter_system_prompt_adv
 
             text = filter_system_prompt_adv(text)

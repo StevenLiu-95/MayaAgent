@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.5.3** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
+**v1.5.4** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨、动画、材质、灯光与导出，兼容国内外主流大模型（含视觉模型）。
 
 ## 核心能力
 
@@ -12,7 +12,7 @@
 | **视觉理解** | 对话可附带参考图；支持视觉的模型可调用 `capture_viewport`（单视角）/ `capture_viewport_views`（多视角）截取视口对比，也可 `search_images` / `fetch_image` 拉取网络参考图；设置中可开关「图片输入」 |
 | **网络检索** | `web_search` / `fetch_webpage` 查文档与规范；`search_images` 搜图；Agent 可按需主动调用（可在配置 `web.enabled` 关闭） |
 | **多模型** | 默认 DeepSeek；另有 OpenAI / Azure / Claude / Gemini、通义、智谱、Kimi、豆包、百川、硅基流动、Cursor 代理、Ollama 与自定义 OpenAI 兼容接口 |
-| **云端 AI 3D** | **Meshy** / **Tripo**（文/图/多视图生 3D、贴图、减面、绑骨、动画等）；设置页独立配置 API Key；任务轮询后下载 FBX 导入 Maya |
+| **云端 AI 3D** | **Meshy** / **Tripo** / **腾讯混元3D**（文/图/多视图生 3D、贴图、减面、绑骨、动画等）；设置页独立配置密钥；任务轮询后下载 FBX 导入 Maya |
 | **Maya 内嵌 UI** | 停靠深色面板：**对话 / 设置 / 工具 / 帮助**；紧凑输入区；发送与停止合并为同一按钮（绿 / 红）；Enter 发送、Shift+Enter 换行 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景名.ma.mayaagent.json` |
 | **安全可逆** | 工具在 Maya 主线程执行；整轮 Undo 块（可一键回退）；危险操作确认；默认不擅自新建空场景 |
@@ -98,16 +98,18 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 
 面板 → **模型 → LLM** → 选服务商、填 API Key → 点「测试连接」（结果显示在按钮左侧，成功绿 / 失败红）。修改会自动保存；可用「恢复默认」重置参数（API Key 保留）。
 
-也可设环境变量，例如 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`MESHY_API_KEY`、`TRIPO_API_KEY`。
+也可设环境变量，例如 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`DASHSCOPE_API_KEY`、`MESHY_API_KEY`、`TRIPO_API_KEY`、`TENCENTCLOUD_SECRET_ID`、`TENCENTCLOUD_SECRET_KEY`。
 
 Tripo（[开发者文档](https://developers.tripo3d.com/zh/docs)）：面板 → **模型 → Tripo** → 填 API Key →「测试连接」。默认 Base URL 为国区 `https://openapi.tripo3d.com/v3`（国际站可在配置中改为 `https://openapi.tripo3d.ai/v3`）。
+
+混元生3D（[API 概览](https://cloud.tencent.com/document/product/1804/120838)）：面板 → **模型 → 混元** → 填腾讯云 `SecretId` / `SecretKey` 与 Region →「测试连接」。默认接入点 `ai3d.tencentcloudapi.com`（国区 `ap-guangzhou`）。3D 后处理输入需公网 URL 或上游任务 JobId 串联，不支持本地网格直传。
 
 ## 界面
 
 | 页签 | 内容 |
 | ---- | ---- |
 | **对话** | 多会话、流式回复、工具调用过程、快捷芯片、图片附件、发送/停止 |
-| **模型** | LLM（模型、API、图片输入、测试连接、Agent 行为）/ Meshy / Tripo |
+| **模型** | LLM（模型、API、图片输入、测试连接、Agent 行为）/ Meshy / Tripo / 混元 |
 | **设置** | 界面语言、字体、整体缩放、临时文件目录（对话附图 / Meshy / 视口截图 / 未命名会话） |
 | **工具** | 按类别浏览全部工具；双击名称插入输入框 |
 | **帮助** | 上手说明与功能概览 |
@@ -120,7 +122,7 @@ Tripo（[开发者文档](https://developers.tripo3d.com/zh/docs)）：面板 �
 - 「查看当前场景信息」
 - 「按 UE5 模板创建骨架并对齐到选中网格，再自动蒙皮」
 - 「给选中网格绑定到选中骨骼，最大影响数 4」
-- 「自动展开 UV 并 Layout」
+- 「给选中模型做游戏 UV」（一键 `prepare_game_uv`：切缝→展开→Layout→质检）
 - 「把当前选择导出 FBX 到桌面」
 - 「创建三点布光」
 - （附参考图）「按这张图调整角色站姿」——视觉模型可再截视口核对

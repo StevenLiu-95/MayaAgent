@@ -126,10 +126,6 @@ class ToolRow(QtWidgets.QFrame):
                 gallery=gallery,
                 index=idx,
                 tooltip=att.name or "视口截图",
-                stylesheet=(
-                    "QLabel { background:#1a1b20; border:1px solid #5a4a30;"
-                    " border-radius:6px; }"
-                ),
             )
             self._image_lay.insertWidget(self._image_lay.count() - 1, label)
             shown += 1
