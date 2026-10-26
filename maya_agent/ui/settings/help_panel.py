@@ -153,12 +153,12 @@ def create_help_panel(parent=None):
         ),
         (
             "UV",
-            "一键：prepare_game_uv（切缝→展开→优化→Layout→质检）。"
+            "预检：preflight_uv；一键：prepare_game_uv（默认 cut_mode=auto，含清理与 Layout 重试）。"
             "拆分：cut_uv_edges、sew_uv_edges、get_uv_info；"
             "展开：auto_unwrap_uv、unfold_uv、optimize_uv；"
             "排布/密度：layout_uv、set_texel_density；"
-            "质检：check_uv_quality（check_uv_overlaps 为旧名别名）；"
-            "截图：capture_uv_layout（UV 线框图，非视口）",
+            "质检：check_uv_quality；截图：capture_uv_layout。"
+            "若 MCP tool_count 异常：拖入项目根目录 recover_tools_dragdrop.mel",
         ),
         (
             "绑骨 rigging",

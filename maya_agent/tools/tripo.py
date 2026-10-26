@@ -1775,6 +1775,7 @@ def _enrich_import_result(
         "若输出非 FBX，会自动先 convert→FBX 再导入。"
         "复用 Meshy 的 FBX PBR 重建逻辑。返回 joints/meshes/armature/"
         "frame_range/scale_report；非单位尺度时给出警告。"
+        "prepare_normals=true 时对新网格 unlock+软边（默认关闭）。"
         "可传 task_id 或已下载 file_path。"
     ),
     parameters=obj_schema(
@@ -1785,6 +1786,16 @@ def _enrich_import_result(
             "namespace": {"type": "string", "default": "tripo"},
             "output_dir": {"type": "string"},
             "rebuild_pbr": {"type": "boolean", "default": True},
+            "prepare_normals": {
+                "type": "boolean",
+                "default": False,
+                "description": "导入后对新网格解锁顶点法线并软边（默认 false）",
+            },
+            "normal_soften_angle": {
+                "type": "number",
+                "default": 30,
+                "description": "prepare_normals 时的软边角度（度）",
+            },
             "auto_convert_fbx": {
                 "type": "boolean",
                 "default": True,
@@ -1807,6 +1818,8 @@ def tripo_import_to_maya(
     namespace: str = "tripo",
     output_dir: str = "",
     rebuild_pbr: bool = True,
+    prepare_normals: bool = False,
+    normal_soften_angle: float = 30.0,
     auto_convert_fbx: bool = True,
     set_playback_range: bool = True,
 ) -> ToolResult:
@@ -1851,7 +1864,11 @@ def tripo_import_to_maya(
 
         def _do() -> ToolResult:
             imported = _import_path_into_maya(
-                local, namespace=ns, rebuild_pbr=bool(rebuild_pbr)
+                local,
+                namespace=ns,
+                rebuild_pbr=bool(rebuild_pbr),
+                prepare_normals=bool(prepare_normals),
+                normal_soften_angle=float(normal_soften_angle),
             )
             return _enrich_import_result(
                 imported, ns, set_playback_range=bool(set_playback_range)

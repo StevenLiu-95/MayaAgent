@@ -769,6 +769,7 @@ def _apply_viewport_display(
     hide_joints: bool = False,
     hide_controls: bool = False,
     mesh_only: bool = False,
+    show_selection_hilite: bool = False,
 ) -> Callable[[], None]:
     """Temporarily change display appearance / isolate / shadows; returns restore fn."""
     c = _cmds()
@@ -785,6 +786,8 @@ def _apply_viewport_display(
             overlay_off.extend(["joints", "ikHandles"])
         if hide_controls:
             overlay_off.extend(["nurbsCurves", "cv", "hulls", "locators", "manipulators"])
+        if not show_selection_hilite:
+            overlay_off.append("selectionHiliteDisplay")
     for flag in dict.fromkeys(overlay_off):
         try:
             prev = c.modelEditor(panel, query=True, **{flag: True})
@@ -956,6 +959,7 @@ def _finish_capture(
         "机位优先级：camera_position/look_at 一定生效，此时不会再 viewFit（避免覆盖机位）；"
         "frame_objects 在显式机位下只用于 bbox/远裁剪。"
         "hide_joints / hide_controls / mesh_only 可关掉骨骼与控制器叠加（形变 QC 建议 mesh_only=true）。"
+        "默认关闭选择高亮（show_selection_hilite=false），避免绿线框进入视觉分析；需要对照选中态时再打开。"
         "返回 camera_meta（截图当时）、requested/applied 机位、subject_coverage；被忽略的参数会进 warnings。"
     ),
     parameters=obj_schema(
@@ -1040,6 +1044,11 @@ def _finish_capture(
                 "default": False,
                 "description": "只显示网格：关掉关节、IK、曲线、灯光等视口叠加",
             },
+            "show_selection_hilite": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否保留选择高亮（绿线框）；默认 false，读缓冲前会清选择",
+            },
             "note": {"type": "string", "default": ""},
         }
     ),
@@ -1066,6 +1075,7 @@ def capture_viewport(
     hide_joints: bool = True,
     hide_controls: bool = True,
     mesh_only: bool = False,
+    show_selection_hilite: bool = False,
     note: str = "",
 ) -> ToolResult:
     c = _cmds()
@@ -1162,12 +1172,23 @@ def capture_viewport(
         hide_joints=hide_joints,
         hide_controls=hide_controls,
         mesh_only=mesh_only,
+        show_selection_hilite=bool(show_selection_hilite),
     )
 
     image_path = ""
     capture_method = "playblast"
     shot_meta: Dict[str, Any] = {}
     try:
+        # Framing may have selected targets; clear before read so hilite never lands in the shot.
+        if not show_selection_hilite:
+            try:
+                c.select(clear=True)
+            except Exception:
+                pass
+            try:
+                c.refresh(force=True)
+            except Exception:
+                pass
         image_path, capture_method = _capture_panel_image(
             panel_name, width, height, show_ornaments=show_ornaments
         )
@@ -1219,6 +1240,7 @@ def capture_viewport(
             "hide_joints": hide_joints,
             "hide_controls": hide_controls,
             "mesh_only": mesh_only,
+            "show_selection_hilite": bool(show_selection_hilite),
             "framing_mode": framing_mode,
             "requested": {
                 "camera_position": list(camera_position) if camera_position is not None else None,
@@ -1243,6 +1265,7 @@ def capture_viewport(
         "透视相机按 bbox 球径与焦距反算距离，避免主体过小；"
         "image_stats.subject_coverage 低于约 22% 会 warning。"
         "hide_joints 默认开；形变 QC 可用 mesh_only=true。"
+        "默认关闭选择高亮（show_selection_hilite=false）。"
         "截图结束后自动删除临时相机（temporary_cameras_cleaned=true）。"
     ),
     parameters=obj_schema(
@@ -1287,6 +1310,11 @@ def capture_viewport(
             "hide_joints": {"type": "boolean", "default": True},
             "hide_controls": {"type": "boolean", "default": True},
             "mesh_only": {"type": "boolean", "default": False},
+            "show_selection_hilite": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否保留选择高亮；默认 false",
+            },
             "note": {"type": "string", "default": ""},
         }
     ),
@@ -1308,6 +1336,7 @@ def capture_viewport_views(
     hide_joints: bool = True,
     hide_controls: bool = True,
     mesh_only: bool = False,
+    show_selection_hilite: bool = False,
     note: str = "",
 ) -> ToolResult:
     c = _cmds()
@@ -1344,6 +1373,7 @@ def capture_viewport_views(
         hide_joints=hide_joints,
         hide_controls=hide_controls,
         mesh_only=mesh_only,
+        show_selection_hilite=bool(show_selection_hilite),
     )
 
     def _restore_selection():
@@ -1356,6 +1386,11 @@ def capture_viewport_views(
             pass
 
     try:
+        if not show_selection_hilite:
+            try:
+                c.select(clear=True)
+            except Exception:
+                pass
         for view in view_list:
             image_path = ""
             cam = ""
@@ -1367,6 +1402,11 @@ def capture_viewport_views(
                 _set_panel_camera(panel_name, cam)
                 _focus_model_panel(panel_name)
 
+                if not show_selection_hilite:
+                    try:
+                        c.select(clear=True)
+                    except Exception:
+                        pass
                 image_path, method = _capture_panel_image(
                     panel_name, width, height, show_ornaments=show_ornaments
                 )
@@ -1460,6 +1500,7 @@ def capture_viewport_views(
             "hide_joints": hide_joints,
             "hide_controls": hide_controls,
             "mesh_only": mesh_only,
+            "show_selection_hilite": bool(show_selection_hilite),
             "temporary_cameras_cleaned": cleaned,
             "errors": errors,
             "warnings": warnings_all,

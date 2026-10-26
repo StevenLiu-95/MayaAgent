@@ -51,6 +51,18 @@ class RegisteredTool:
 
 
 _REGISTRY: Dict[str, RegisteredTool] = {}
+_MIN_HEALTHY_TOOLS = 50
+# Canaries that always register (no API key / ADV gate). Missing any of these
+# after load means the registry was wiped mid-reload (e.g. reloading this module).
+_CORE_CANARY_TOOLS = (
+    "get_scene_info",
+    "create_primitive",
+    "execute_python",
+    "export_fbx",
+)
+# Not a tool provider — reloading it re-binds ``_REGISTRY = {}`` and drops
+# every tool registered by modules that sort before "registry".
+_SKIP_TOOL_MODULES = frozenset({"registry"})
 
 
 def tool(
@@ -166,9 +178,23 @@ def run_tool(name: str, arguments: Dict[str, Any]) -> ToolResult:
         )
 
 
-def ensure_tools_loaded() -> None:
-    """Import all tool modules so decorators register."""
+def _reload_tool_helpers() -> None:
     import importlib
+    import sys
+
+    for full in (
+        "maya_agent.tools._maya",
+        "maya_agent.tools._mesh",
+        "maya_agent.tools._uv",
+    ):
+        if full in sys.modules:
+            try:
+                importlib.reload(sys.modules[full])
+            except Exception:
+                pass
+
+
+def _iter_public_tool_modules():
     import pkgutil
 
     import maya_agent.tools as tools_pkg
@@ -176,7 +202,104 @@ def ensure_tools_loaded() -> None:
     for mod in pkgutil.iter_modules(tools_pkg.__path__):
         if mod.name.startswith("_"):
             continue
-        importlib.import_module(f"maya_agent.tools.{mod.name}")
+        if mod.name in _SKIP_TOOL_MODULES:
+            continue
+        yield f"maya_agent.tools.{mod.name}"
+
+
+def _registry_incomplete() -> bool:
+    """True when tool count is low or core canary tools are missing."""
+    if len(_REGISTRY) < _MIN_HEALTHY_TOOLS:
+        return True
+    return any(name not in _REGISTRY for name in _CORE_CANARY_TOOLS)
+
+
+def _hard_reset_tool_modules() -> None:
+    """
+    Drop tool submodules from ``sys.modules`` and re-import into *this*
+    registry module.
+
+    Keeps ``maya_agent.tools.registry`` loaded so ``_REGISTRY`` identity stays
+    stable for callers that already imported symbols from this module.
+    """
+    import importlib
+    import sys
+
+    _REGISTRY.clear()
+    for name in list(sys.modules):
+        if name == "maya_agent.tools.registry":
+            continue
+        if name == "maya_agent.tools" or name.startswith("maya_agent.tools."):
+            sys.modules.pop(name, None)
+    import maya_agent.tools  # noqa: F401
+
+    _reload_tool_helpers()
+    for full in _iter_public_tool_modules():
+        importlib.import_module(full)
+
+
+def ensure_tools_loaded() -> None:
+    """Import all tool modules so decorators register."""
+    import importlib
+    import sys
+
+    force_reload = len(_REGISTRY) == 0
+    if force_reload:
+        _reload_tool_helpers()
+
+    for full in _iter_public_tool_modules():
+        # Never reload this module: that would rebind ``_REGISTRY = {}`` and
+        # wipe tools already registered by modules sorted before "registry"
+        # (meshy, modeling, hunyuan, …).
+        if force_reload and full in sys.modules:
+            try:
+                importlib.reload(sys.modules[full])
+            except Exception:
+                importlib.import_module(full)
+        else:
+            importlib.import_module(full)
+
+    if _registry_incomplete():
+        try:
+            _hard_reset_tool_modules()
+        except Exception:
+            pass
+
+
+def heal_tools_if_needed() -> Dict[str, Any]:
+    """
+    Ensure a healthy tool count. Used by bridge health/start.
+    Returns {tool_count, healed, warning}.
+    """
+    import sys
+
+    ensure_tools_loaded()
+    count = len(_REGISTRY)
+    healed = False
+    warning = ""
+    if _registry_incomplete():
+        healed = True
+        try:
+            _hard_reset_tool_modules()
+        except Exception as e:
+            warning = f"hard_reset_failed:{e}"
+        count = len(_REGISTRY)
+        if _registry_incomplete():
+            missing = [n for n in _CORE_CANARY_TOOLS if n not in _REGISTRY]
+            warning = warning or (
+                f"tool_count={count} incomplete (missing={missing or 'count'}); "
+                "拖入 recover_tools_dragdrop.mel 或 maya_agent.reload()"
+            )
+        # Rebind http_server's imported function refs to this module's callables
+        try:
+            hs = sys.modules.get("maya_agent.bridge.http_server")
+            if hs is not None:
+                hs.ensure_tools_loaded = ensure_tools_loaded
+                hs.tool_specs = tool_specs
+                hs.heal_tools_if_needed = heal_tools_if_needed
+        except Exception:
+            pass
+    return {"tool_count": count, "healed": healed, "warning": warning}
 
 
 def obj_schema(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:

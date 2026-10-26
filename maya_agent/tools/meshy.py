@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from maya_agent.tools.meshy_client import (
     KIND_PATHS,
@@ -1724,11 +1724,49 @@ def _new_mesh_texture_status(
     }
 
 
+def _new_mesh_transforms(before_meshes: set) -> List[str]:
+    """Unique transforms for meshes added since ``before_meshes``."""
+    import maya.cmds as cmds
+    from maya_agent.tools._mesh import transform_of
+
+    after = set(cmds.ls(type="mesh", long=True) or [])
+    new_shapes = after - (before_meshes or set())
+    out: List[str] = []
+    seen = set()
+    for shape in sorted(new_shapes):
+        tf = transform_of(shape)
+        if tf in seen:
+            continue
+        seen.add(tf)
+        out.append(tf)
+    return out
+
+
+def _maybe_prepare_normals(
+    before_meshes: set,
+    *,
+    prepare_normals: bool,
+    normal_soften_angle: float,
+) -> Optional[Dict[str, Any]]:
+    if not prepare_normals:
+        return None
+    from maya_agent.tools._mesh import unlock_and_soften_meshes
+
+    transforms = _new_mesh_transforms(before_meshes)
+    if not transforms:
+        return {"processed": 0, "succeeded": 0, "meshes": [], "note": "无新导入网格"}
+    return unlock_and_soften_meshes(
+        transforms, angle=float(normal_soften_angle), unlock=True
+    )
+
+
 def _import_path_into_maya(
     path: str,
     namespace: str = "",
     *,
     rebuild_pbr: bool = True,
+    prepare_normals: bool = False,
+    normal_soften_angle: float = 30.0,
 ) -> ToolResult:
     if not in_maya():
         return ToolResult(ok=False, error="未在 Maya 中运行，无法导入")
@@ -1752,6 +1790,28 @@ def _import_path_into_maya(
 
     before_meshes = set(cmds.ls(type="mesh", long=True) or [])
     before_shaders = set(cmds.ls(materials=True) or [])
+
+    def _attach_normals(data: Dict[str, Any], msg: str) -> Tuple[Dict[str, Any], str]:
+        try:
+            normals = _maybe_prepare_normals(
+                before_meshes,
+                prepare_normals=bool(prepare_normals),
+                normal_soften_angle=float(normal_soften_angle),
+            )
+        except Exception as e:
+            log.exception("prepare_normals after import failed")
+            data = dict(data)
+            data["normals_error"] = str(e)
+            return data, f"{msg}；法线准备失败: {e}"
+        if normals is None:
+            return data, msg
+        data = dict(data)
+        data["normals"] = normals
+        ok_n = int(normals.get("succeeded") or 0)
+        total = int(normals.get("processed") or 0)
+        if total:
+            msg = f"{msg}；已准备法线 unlock+soften×{ok_n}/{total}（angle={normal_soften_angle}）"
+        return data, msg
 
     if suffix == ".fbx":
         if not ensure_plugin("fbxmaya"):
@@ -1831,13 +1891,17 @@ def _import_path_into_maya(
                     )
         except Exception as e:
             log.warning("texture status check failed: %s", e)
+        data, msg = _attach_normals(data, msg)
         return ToolResult(ok=True, data=data, message=msg)
 
     if suffix == ".obj":
         ensure_plugin("objExport")
         kwargs.update({"type": "OBJ", "options": "mo=1"})
         nodes = cmds.file(str(p), **kwargs)
-        return ToolResult(ok=True, data=nodes, message=f"已导入 OBJ: {p}")
+        data = {"imported": nodes, "path": str(p)}
+        msg = f"已导入 OBJ: {p}"
+        data, msg = _attach_normals(data, msg)
+        return ToolResult(ok=True, data=data, message=msg)
 
     if suffix in (".glb", ".gltf"):
         # Maya 通常无原生 glTF；提示用户先 convert/remesh 到 fbx
@@ -1853,7 +1917,10 @@ def _import_path_into_maya(
     # Generic attempt
     try:
         nodes = cmds.file(str(p), **kwargs)
-        return ToolResult(ok=True, data=nodes, message=f"已尝试导入: {p}")
+        data = {"imported": nodes, "path": str(p)}
+        msg = f"已尝试导入: {p}"
+        data, msg = _attach_normals(data, msg)
+        return ToolResult(ok=True, data=data, message=msg)
     except Exception as e:
         return ToolResult(ok=False, error=f"导入失败: {e}", data={"path": str(p)})
 
@@ -1867,6 +1934,7 @@ def _import_path_into_maya(
         "法线 file.outColor→normalCamera（Raw）。"
         "仅有一张 *_baseColor / 漫反射贴图的 convert→rig 资产会保留原 lambert/phong，"
         "避免被升成高光 standardSurface 导致发黑发亮。"
+        "prepare_normals=true 时对新建网格 unlock 顶点法线并按 angle 软边（默认关闭）。"
         "可传 kind+task_id，或已下载的 file_path。下载在工作线程，导入走主线程。"
     ),
     parameters=obj_schema(
@@ -1882,6 +1950,16 @@ def _import_path_into_maya(
                 "default": True,
                 "description": "FBX 导入后是否自动重建 standardSurface PBR（默认 true）",
             },
+            "prepare_normals": {
+                "type": "boolean",
+                "default": False,
+                "description": "导入后对新网格解锁顶点法线并软边（默认 false）",
+            },
+            "normal_soften_angle": {
+                "type": "number",
+                "default": 30,
+                "description": "prepare_normals 时的软边角度（度）",
+            },
         },
     ),
     category="meshy",
@@ -1895,6 +1973,8 @@ def meshy_import_to_maya(
     namespace: str = "",
     output_dir: str = "",
     rebuild_pbr: bool = True,
+    prepare_normals: bool = False,
+    normal_soften_angle: float = 30.0,
 ) -> ToolResult:
     try:
         local = (file_path or "").strip()
@@ -1913,7 +1993,11 @@ def meshy_import_to_maya(
 
         return run_on_main_thread(
             lambda: _import_path_into_maya(
-                local, namespace=namespace, rebuild_pbr=bool(rebuild_pbr)
+                local,
+                namespace=namespace,
+                rebuild_pbr=bool(rebuild_pbr),
+                prepare_normals=bool(prepare_normals),
+                normal_soften_angle=float(normal_soften_angle),
             )
         )
     except Exception as e:

@@ -31,7 +31,7 @@ from maya_agent.bridge.protocol import (
 )
 from maya_agent.core.executor import ToolExecutor
 from maya_agent.llm.base import ImageAttachment
-from maya_agent.tools.registry import ensure_tools_loaded, tool_specs
+from maya_agent.tools.registry import ensure_tools_loaded, heal_tools_if_needed, tool_specs
 from maya_agent.utils.config import get_config
 from maya_agent.utils.logger import get_logger
 from maya_agent.utils.maya_compat import in_maya, maya_version
@@ -179,21 +179,23 @@ def _build_handler(state: BridgeState):
             return error_body("not found", status=404)
 
         def _health(self) -> Tuple[int, bytes, str]:
-            ensure_tools_loaded()
+            heal = heal_tools_if_needed()
             specs = tool_specs(vision=True)
-            return json_bytes(
-                {
-                    "ok": True,
-                    "service": "maya-agent-bridge",
-                    "version": __version__,
-                    "maya": maya_version() if in_maya() else "not-in-maya",
-                    "in_maya": in_maya(),
-                    "host": state.host,
-                    "port": state.port,
-                    "tool_count": len(specs),
-                    "api_prefix": API_PREFIX,
-                }
-            )
+            payload = {
+                "ok": True,
+                "service": "maya-agent-bridge",
+                "version": __version__,
+                "maya": maya_version() if in_maya() else "not-in-maya",
+                "in_maya": in_maya(),
+                "host": state.host,
+                "port": state.port,
+                "tool_count": len(specs),
+                "api_prefix": API_PREFIX,
+                "tools_healed": bool(heal.get("healed")),
+            }
+            if heal.get("warning"):
+                payload["tools_warning"] = heal["warning"]
+            return json_bytes(payload)
 
         def _tools(self) -> Tuple[int, bytes, str]:
             ensure_tools_loaded()
@@ -388,16 +390,20 @@ def start_server(
     thread.start()
 
     disc.write_discovery(host=host, port=chosen, token=token)
-    ensure_tools_loaded()
-    return {
+    heal = heal_tools_if_needed()
+    out = {
         "ok": True,
         "already_running": False,
         "host": host,
         "port": chosen,
         "base_url": f"http://{host}:{chosen}",
         "discovery": str(disc.bridge_discovery_path()),
-        "tool_count": len(tool_specs(vision=True)),
+        "tool_count": int(heal.get("tool_count") or len(tool_specs(vision=True))),
+        "tools_healed": bool(heal.get("healed")),
     }
+    if heal.get("warning"):
+        out["tools_warning"] = heal["warning"]
+    return out
 
 
 def stop_server() -> Dict[str, Any]:

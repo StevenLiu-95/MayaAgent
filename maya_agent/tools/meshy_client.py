@@ -100,11 +100,16 @@ def filter_system_prompt_meshy(text: str) -> str:
     skipping = False
     for line in lines:
         stripped = line.lstrip()
-        if not skipping and stripped.startswith("## Meshy"):
+        is_heading = stripped.startswith("#") and not stripped.startswith("#" * 7)
+        heading_text = ""
+        if is_heading:
+            # e.g. "# Meshy" / "## Meshy" / "### 工具开发"
+            heading_text = stripped.lstrip("#").strip()
+        if not skipping and is_heading and heading_text.startswith("Meshy"):
             skipping = True
             continue
         if skipping:
-            if stripped.startswith("## ") and not stripped.startswith("## Meshy"):
+            if is_heading and not heading_text.startswith("Meshy"):
                 skipping = False
                 out.append(line)
             continue

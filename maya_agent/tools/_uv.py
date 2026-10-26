@@ -24,7 +24,7 @@ from maya_agent.tools._mesh import (
 )
 from maya_agent.utils.paths import agent_temp_subdir
 
-CUT_MODES = ("hard", "angle", "material", "border", "selection", "indices", "none")
+CUT_MODES = ("auto", "hard", "angle", "material", "border", "selection", "indices", "none")
 _MAX_SHELL_SAMPLES = 48
 _MAX_FACE_QUALITY = 12000
 _ANGLE_EDGE_CAP = 25000
@@ -226,6 +226,10 @@ def collect_cut_edges(
     if mode in ("none", "skip", ""):
         return [], None
 
+    if mode in ("auto",):
+        resolved, _meta = resolve_cut_mode_auto(tf)
+        return collect_cut_edges(tf, mode=resolved, angle_degrees=angle_degrees, indices=indices)
+
     if mode in ("hard", "hard_edges"):
         return hard_edges(tf), None
 
@@ -353,6 +357,145 @@ def project_uv(
     raise ValueError(f"未知展开方法: {method}")
 
 
+def mesh_topology_report(mesh: str) -> Dict[str, Any]:
+    """Non-manifold / shell counts for UV preflight."""
+    c = _cmds()
+    tf = transform_of(mesh)
+    with remember_selection():
+        c.select(tf, replace=True)
+        try:
+            nm_e = c.polyInfo(nonManifoldEdges=True) or []
+        except Exception:
+            nm_e = []
+        try:
+            nm_v = c.polyInfo(nonManifoldVertices=True) or []
+        except Exception:
+            nm_v = []
+        try:
+            lamina = c.polyInfo(laminaFaces=True) or []
+        except Exception:
+            lamina = []
+    return {
+        "mesh": short_name(tf),
+        "nonmanifold_edges": len(nm_e),
+        "nonmanifold_vertices": len(nm_v),
+        "lamina_faces": len(lamina),
+        "shells": uv_shell_count(tf),
+        "faces": face_count(tf),
+        "edges": component_count(tf, EDGE),
+        "uv_coords": uv_coord_count(tf),
+        "needs_cleanup": bool(nm_e or nm_v or lamina),
+    }
+
+
+def cleanup_for_uv(
+    mesh: str,
+    merge_threshold: float = 0.001,
+    delete_history: bool = True,
+) -> Dict[str, Any]:
+    """
+    Merge close verts + MEL polyCleanup for NM / zero-area, optional delete history.
+    """
+    from maya_agent.tools._maya import mel as _mel
+
+    c = _cmds()
+    tf = transform_of(mesh)
+    before = mesh_topology_report(tf)
+    steps: List[str] = []
+    try:
+        c.polyMergeVertex(tf, d=float(merge_threshold), am=True, ch=False)
+        steps.append("mergeVertex")
+    except Exception as e:
+        steps.append(f"mergeVertex_skip:{e}")
+    with remember_selection():
+        c.select(tf, replace=True)
+        try:
+            # NM verts/edges, zero geo/map area (Maya version-dependent arg list)
+            _mel().eval(
+                'polyCleanupArgList 4 '
+                '{ "0","1","1","1","1","0","0","0","0","1e-05","0","1e-05","0","1e-05","0","1","0","0" };'
+            )
+            steps.append("polyCleanup")
+        except Exception as e:
+            steps.append(f"polyCleanup_skip:{e}")
+    if delete_history:
+        try:
+            c.delete(tf, constructionHistory=True)
+            steps.append("deleteHistory")
+        except Exception as e:
+            steps.append(f"deleteHistory_skip:{e}")
+    after = mesh_topology_report(tf)
+    return {"before": before, "after": after, "steps": steps, "mesh": short_name(tf)}
+
+
+def resolve_cut_mode_auto(mesh: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Pick hard vs none: use hard when hard-edge count is non-empty and not excessive.
+    """
+    tf = transform_of(mesh)
+    n_edges = max(1, component_count(tf, EDGE))
+    hard = hard_edges(tf)
+    n_hard = len(hard)
+    ratio = n_hard / float(n_edges)
+    meta = {"hard_edges": n_hard, "edges": n_edges, "hard_ratio": round(ratio, 4)}
+    # Reasonable hard seams: at least some, but < 15% of edges (avoid barcode)
+    if 0 < n_hard and ratio < 0.15:
+        return "hard", meta
+    return "none", meta
+
+
+def rebuild_clean_uv_set(mesh: str, method: str = "automatic", projection_axis: str = "y") -> Dict[str, Any]:
+    """Create a fresh UV set via planar then optional automatic; copy to map1."""
+    c = _cmds()
+    tf = transform_of(mesh)
+    fresh = "map_game"
+    existing = c.polyUVSet(tf, query=True, allUVSets=True) or []
+    if fresh not in existing:
+        try:
+            c.polyUVSet(tf, create=True, uvSet=fresh)
+        except Exception:
+            fresh = (existing[0] if existing else "map1")
+    try:
+        c.polyUVSet(tf, currentUVSet=True, uvSet=fresh)
+    except Exception:
+        pass
+    c.select(f"{tf}.f[*]", replace=True)
+    axis = (projection_axis or "y").lower().strip().lstrip("+") or "y"
+    if axis not in ("x", "y", "z"):
+        axis = "y"
+    try:
+        c.polyProjection(f"{tf}.f[*]", type="Planar", md=axis, ch=False)
+    except Exception:
+        c.polyProjection(f"{tf}.f[*]", type="Planar", md="y")
+    if (method or "automatic").lower() == "automatic":
+        try:
+            c.polyAutoProjection(
+                tf, lm=0, pb=0, ibd=1, cm=0, l=2, sc=1, o=1, p=6, ps=0.2, ws=0, ch=False
+            )
+        except Exception:
+            pass
+    try:
+        c.delete(tf, constructionHistory=True)
+    except Exception:
+        pass
+    try:
+        sets = c.polyUVSet(tf, query=True, allUVSets=True) or []
+        if "map1" not in sets:
+            c.polyUVSet(tf, create=True, uvSet="map1")
+        c.polyUVSet(tf, copy=True, uvSet=fresh, newUVSet="map1")
+        c.polyUVSet(tf, currentUVSet=True, uvSet="map1")
+    except Exception:
+        try:
+            c.polyUVSet(tf, currentUVSet=True, uvSet=fresh)
+        except Exception:
+            pass
+    return {
+        "uv_set": "map1",
+        "shells": uv_shell_count(tf),
+        "method": method,
+    }
+
+
 def unfold_mesh(
     mesh: str,
     iterations: int = 5000,
@@ -363,25 +506,35 @@ def unfold_mesh(
     tf = transform_of(mesh)
     backend = "unfold"
     try:
-        # Unfold3D plugin command when available
-        c.u3dUnfold(tf, ite=int(iterations), pin=bool(pin_borders), pini=0, bi=pin_borders)
+        from maya_agent.utils.maya_compat import ensure_plugin
+
+        ensure_plugin("Unfold3D")
+    except Exception:
+        pass
+    # Maya 2025+: avoid invalid flags (pin/sag). Try minimal kwargs first.
+    try:
+        c.u3dUnfold(tf, ite=int(iterations))
         backend = "u3dUnfold"
     except Exception:
         try:
-            c.unfold(
-                tf,
-                i=int(iterations),
-                ss=float(stop_threshold),
-                gb=0,
-                gmb=0.5,
-                pub=0,
-                ps=0,
-                oa=0,
-                us=False,
-            )
-            backend = "unfold"
-        except Exception as e:
-            raise RuntimeError(f"unfold 失败: {e}") from e
+            c.u3dUnfold(tf)
+            backend = "u3dUnfold"
+        except Exception:
+            try:
+                c.unfold(
+                    tf,
+                    i=int(iterations),
+                    ss=float(stop_threshold),
+                    gb=0,
+                    gmb=0.5,
+                    pub=0,
+                    ps=0,
+                    oa=0,
+                    us=False,
+                )
+                backend = "unfold"
+            except Exception as e:
+                raise RuntimeError(f"unfold 失败: {e}") from e
     return {"backend": backend, "iterations": int(iterations), "pin_borders": pin_borders}
 
 
@@ -390,15 +543,60 @@ def optimize_mesh(mesh: str, iterations: int = 100) -> Dict[str, Any]:
     tf = transform_of(mesh)
     backend = "u3dOptimize"
     try:
-        c.u3dOptimize(tf, ite=int(iterations), power=1, sag=0)
+        from maya_agent.utils.maya_compat import ensure_plugin
+
+        ensure_plugin("Unfold3D")
+    except Exception:
+        pass
+    try:
+        c.u3dOptimize(tf, ite=int(iterations))
         backend = "u3dOptimize"
     except Exception:
         try:
-            c.unfold(tf, i=min(int(iterations) * 20, 5000), ss=0.001, gb=0, gmb=0.5, pub=0, ps=0, oa=0, us=False)
-            backend = "unfold"
-        except Exception as e:
-            raise RuntimeError(f"optimize 失败: {e}") from e
+            c.u3dOptimize(tf)
+            backend = "u3dOptimize"
+        except Exception:
+            try:
+                c.unfold(
+                    tf,
+                    i=min(int(iterations) * 20, 5000),
+                    ss=0.001,
+                    gb=0,
+                    gmb=0.5,
+                    pub=0,
+                    ps=0,
+                    oa=0,
+                    us=False,
+                )
+                backend = "unfold"
+            except Exception as e:
+                raise RuntimeError(f"optimize 失败: {e}") from e
     return {"backend": backend, "iterations": int(iterations)}
+
+
+def _poly_layout_fallback(
+    tf: str, scl: int, spacing: float, rotate: bool
+) -> str:
+    c = _cmds()
+    rbf = 2 if rotate else 0
+    try:
+        c.polyLayoutUV(
+            tf,
+            scale=1 if scl == 1 else 2,
+            layout=2,
+            percentageSpace=max(0.0, float(spacing) * 100.0),
+            rotateForBestFit=rbf,
+            flipReversed=True,
+        )
+        return "polyLayoutUV"
+    except Exception:
+        c.polyLayoutUV(
+            tf,
+            scale=1 if scl == 1 else 2,
+            layout=2,
+            percentageSpace=max(0.0, float(spacing) * 100.0),
+        )
+        return "polyLayoutUV_basic"
 
 
 def layout_mesh(
@@ -416,30 +614,57 @@ def layout_mesh(
     # u3dLayout: scl 1 = preserve ratio (uniform), 2 = fill
     scl = 2 if scale_mode in ("fill", "stretch", "nonuniform") else 1
     backend = "u3dLayout"
+    u3d_err: Optional[str] = None
+    cleanup_applied = False
+    layout_retries = 0
     try:
+        from maya_agent.utils.maya_compat import ensure_plugin
+
+        ensure_plugin("Unfold3D")
+    except Exception:
+        pass
+
+    def _try_u3d() -> None:
+        nonlocal backend
         kwargs: Dict[str, Any] = {
             "res": int(resolution),
             "scl": scl,
             "spc": float(spacing),
             "mar": float(margin),
         }
-        # rotate shells when supported
-        try:
-            c.u3dLayout(tf, box=rotate, **kwargs)
-        except TypeError:
-            c.u3dLayout(tf, **kwargs)
-    except Exception:
-        backend = "polyLayoutUV"
-        try:
-            c.polyLayoutUV(
-                tf,
-                scale=1 if scl == 1 else 2,
-                layout=2,
-                percentageSpace=max(0.0, float(spacing) * 100.0),
-                rotateOn=bool(rotate),
-            )
-        except Exception as e:
-            raise RuntimeError(f"layout 失败: {e}") from e
+        c.u3dLayout(tf, **kwargs)
+        backend = "u3dLayout"
+
+    try:
+        _try_u3d()
+    except Exception as e:
+        u3d_err = str(e)
+        err_l = u3d_err.lower()
+        if "non-manifold" in err_l or "nonmanifold" in err_l.replace("-", ""):
+            layout_retries += 1
+            try:
+                cleanup_for_uv(tf)
+                cleanup_applied = True
+                _try_u3d()
+                u3d_err = None
+            except Exception as e2:
+                layout_retries += 1
+                u3d_err = f"{u3d_err}; after_cleanup:{e2}"
+                try:
+                    rebuild_clean_uv_set(tf, method="automatic")
+                    cleanup_applied = True
+                    _try_u3d()
+                    u3d_err = None
+                except Exception as e3:
+                    u3d_err = f"{u3d_err}; after_rebuild:{e3}"
+                    backend = _poly_layout_fallback(tf, scl, spacing, rotate)
+        else:
+            try:
+                backend = _poly_layout_fallback(tf, scl, spacing, rotate)
+            except Exception as e2:
+                raise RuntimeError(
+                    f"layout 失败: u3dLayout={u3d_err}; polyLayoutUV={e2}"
+                ) from e2
 
     tile = int(udim) if udim else 1001
     offset = udim_offset(tile)
@@ -461,6 +686,9 @@ def layout_mesh(
         "rotate": bool(rotate),
         "udim": tile,
         "offset_uv": list(offset),
+        "cleanup_applied": cleanup_applied,
+        "layout_retries": layout_retries,
+        "u3d_error": u3d_err or "",
     }
 
 
@@ -575,9 +803,53 @@ def _aabb_overlap(
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+def _adjacent_face_pairs(fn, sample_n: int) -> set:
+    """Pairs of faces that share a mesh edge (topology neighbors)."""
+    adj: set = set()
+    edge_to_faces: Dict[Tuple[int, int], List[int]] = {}
+    for fi in range(sample_n):
+        try:
+            verts = list(fn.getPolygonVertices(fi))
+        except Exception:
+            continue
+        n = len(verts)
+        for i in range(n):
+            a, b = int(verts[i]), int(verts[(i + 1) % n])
+            key = (a, b) if a < b else (b, a)
+            edge_to_faces.setdefault(key, []).append(fi)
+    for faces in edge_to_faces.values():
+        if len(faces) < 2:
+            continue
+        # typically 2 faces per manifold edge
+        for i in range(len(faces)):
+            for j in range(i + 1, len(faces)):
+                fa, fb = faces[i], faces[j]
+                adj.add((fa, fb) if fa < fb else (fb, fa))
+    return adj
+
+
+def _constraint_overlap_face_count(mesh: str) -> int:
+    c = _cmds()
+    tf = transform_of(mesh)
+    with remember_selection():
+        try:
+            c.select(f"{tf}.f[*]", replace=True)
+            c.polySelectConstraint(mode=3, type=0x0010, overlapping=True)
+            ov = c.ls(selection=True, flatten=True) or []
+            c.polySelectConstraint(disable=True)
+            return len(ov)
+        except Exception:
+            try:
+                c.polySelectConstraint(disable=True)
+            except Exception:
+                pass
+            return -1
+
+
 def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, Any]:
     """
     Detect flipped / zero-area UV faces, out-of-bounds UVs, and approximate overlaps.
+    Neighbor faces sharing a mesh edge are excluded from AABB overlap counts.
     """
     c = _cmds()
     tf = transform_of(mesh)
@@ -592,6 +864,7 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
         "out_of_01_uvs": 0,
         "overlap_pairs_est": 0,
         "overlap_faces_est": 0,
+        "overlap_constraint_faces": -1,
         "truncated": False,
         "ok": True,
         "issues": [],
@@ -602,13 +875,15 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
         return result
 
     shape = shapes[0]
-    try:
-        from maya.api import OpenMaya as om
+    constraint_n = _constraint_overlap_face_count(tf)
+    result["overlap_constraint_faces"] = constraint_n
 
+    try:
         fn, _ = _get_mesh_fn(shape)
         n_faces = fn.numPolygons
         sample_n = min(n_faces, int(max_faces))
         result["truncated"] = sample_n < n_faces
+        adjacent = _adjacent_face_pairs(fn, sample_n)
 
         face_boxes: List[Tuple[int, Tuple[float, float, float, float]]] = []
         flipped = 0
@@ -634,7 +909,6 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
                 continue
             if len(pts) < 3:
                 continue
-            # Fan triangulation area / orientation
             area_sum = 0.0
             for i in range(1, len(pts) - 1):
                 area_sum += _tri_area_2d(pts[0], pts[i], pts[i + 1])
@@ -646,7 +920,6 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
             vs = [p[1] for p in pts]
             face_boxes.append((fi, (min(us), min(vs), max(us), max(vs))))
 
-        # Approximate overlap: AABB pairs (O(n^2) capped)
         overlap_pairs = 0
         overlap_faces = set()
         max_pairs_check = min(len(face_boxes), 4000)
@@ -658,9 +931,11 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
             a_area = aw * ah
             for j in range(i + 1, len(boxes)):
                 fj, bj = boxes[j]
+                pair = (fi, fj) if fi < fj else (fj, fi)
+                if pair in adjacent:
+                    continue
                 if not _aabb_overlap(bi, bj):
                     continue
-                # Require significant interior overlap (ignore shared-edge grazes)
                 ou0 = max(bi[0], bj[0])
                 ov0 = max(bi[1], bj[1])
                 ou1 = min(bi[2], bj[2])
@@ -673,7 +948,8 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
                 bh = max(1e-12, bj[3] - bj[1])
                 b_area = bw * bh
                 smaller = min(a_area, b_area)
-                if o_area > smaller * 0.15:
+                # High confidence interior overlap only
+                if o_area > smaller * 0.35:
                     overlap_pairs += 1
                     overlap_faces.add(fi)
                     overlap_faces.add(fj)
@@ -689,9 +965,16 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
         result["overlap_faces_est"] = len(overlap_faces)
         result["sampled_faces"] = sample_n
 
+        # Fail only on high-confidence overlap or Maya constraint hits, or flipped/zero
+        high_conf_overlap = overlap_pairs > 0
+        constraint_hit = constraint_n > 0
         issues = []
-        if overlap_pairs > 0:
-            issues.append(f"疑似 UV 重叠约 {overlap_pairs} 对面 AABB（涉及 ~{len(overlap_faces)} 面）")
+        if constraint_hit:
+            issues.append(f"polySelectConstraint 重叠面 {constraint_n}")
+        if high_conf_overlap:
+            issues.append(
+                f"高置信 AABB 重叠约 {overlap_pairs} 对（已排除邻接面，涉及 ~{len(overlap_faces)} 面）"
+            )
         if flipped > 0:
             issues.append(f"翻转 UV 面 {flipped}")
         if zero_area > 0:
@@ -701,26 +984,24 @@ def check_quality(mesh: str, max_faces: int = _MAX_FACE_QUALITY) -> Dict[str, An
         if result["truncated"]:
             issues.append(f"已采样 {sample_n}/{n_faces} 面")
         result["issues"] = issues
-        result["ok"] = overlap_pairs == 0 and flipped == 0 and zero_area == 0
+        result["ok"] = (
+            not constraint_hit
+            and not high_conf_overlap
+            and flipped == 0
+            and zero_area == 0
+        )
     except Exception as e:
-        # Fallback: polySelectConstraint overlapping if available
-        try:
-            c.select(f"{tf}.f[*]", replace=True)
-            c.polySelectConstraint(mode=3, type=0x0010, overlapping=True)
-            ov = c.ls(selection=True, flatten=True) or []
-            c.polySelectConstraint(disable=True)
-            n_ov = len(ov)
-            result["overlap_faces_est"] = n_ov
-            result["overlap_pairs_est"] = n_ov
-            if n_ov:
-                result["issues"].append(f"polySelectConstraint 报告重叠面 {n_ov}")
-                result["ok"] = False
-            else:
-                result["issues"].append(f"OpenMaya 质检失败({e})；约束未检出重叠")
-                result["ok"] = True
-        except Exception as e2:
+        if constraint_n > 0:
+            result["overlap_faces_est"] = constraint_n
+            result["overlap_pairs_est"] = constraint_n
+            result["issues"].append(f"polySelectConstraint 重叠面 {constraint_n}")
             result["ok"] = False
-            result["issues"].append(f"质检失败: {e}; fallback: {e2}")
+        elif constraint_n == 0:
+            result["issues"].append(f"OpenMaya 质检失败({e})；约束未检出重叠")
+            result["ok"] = True
+        else:
+            result["ok"] = False
+            result["issues"].append(f"质检失败: {e}")
     return result
 
 

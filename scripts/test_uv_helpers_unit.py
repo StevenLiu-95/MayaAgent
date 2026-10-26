@@ -35,9 +35,17 @@ def test_aabb_and_tri_area():
 def test_cut_modes_constant():
     from maya_agent.tools._uv import CUT_MODES
 
+    assert "auto" in CUT_MODES
     assert "hard" in CUT_MODES
     assert "none" in CUT_MODES
     assert "material" in CUT_MODES
+
+
+def test_udim_and_aabb_thresholds():
+    from maya_agent.tools._uv import _aabb_overlap
+
+    assert _aabb_overlap((0, 0, 1, 1), (0.2, 0.2, 0.8, 0.8))
+    assert not _aabb_overlap((0, 0, 0.1, 0.1), (0.9, 0.9, 1.0, 1.0))
 
 
 if __name__ == "__main__":

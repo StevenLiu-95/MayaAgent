@@ -335,31 +335,14 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         composer.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
         )
+        self._composer = composer
+        self._composer_chrome_h = 0
+        self._composer_layout_spacing = 4
         composer_layout = QtWidgets.QVBoxLayout(composer)
         composer_layout.setContentsMargins(8, 6, 8, 6)
-        composer_layout.setSpacing(4)
+        composer_layout.setSpacing(self._composer_layout_spacing)
 
-        # 展开后的快捷芯片（默认收起，超出宽度自动换行）
-        self._quick_body = QtWidgets.QWidget()
-        self._quick_body.setObjectName("quickHost")
-        self._quick_body.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
-        )
-        quick = create_flow_layout(hspacing=6, vspacing=6)
-        self._quick_body.setLayout(quick)
-        self._quick_scroll = None
-        for label, prompt in quick_command_specs():
-            b = QtWidgets.QPushButton(label)
-            b.setObjectName("chipBtn")
-            b.setCursor(QtCore.Qt.PointingHandCursor)
-            b.setSizePolicy(
-                QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
-            )
-            b.clicked.connect(lambda checked=False, p=prompt: self._quick(p))
-            quick.addWidget(b)
-        self._quick_body.hide()
-        composer_layout.addWidget(self._quick_body)
-
+        # Attachments above quick chips (show only when pending images/files exist).
         # Compact by default (chip 68 + margins 8); grow only when h-scrollbar appears.
         self._ATTACH_STRIP_BASE_H = 76
         self._ATTACH_STRIP_BAR_H = 10
@@ -387,6 +370,27 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             lambda *_args: self._sync_attach_strip_height()
         )
         composer_layout.addWidget(self._image_strip)
+
+        # 展开后的快捷芯片（默认收起，超出宽度自动换行）
+        self._quick_body = QtWidgets.QWidget()
+        self._quick_body.setObjectName("quickHost")
+        self._quick_body.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+        )
+        quick = create_flow_layout(hspacing=6, vspacing=6)
+        self._quick_body.setLayout(quick)
+        self._quick_scroll = None
+        for label, prompt in quick_command_specs():
+            b = QtWidgets.QPushButton(label)
+            b.setObjectName("chipBtn")
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.setSizePolicy(
+                QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed
+            )
+            b.clicked.connect(lambda checked=False, p=prompt: self._quick(p))
+            quick.addWidget(b)
+        self._quick_body.hide()
+        composer_layout.addWidget(self._quick_body)
 
         self.input_edit = QtWidgets.QPlainTextEdit()
         self.input_edit.setObjectName("composerInput")
@@ -505,6 +509,86 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_quick_body"):
             self._quick_body.setVisible(bool(checked))
         self._sync_quick_toggle_label()
+        # Grow/shrink the composer pane so chips don't steal input height.
+        self._adjust_composer_for_chrome()
+        QtCore.QTimer.singleShot(0, self._adjust_composer_for_chrome)
+
+    def _composer_variable_chrome_height(self) -> int:
+        """Height of quick chips + attachment strip (plus layout spacing)."""
+        h = 0
+        spacing = int(getattr(self, "_composer_layout_spacing", 4) or 4)
+        qb = getattr(self, "_quick_body", None)
+        if qb is not None and qb.isVisible():
+            hh = int(qb.height() or 0)
+            if hh <= 1:
+                # FlowLayout sizeHint is one chip; use heightForWidth for wrap.
+                lay = qb.layout()
+                w = int(qb.width() or 0)
+                if w <= 1:
+                    composer = getattr(self, "_composer", None)
+                    if composer is not None:
+                        w = max(0, int(composer.width() or 0) - 16)
+                if (
+                    lay is not None
+                    and w > 0
+                    and hasattr(lay, "heightForWidth")
+                ):
+                    try:
+                        hh = int(lay.heightForWidth(w) or 0)
+                    except Exception:
+                        hh = 0
+                if hh <= 1:
+                    hh = int(qb.sizeHint().height() or 0)
+            if hh > 0:
+                h += hh + spacing
+        strip = getattr(self, "_image_strip", None)
+        if strip is not None and strip.isVisible():
+            hh = int(strip.height() or 0)
+            if hh > 0:
+                h += hh + spacing
+        return h
+
+    def _grow_composer_pane(self, delta: int) -> None:
+        """Move the chat/composer splitter so composer grows upward by ``delta``."""
+        if not delta:
+            return
+        splitter = getattr(self, "_chat_splitter", None)
+        if splitter is None:
+            return
+        sizes = list(splitter.sizes())
+        if len(sizes) < 2:
+            return
+        total = int(sizes[0]) + int(sizes[1])
+        if total <= 0:
+            return
+        composer_w = splitter.widget(1)
+        min_composer = 96
+        if composer_w is not None:
+            min_composer = max(min_composer, int(composer_w.minimumHeight() or 96))
+        min_chat = 80
+        new_composer = int(sizes[1]) + int(delta)
+        new_composer = max(min_composer, min(new_composer, total - min_chat))
+        if new_composer == int(sizes[1]):
+            return
+        new_chat = total - new_composer
+        splitter.blockSignals(True)
+        try:
+            splitter.setSizes([new_chat, new_composer])
+        finally:
+            splitter.blockSignals(False)
+
+    def _adjust_composer_for_chrome(self) -> None:
+        """Keep the text input height stable when chrome show/hide/resizes."""
+        new_chrome = self._composer_variable_chrome_height()
+        old_chrome = int(getattr(self, "_composer_chrome_h", 0) or 0)
+        delta = new_chrome - old_chrome
+        self._composer_chrome_h = new_chrome
+        composer = getattr(self, "_composer", None)
+        if composer is not None:
+            # Base ≈ margins + action row + min input; chrome stacks above input.
+            composer.setMinimumHeight(96 + new_chrome)
+        if delta:
+            self._grow_composer_pane(delta)
 
     def _build_settings_tab(self):
         self.settings_panel = None
@@ -698,14 +782,21 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             return
         base = int(getattr(self, "_ATTACH_STRIP_BASE_H", 76) or 76)
         bar_h = int(getattr(self, "_ATTACH_STRIP_BAR_H", 10) or 10)
+        changed = False
         if not strip.isVisible():
             if strip.height() != base:
                 strip.setFixedHeight(base)
+                changed = True
+            if changed:
+                self._adjust_composer_for_chrome()
             return
         need_bar = self._attach_strip_needs_scrollbar()
         target = base + (bar_h if need_bar else 0)
         if int(strip.height()) != target:
             strip.setFixedHeight(target)
+            changed = True
+        if changed:
+            self._adjust_composer_for_chrome()
 
     def _show_welcome(self):
         self.chat.clear()
@@ -1298,6 +1389,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         if not has_any:
             self._image_strip.hide()
             self._sync_attach_strip_height()
+            self._adjust_composer_for_chrome()
             return
         for idx, img in enumerate(self._pending_images):
             chip = QtWidgets.QFrame()
@@ -1339,7 +1431,12 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._image_strip.show()
         # Height depends on whether content overflows — update after layout.
         self._sync_attach_strip_height()
-        QtCore.QTimer.singleShot(0, self._sync_attach_strip_height)
+        self._adjust_composer_for_chrome()
+        QtCore.QTimer.singleShot(0, self._finish_attach_strip_layout)
+
+    def _finish_attach_strip_layout(self) -> None:
+        self._sync_attach_strip_height()
+        self._adjust_composer_for_chrome()
 
     def _remove_pending_image(self, index: int) -> None:
         if 0 <= index < len(self._pending_images):

@@ -203,6 +203,24 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             t("settings.section.meshy"),
             t("settings.section.meshy_hint"),
         )
+        meshy_links = QtWidgets.QHBoxLayout()
+        meshy_links.setContentsMargins(0, 0, 0, 0)
+        meshy_links.setSpacing(6)
+        for label_key, url in (
+            ("settings.meshy_open_site", "https://www.meshy.ai/"),
+            ("settings.meshy_open_workspace", "https://www.meshy.ai/workspace"),
+            ("settings.meshy_open_api", "https://www.meshy.ai/developers/keys"),
+        ):
+            btn = QtWidgets.QPushButton(t(label_key))
+            btn.setObjectName("compactLinkBtn")
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setFixedHeight(24)
+            btn.clicked.connect(
+                lambda _checked=False, u=url: self._open_external_url(u)
+            )
+            meshy_links.addWidget(btn, 0)
+        meshy_links.addStretch(1)
+        meshy_lay.addLayout(meshy_links)
         self.meshy_enabled = QtWidgets.QCheckBox(t("settings.meshy_enabled"))
         meshy_lay.addWidget(
             self._option_row(
@@ -711,6 +729,17 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         finally:
             if btn is not None:
                 btn.setEnabled(True)
+
+    def _open_external_url(self, url: str) -> None:
+        """Open an http(s) URL with the OS default browser."""
+        from maya_agent.ui.image_viewer import open_external_url
+
+        if not open_external_url(url):
+            QtWidgets.QMessageBox.warning(
+                self,
+                t("settings.section.meshy"),
+                f"无法打开链接：{url}",
+            )
 
     def _test_meshy(self) -> None:
         key = self.meshy_api_key_edit.text().strip()

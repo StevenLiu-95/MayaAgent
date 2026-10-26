@@ -106,6 +106,21 @@ QPushButton#secondaryBtn:hover {
     color: #ffffff;
 }
 
+QPushButton#compactLinkBtn {
+    background-color: #2f3038;
+    border: 1px solid #4a4b55;
+    color: #d0d0d6;
+    font-size: 12px;
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0 10px;
+}
+
+QPushButton#compactLinkBtn:hover {
+    background-color: #3a3b44;
+    color: #ffffff;
+}
+
 QPushButton#dangerBtn {
     background-color: #8b3a3a;
 }

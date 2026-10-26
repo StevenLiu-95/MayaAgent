@@ -462,6 +462,131 @@ def hard_edges(mesh: str) -> List[int]:
     return found
 
 
+_HARD_EDGE_FULL_SCAN_LIMIT = 4000
+
+
+def mesh_has_locked_normals(mesh: str) -> Optional[bool]:
+    """
+    True if the mesh has locked / user (frozen) vertex normals.
+    None when the query is unavailable.
+    """
+    c = _cmds()
+    tf = transform_of(mesh)
+    try:
+        locked = c.polyNormalPerVertex(tf, query=True, freezeNormal=True)
+    except Exception:
+        try:
+            # Some locales / builds only accept unFreezeNormal on edit
+            locked = c.polyNormalPerVertex(f"{tf}.vtx[*]", query=True, freezeNormal=True)
+        except Exception:
+            return None
+    if locked is None:
+        return None
+    if isinstance(locked, (list, tuple)):
+        return any(bool(x) for x in locked)
+    return bool(locked)
+
+
+def hard_edge_stats(mesh: str) -> Dict[str, Any]:
+    """
+    Report hard-edge count / ratio.
+
+    Prefer ``polyInfo(hardEdges)``. If that fails and edge count exceeds
+    ``_HARD_EDGE_FULL_SCAN_LIMIT``, ``complete`` is False (ratio unavailable).
+    """
+    c = _cmds()
+    tf = transform_of(mesh)
+    edge_count = component_count(tf, EDGE)
+    hard_count: Optional[int] = None
+    complete = False
+    try:
+        raw = c.polyInfo(tf, hardEdges=True)
+        # Successful query: empty list means zero hard edges.
+        ids = indices_of([str(x) for x in (raw or [])])
+        hard_count = len(ids)
+        complete = True
+    except Exception:
+        if edge_count <= _HARD_EDGE_FULL_SCAN_LIMIT:
+            ids = hard_edges(tf)
+            hard_count = len(ids)
+            complete = True
+        else:
+            hard_count = None
+            complete = False
+    ratio = (
+        (float(hard_count) / float(edge_count))
+        if edge_count > 0 and complete and hard_count is not None
+        else None
+    )
+    return {
+        "transform": tf,
+        "edge_count": edge_count,
+        "hard_edge_count": hard_count,
+        "hard_edge_ratio": ratio,
+        "complete": complete,
+    }
+
+
+def unlock_and_soften_meshes(
+    transforms: Sequence[str],
+    *,
+    angle: float = 30.0,
+    unlock: bool = True,
+) -> Dict[str, Any]:
+    """
+    Unlock locked vertex normals (optional) then soft-edge by angle.
+
+    Returns a summary suitable for tool / import result payloads.
+    """
+    c = _cmds()
+    deg = float(angle)
+    results: List[Dict[str, Any]] = []
+    for raw in transforms:
+        if not raw or not c.objExists(raw):
+            continue
+        shapes = collect_mesh_shapes(raw)
+        if not shapes:
+            continue
+        # Operate once per unique transform
+        seen_tf = set()
+        for shape in shapes:
+            tf = transform_of(shape)
+            if tf in seen_tf:
+                continue
+            seen_tf.add(tf)
+            before = hard_edge_stats(tf)
+            locked_before = mesh_has_locked_normals(tf)
+            entry: Dict[str, Any] = {
+                "transform": tf,
+                "unlock": bool(unlock),
+                "angle": deg,
+                "locked_before": locked_before,
+                "hard_before": before,
+            }
+            try:
+                if unlock:
+                    try:
+                        c.polyNormalPerVertex(tf, unFreezeNormal=True)
+                    except Exception as e:
+                        entry["unlock_error"] = str(e)
+                c.polySoftEdge(tf, angle=deg)
+                entry["ok"] = True
+            except Exception as e:
+                entry["ok"] = False
+                entry["error"] = str(e)
+            entry["locked_after"] = mesh_has_locked_normals(tf)
+            entry["hard_after"] = hard_edge_stats(tf)
+            results.append(entry)
+    ok_n = sum(1 for r in results if r.get("ok"))
+    return {
+        "meshes": results,
+        "processed": len(results),
+        "succeeded": ok_n,
+        "angle": deg,
+        "unlock": bool(unlock),
+    }
+
+
 def nonmanifold_components(mesh: str, kind: str) -> List[int]:
     if kind == VERTEX:
         return _polyinfo_indices(mesh, nonManifoldVertices=True)

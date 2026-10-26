@@ -9,6 +9,8 @@ from maya_agent.tools._mesh import (
     apply_world_transform,
     bbox_dict,
     collect_mesh_shapes,
+    hard_edge_stats,
+    mesh_has_locked_normals,
     poly_stats,
     resolve_components,
     summarize_components,
@@ -1113,8 +1115,9 @@ def get_mesh_stats(name: str = "", aggregate: bool = True) -> ToolResult:
 @tool(
     name="check_meshes",
     description=(
-        "网格质量体检：非流形边/顶点、孔洞边、层叠面、零面积面。"
-        "apply_cleanup=true 时尝试焊接近点、删除层叠面（不可逆，建议先确认）。"
+        "网格质量体检：非流形边/顶点、孔洞边、层叠面、零面积面；"
+        "并报告锁定顶点法线与硬边比例（着色异常时可据此调用 edit_mesh_normals unlock_soften）。"
+        "apply_cleanup=true 时尝试焊接近点（不可逆，建议先确认）。"
     ),
     parameters=obj_schema(
         {
@@ -1127,6 +1130,11 @@ def get_mesh_stats(name: str = "", aggregate: bool = True) -> ToolResult:
             "zero_area_threshold": {"type": "number", "default": 1e-8},
             "apply_cleanup": {"type": "boolean", "default": False},
             "merge_threshold": {"type": "number", "default": 0.001},
+            "check_shading": {
+                "type": "boolean",
+                "default": True,
+                "description": "是否统计锁定法线与硬边比例",
+            },
         }
     ),
     category="modeling",
@@ -1136,6 +1144,7 @@ def check_meshes(
     zero_area_threshold: float = 1e-8,
     apply_cleanup: bool = False,
     merge_threshold: float = 0.001,
+    check_shading: bool = True,
 ) -> ToolResult:
     c = _cmds()
     roots = names or (c.ls(selection=True, long=True) or [])
@@ -1152,6 +1161,7 @@ def check_meshes(
         return ToolResult(ok=False, error="未找到多边形 mesh")
 
     issues: List[Dict[str, Any]] = []
+    shading_reports: List[Dict[str, Any]] = []
     summary = {
         "meshes_checked": len(shapes),
         "with_issues": 0,
@@ -1161,6 +1171,8 @@ def check_meshes(
         "zero_area_faces": 0,
         "holes": 0,
         "cleaned": [],
+        "locked_normals_meshes": 0,
+        "high_hard_edge_meshes": 0,
     }
 
     prev_sel = c.ls(selection=True, long=True) or []
@@ -1227,6 +1239,40 @@ def check_meshes(
             except Exception:
                 pass
 
+            if check_shading:
+                shade: Dict[str, Any] = {"shape": shape, "transform": entry["transform"]}
+                locked = mesh_has_locked_normals(shape)
+                shade["user_normals_locked"] = locked
+                if locked is True:
+                    summary["locked_normals_meshes"] += 1
+                    entry["problems"].append(
+                        {
+                            "type": "locked_normals",
+                            "note": "存在锁定/自定义顶点法线；软边前建议 unlock 或 unlock_soften",
+                        }
+                    )
+                elif locked is None:
+                    shade["user_normals_locked"] = "unavailable"
+                he = hard_edge_stats(shape)
+                shade["hard_edge_count"] = he.get("hard_edge_count")
+                shade["hard_edge_ratio"] = he.get("hard_edge_ratio")
+                shade["hard_edge_complete"] = he.get("complete")
+                ratio = he.get("hard_edge_ratio")
+                if isinstance(ratio, float) and ratio >= 0.25:
+                    summary["high_hard_edge_meshes"] += 1
+                    entry["problems"].append(
+                        {
+                            "type": "high_hard_edge_ratio",
+                            "ratio": round(ratio, 3),
+                            "count": he.get("hard_edge_count"),
+                            "note": "硬边占比偏高，曲面高光可能呈碎条",
+                        }
+                    )
+                elif he.get("complete") is False:
+                    shade["hard_edge_note"] = "边数过大且未能完整统计硬边"
+                shading_reports.append(shade)
+                entry["shading"] = shade
+
             if apply_cleanup:
                 tf = entry["transform"]
                 try:
@@ -1253,8 +1299,21 @@ def check_meshes(
             f"（非流形边 {summary['nonmanifold_edges']} / "
             f"顶点 {summary['nonmanifold_vertices']}）"
         )
+    if check_shading:
+        bits = []
+        if summary["locked_normals_meshes"]:
+            bits.append(f"锁定法线 {summary['locked_normals_meshes']} 个")
+        if summary["high_hard_edge_meshes"]:
+            bits.append(f"硬边偏高 {summary['high_hard_edge_meshes']} 个")
+        if bits:
+            msg += "；着色：" + "、".join(bits)
     return ToolResult(
         ok=True,
-        data={"summary": summary, "issues": issues[:50], "truncated": len(issues) > 50},
+        data={
+            "summary": summary,
+            "issues": issues[:50],
+            "shading": shading_reports[:50],
+            "truncated": len(issues) > 50,
+        },
         message=msg,
     )

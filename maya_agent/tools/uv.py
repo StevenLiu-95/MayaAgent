@@ -11,13 +11,17 @@ from maya_agent.tools._uv import (
     CUT_MODES,
     capture_uv_snapshot,
     check_quality,
+    cleanup_for_uv,
     collect_cut_edges,
     current_texel_density,
+    face_count,
     layout_mesh,
     map_cut_edges,
     map_sew_edges,
+    mesh_topology_report,
     optimize_mesh,
     project_uv,
+    resolve_cut_mode_auto,
     resolve_mesh,
     set_texel_density_on_mesh,
     shell_summaries,
@@ -575,11 +579,53 @@ def check_uv_overlaps(name: str = "") -> ToolResult:
 
 
 @tool(
+    name="preflight_uv",
+    description=(
+        "UV 预检：非流形边/点、shell/面数；apply_cleanup=true 时焊点+polyCleanup+删历史。"
+        "展开前若怀疑网格脏，先调本工具；一键流程 prepare_game_uv 默认已含清理。"
+    ),
+    parameters=obj_schema(
+        {
+            "name": {"type": "string", "default": ""},
+            "apply_cleanup": {"type": "boolean", "default": False},
+            "merge_threshold": {"type": "number", "default": 0.001},
+        }
+    ),
+    category="uv",
+)
+def preflight_uv(
+    name: str = "",
+    apply_cleanup: bool = False,
+    merge_threshold: float = 0.001,
+) -> ToolResult:
+    picked = _mesh_or_fail(name)
+    if not picked.ok:
+        return picked
+    tf = picked.data["transform"]
+    report = mesh_topology_report(tf)
+    cleanup = None
+    if apply_cleanup:
+        cleanup = cleanup_for_uv(tf, merge_threshold=merge_threshold)
+        report = cleanup.get("after") or mesh_topology_report(tf)
+    data: Dict[str, Any] = {"preflight": report}
+    if cleanup:
+        data["cleanup"] = cleanup
+    needs = report.get("needs_cleanup")
+    msg = (
+        f"UV 预检 {short_name(tf)}：nm_v={report.get('nonmanifold_vertices')} "
+        f"nm_e={report.get('nonmanifold_edges')} shells={report.get('shells')} "
+        f"faces={report.get('faces')}"
+        + ("；已清理" if cleanup else ("；建议清理" if needs else "；拓扑正常"))
+    )
+    return ToolResult(ok=True, data=data, message=msg)
+
+
+@tool(
     name="prepare_game_uv",
     description=(
-        "游戏 UV 一键流水线：切缝→投影展开→unfold/optimize→Layout→质检。"
-        "硬表面默认 cut_mode=hard；也可 angle/material/none。"
-        "意图清晰时优先用本工具；需精修缝线再用 cut_uv_edges/sew_uv_edges。"
+        "游戏 UV 一键：预检清理→切缝→投影→unfold/optimize→Layout（含非流形重试）→质检。"
+        "默认 cut_mode=auto（适量硬边则 hard，否则 none，避免大网格切碎）；"
+        "也可 hard/angle/material/none。精修缝线用 cut_uv_edges/sew_uv_edges；看图用 capture_uv_layout。"
     ),
     parameters=obj_schema(
         {
@@ -587,7 +633,7 @@ def check_uv_overlaps(name: str = "") -> ToolResult:
             "cut_mode": {
                 "type": "string",
                 "enum": _CUT_MODE_ENUM,
-                "default": "hard",
+                "default": "auto",
             },
             "angle_degrees": {"type": "number", "default": 45},
             "method": {
@@ -596,7 +642,7 @@ def check_uv_overlaps(name: str = "") -> ToolResult:
                 "default": "automatic",
             },
             "projection_axis": {"type": "string", "default": "y"},
-            "layout_resolution": {"type": "integer", "default": 256},
+            "layout_resolution": {"type": "integer", "default": 512},
             "layout_spacing": {"type": "number", "default": 0.006},
             "layout_margin": {"type": "number", "default": 0.01},
             "scale_mode": {
@@ -605,6 +651,7 @@ def check_uv_overlaps(name: str = "") -> ToolResult:
                 "default": "uniform",
             },
             "udim": {"type": "integer", "default": 1001},
+            "skip_cleanup": {"type": "boolean", "default": False},
             "skip_quality": {"type": "boolean", "default": False},
         }
     ),
@@ -612,15 +659,16 @@ def check_uv_overlaps(name: str = "") -> ToolResult:
 )
 def prepare_game_uv(
     name: str = "",
-    cut_mode: str = "hard",
+    cut_mode: str = "auto",
     angle_degrees: float = 45.0,
     method: str = "automatic",
     projection_axis: str = "y",
-    layout_resolution: int = 256,
+    layout_resolution: int = 512,
     layout_spacing: float = 0.006,
     layout_margin: float = 0.01,
     scale_mode: str = "uniform",
     udim: int = 1001,
+    skip_cleanup: bool = False,
     skip_quality: bool = False,
 ) -> ToolResult:
     picked = _mesh_or_fail(name)
@@ -630,18 +678,41 @@ def prepare_game_uv(
     steps: Dict[str, Any] = {"mesh": short_name(tf)}
 
     try:
+        # 0) Preflight / cleanup
+        before = mesh_topology_report(tf)
+        steps["preflight"] = {"before": before}
+        if not skip_cleanup:
+            steps["preflight"]["cleanup"] = cleanup_for_uv(tf)
+            steps["preflight"]["after"] = steps["preflight"]["cleanup"].get("after")
+
+        # Resolve cut mode
+        mode_in = (cut_mode or "auto").lower()
+        mode_resolved = mode_in
+        cut_meta: Dict[str, Any] = {}
+        if mode_in in ("auto",):
+            mode_resolved, cut_meta = resolve_cut_mode_auto(tf)
+
         # 1) Cut
-        if cut_mode and cut_mode.lower() not in ("none", "skip", ""):
+        if mode_resolved not in ("none", "skip", ""):
             edge_ids, err = collect_cut_edges(
-                tf, mode=cut_mode, angle_degrees=angle_degrees
+                tf, mode=mode_resolved, angle_degrees=angle_degrees
             )
             if err:
                 return ToolResult(ok=False, error=err, data=steps)
             steps["cut"] = map_cut_edges(tf, edge_ids) if edge_ids else {"cut": 0}
-            if edge_ids:
-                steps["cut"]["mode"] = cut_mode
+            steps["cut"]["mode"] = mode_resolved
+            steps["cut"]["mode_requested"] = mode_in
+            steps["cut"]["mode_resolved"] = mode_resolved
+            if cut_meta:
+                steps["cut"]["auto_meta"] = cut_meta
         else:
-            steps["cut"] = {"cut": 0, "mode": "none"}
+            steps["cut"] = {
+                "cut": 0,
+                "mode": "none",
+                "mode_requested": mode_in,
+                "mode_resolved": "none",
+                "auto_meta": cut_meta,
+            }
 
         # 2) Project
         steps["project"] = project_uv(tf, method=method, projection_axis=projection_axis)
@@ -656,10 +727,16 @@ def prepare_game_uv(
         except Exception as e:
             steps["optimize_error"] = str(e)
 
-        # 4) Layout
+        # 4) Layout (auto bump resolution for dense meshes)
+        res = int(layout_resolution) if layout_resolution else 512
+        try:
+            if face_count(tf) > 10000:
+                res = max(res, 512)
+        except Exception:
+            pass
         steps["layout"] = layout_mesh(
             tf,
-            resolution=layout_resolution,
+            resolution=res,
             spacing=layout_spacing,
             margin=layout_margin,
             scale_mode=scale_mode,
@@ -682,9 +759,12 @@ def prepare_game_uv(
     ok_q = q.get("ok", True)
     issues = q.get("issues") or []
     cut_n = (steps.get("cut") or {}).get("cut", 0)
+    mode_r = (steps.get("cut") or {}).get("mode_resolved", cut_mode)
+    layout_backend = (steps.get("layout") or {}).get("backend", "")
     msg = (
-        f"游戏 UV 完成：切缝 {cut_n}，project={steps.get('project')}，"
-        f"shells={steps['shells']}，质检={'通过' if ok_q else '有问题'}"
+        f"游戏 UV 完成：cut={mode_r}/{cut_n}，project={steps.get('project')}，"
+        f"layout={layout_backend}，shells={steps['shells']}，"
+        f"质检={'通过' if ok_q else '有问题'}"
     )
     if issues:
         msg += " — " + "；".join(issues[:4])

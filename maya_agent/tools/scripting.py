@@ -67,7 +67,9 @@ def _guess_fail_line(tb_text: str) -> Optional[int]:
         "在 Maya 中执行 Python 代码片段（可访问 maya.cmds）。"
         "atomic=True（默认）时：异常会撤销本段 undo chunk（含中止前已成功的修改）；"
         "返回 rolled_back=true 且 stdout_is_stale=true——stdout 是回滚前打印，不代表当前场景。"
-        "atomic=False 时保留已生效部分。userScriptDir 与 MayaAgent_tools 已在 sys.path 中，可直接 import。"
+        "atomic=False 时失败不整段撤销，已成功步骤保留（适合需要保留中间态再截图/对照的调试）；"
+        "对照实验请拆成多步工具调用，勿依赖单次脚本内半完成状态。"
+        "userScriptDir 与 MayaAgent_tools 已在 sys.path 中，可直接 import。"
     ),
     parameters=obj_schema(
         {
@@ -76,7 +78,7 @@ def _guess_fail_line(tb_text: str) -> Optional[int]:
             "atomic": {
                 "type": "boolean",
                 "default": True,
-                "description": "异常时回滚本段 undo chunk（默认 True）",
+                "description": "异常时回滚本段 undo chunk（默认 True）；调试保留中间态时用 False",
             },
         },
         required=["code"],

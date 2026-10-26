@@ -12,6 +12,7 @@ from maya_agent.tools._mesh import (
     select_components,
     summarize_components,
     transform_of,
+    unlock_and_soften_meshes,
 )
 from maya_agent.tools.registry import ToolResult, obj_schema, tool
 
@@ -418,7 +419,9 @@ def edit_mesh_topology(
     name="edit_mesh_normals",
     description=(
         "法线与软硬边：reverse / conform / set_to_face / unlock / "
-        "soften / harden / average。soften 用 angle 阈值（度）。"
+        "soften / unlock_soften / harden / average。"
+        "soften 按 angle（度）软边，需全软时显式传 angle=180。"
+        "锁定顶点法线时仅 soften 常无效，应先 unlock 或用 unlock_soften（解锁后再按 angle 软边）。"
     ),
     parameters=obj_schema(
         {
@@ -426,14 +429,27 @@ def edit_mesh_topology(
             "names": {"type": "array", "items": {"type": "string"}, "default": []},
             "operation": {
                 "type": "string",
-                "enum": ["reverse", "conform", "set_to_face", "unlock", "soften", "harden", "average"],
+                "enum": [
+                    "reverse",
+                    "conform",
+                    "set_to_face",
+                    "unlock",
+                    "soften",
+                    "unlock_soften",
+                    "harden",
+                    "average",
+                ],
             },
             "user_normal": {
                 "type": "boolean",
                 "default": False,
                 "description": "reverse 时是否同时翻用户法线",
             },
-            "angle": {"type": "number", "default": 30},
+            "angle": {
+                "type": "number",
+                "default": 30,
+                "description": "soften / unlock_soften 的软边角度（度）；全软传 180",
+            },
             "selection_mode": {
                 "type": "string",
                 "enum": ["all", "current", "indices", "border", "hard"],
@@ -468,6 +484,17 @@ def edit_mesh_normals(
     if not targets:
         return ToolResult(ok=False, error="无对象")
 
+    if op == "unlock_soften":
+        summary = unlock_and_soften_meshes(targets, angle=float(angle), unlock=True)
+        ok_n = int(summary.get("succeeded") or 0)
+        if ok_n == 0 and summary.get("processed"):
+            return ToolResult(ok=False, error="unlock_soften 全部失败", data=summary)
+        return ToolResult(
+            ok=True,
+            data={"objects": [m.get("transform") for m in summary.get("meshes") or []], "operation": op, **summary},
+            message=f"法线 unlock_soften：{ok_n}/{summary.get('processed', 0)} 个对象（angle={angle}）",
+        )
+
     done = []
     for t in targets:
         tf = transform_of(t)
@@ -489,9 +516,10 @@ def edit_mesh_normals(
                     tf, "edge", indices, selection_mode if selection_mode != "all" else "all"
                 )
                 target = comps if selection_mode != "all" and not err else tf
-                deg = 180.0 if op == "soften" and selection_mode == "all" else (float(angle) if op == "soften" else 0.0)
                 if op == "harden":
                     deg = 0.0
+                else:
+                    deg = float(angle)
                 c.polySoftEdge(target, angle=deg)
             elif op == "average":
                 try:

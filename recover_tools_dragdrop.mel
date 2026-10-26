@@ -1,0 +1,40 @@
+// ============================================================
+//  Maya Agent — 恢复工具注册表（拖入视口执行）
+//  在 MCP tool_count=0 或热重载失败后使用。
+// ============================================================
+
+global proc MayaAgent_recoverTools()
+{
+    string $py =
+        "import importlib, sys, os\n"
+        + "import maya.cmds as cmds\n"
+        + "print('[Maya Agent] recovering tools + MCP...')\n"
+        + "root = ''\n"
+        + "try:\n"
+        + "    import maya_agent as _ma\n"
+        + "    root = os.path.dirname(os.path.dirname(os.path.abspath(_ma.__file__)))\n"
+        + "    if root and root not in sys.path:\n"
+        + "        sys.path.insert(0, root)\n"
+        + "except Exception:\n"
+        + "    pass\n"
+        + "try:\n"
+        + "    from maya_agent import bridge as _br\n"
+        + "    _br.stop()\n"
+        + "except Exception:\n"
+        + "    pass\n"
+        + "for name in list(sys.modules):\n"
+        + "    if name == 'maya_agent' or name.startswith('maya_agent.'):\n"
+        + "        sys.modules.pop(name, None)\n"
+        + "from maya_agent.tools.registry import ensure_tools_loaded, all_tools\n"
+        + "ensure_tools_loaded()\n"
+        + "n = len(all_tools())\n"
+        + "print('[Maya Agent] tools registered:', n)\n"
+        + "from maya_agent import bridge\n"
+        + "r = bridge.start()\n"
+        + "print('[Maya Agent] MCP:', r)\n"
+        + "cmds.inViewMessage(amg='[Maya Agent] recovered tools=' + str(n), pos='midCenter', fade=True)\n";
+
+    python($py);
+}
+
+MayaAgent_recoverTools();

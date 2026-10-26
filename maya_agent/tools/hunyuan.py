@@ -1171,6 +1171,7 @@ def hunyuan_download(
         "将混元成功任务的模型下载并导入当前 Maya 场景（优先 FBX）。"
         "非 FBX 时可 auto_convert_fbx=true 先 Convert3DFormat。"
         "复用 Meshy 的 FBX PBR 重建逻辑。可传 kind+job_id 或 file_path。"
+        "prepare_normals=true 时对新网格 unlock+软边（默认关闭）。"
     ),
     parameters=obj_schema(
         {
@@ -1181,6 +1182,16 @@ def hunyuan_download(
             "namespace": {"type": "string", "default": "hunyuan"},
             "output_dir": {"type": "string"},
             "rebuild_pbr": {"type": "boolean", "default": True},
+            "prepare_normals": {
+                "type": "boolean",
+                "default": False,
+                "description": "导入后对新网格解锁顶点法线并软边（默认 false）",
+            },
+            "normal_soften_angle": {
+                "type": "number",
+                "default": 30,
+                "description": "prepare_normals 时的软边角度（度）",
+            },
             "auto_convert_fbx": {
                 "type": "boolean",
                 "default": True,
@@ -1199,6 +1210,8 @@ def hunyuan_import_to_maya(
     namespace: str = "hunyuan",
     output_dir: str = "",
     rebuild_pbr: bool = True,
+    prepare_normals: bool = False,
+    normal_soften_angle: float = 30.0,
     auto_convert_fbx: bool = True,
 ) -> ToolResult:
     try:
@@ -1248,7 +1261,11 @@ def hunyuan_import_to_maya(
 
         def _do() -> ToolResult:
             return _import_path_into_maya(
-                local, namespace=ns, rebuild_pbr=bool(rebuild_pbr)
+                local,
+                namespace=ns,
+                rebuild_pbr=bool(rebuild_pbr),
+                prepare_normals=bool(prepare_normals),
+                normal_soften_angle=float(normal_soften_angle),
             )
 
         return run_on_main_thread(_do)
