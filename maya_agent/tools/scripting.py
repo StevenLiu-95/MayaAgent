@@ -14,19 +14,6 @@ from maya_agent.tools.registry import ToolResult, obj_schema, tool
 from maya_agent.utils.maya_compat import in_maya
 
 
-def _guess_fail_line(tb_text: str) -> Optional[int]:
-    """Extract failing line number from traceback for <maya_agent> code."""
-    if not tb_text:
-        return None
-    matches = re.findall(r'File "<maya_agent>", line (\d+)', tb_text)
-    if not matches:
-        return None
-    try:
-        return int(matches[-1])
-    except ValueError:
-        return None
-
-
 def _ensure_agent_import_paths() -> list:
     """Put userScriptDir and MayaAgent_tools on sys.path so written scripts import."""
     inserted = []

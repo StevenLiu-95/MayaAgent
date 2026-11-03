@@ -627,6 +627,8 @@ class TripoClient:
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
         endpoint: str = "",
     ) -> Dict[str, Any]:
+        from maya_agent.core.tool_progress import is_cancel_requested
+
         limit = float(timeout if timeout is not None else self.wait_timeout)
         interval = float(
             poll_interval if poll_interval is not None else self.poll_interval
@@ -672,6 +674,11 @@ class TripoClient:
                 )
 
         while True:
+            if is_cancel_requested():
+                raise TripoError(
+                    "已请求停止：中断等待 Tripo 任务"
+                    "（任务仍会在服务商侧继续，稍后可用 tripo_get_task 查询）"
+                )
             last = self.get_task(task_id)
             status = str(last.get("status") or "").lower()
             _emit()

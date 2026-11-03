@@ -715,6 +715,8 @@ class HunyuanClient:
         poll_interval: Optional[float] = None,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
+        from maya_agent.core.tool_progress import is_cancel_requested
+
         limit = float(timeout if timeout is not None else self.wait_timeout)
         interval = float(
             poll_interval if poll_interval is not None else self.poll_interval
@@ -755,6 +757,11 @@ class HunyuanClient:
                 pass
 
         while True:
+            if is_cancel_requested():
+                raise HunyuanError(
+                    "已请求停止：中断等待混元任务"
+                    "（任务仍会在服务商侧继续，稍后可用 hunyuan_get_job 查询）"
+                )
             last = self.get_job(kind, job_id)
             status = str(last.get("Status") or "").upper()
             _emit()

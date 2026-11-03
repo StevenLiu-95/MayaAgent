@@ -11,7 +11,13 @@ from maya_agent.i18n import init_from_config, t
 from maya_agent.ui.agent_worker import create_agent_worker
 from maya_agent.ui.chat import create_chat_panel
 from maya_agent.ui.combo_widgets import create_toolbar_combo
-from maya_agent.ui.composer import apply_send_stop_style, quick_command_specs
+from maya_agent.ui.composer import (
+    ComposerPlainTextEdit,
+    apply_send_stop_style,
+    attach_mention_controller,
+    quick_command_specs,
+)
+from maya_agent.ui.mention import expand_mentions, format_token
 from maya_agent.ui.flow_layout import create_flow_layout
 from maya_agent.ui.settings import (
     create_help_panel,
@@ -267,19 +273,31 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
 
         new_sess_btn = QtWidgets.QPushButton(t("session.new"))
         new_sess_btn.setObjectName("toolbarBtn")
-        new_sess_btn.setFixedSize(52, 28)
+        new_sess_btn.setFixedHeight(28)
+        new_sess_btn.setMinimumWidth(52)
+        new_sess_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
         new_sess_btn.setCursor(QtCore.Qt.PointingHandCursor)
         new_sess_btn.clicked.connect(self._on_new_session)
 
         rename_sess_btn = QtWidgets.QPushButton(t("session.rename"))
         rename_sess_btn.setObjectName("toolbarBtn")
-        rename_sess_btn.setFixedSize(64, 28)
+        rename_sess_btn.setFixedHeight(28)
+        rename_sess_btn.setMinimumWidth(64)
+        rename_sess_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
         rename_sess_btn.setCursor(QtCore.Qt.PointingHandCursor)
         rename_sess_btn.clicked.connect(self._on_rename_session)
 
         del_sess_btn = QtWidgets.QPushButton(t("session.delete"))
         del_sess_btn.setObjectName("toolbarBtn")
-        del_sess_btn.setFixedSize(52, 28)
+        del_sess_btn.setFixedHeight(28)
+        del_sess_btn.setMinimumWidth(52)
+        del_sess_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
         del_sess_btn.setCursor(QtCore.Qt.PointingHandCursor)
         del_sess_btn.clicked.connect(self._on_delete_session)
 
@@ -392,7 +410,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._quick_body.hide()
         composer_layout.addWidget(self._quick_body)
 
-        self.input_edit = QtWidgets.QPlainTextEdit()
+        self.input_edit = ComposerPlainTextEdit()
         self.input_edit.setObjectName("composerInput")
         self.input_edit.setPlaceholderText(t("composer.placeholder_attach"))
         self.input_edit.setMinimumHeight(48)
@@ -402,6 +420,10 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self.input_edit.setAcceptDrops(True)
         self.input_edit.installEventFilter(self)
         self.input_edit.viewport().installEventFilter(self)
+        self._mention = attach_mention_controller(
+            self.input_edit,
+            session_manager_provider=lambda: self.sessions,
+        )
         composer_layout.addWidget(self.input_edit, 1)
 
         # 底栏：附件 + 状态 + 快捷 / 清空 / 发送·停止（合并）
@@ -429,19 +451,30 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._quick_toggle.setCheckable(True)
         self._quick_toggle.setChecked(False)
         self._quick_toggle.setFixedHeight(26)
-        self._quick_toggle.setMinimumWidth(44)
+        self._quick_toggle.setMinimumWidth(52)
+        self._quick_toggle.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
         self._quick_toggle.toggled.connect(self._on_quick_commands_toggled)
 
         clear_btn = QtWidgets.QPushButton(t("composer.clear"))
         clear_btn.setObjectName("composerBtn")
-        clear_btn.setFixedSize(44, 26)
+        clear_btn.setFixedHeight(26)
+        clear_btn.setMinimumWidth(52)
+        clear_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
         clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
         clear_btn.clicked.connect(self._on_clear)
 
-        # 发送 / 停止 合并：空闲绿「发送」，忙碌红「停止」
+        # Send/stop merged button: green Send idle, red Stop while busy.
         self.send_btn = QtWidgets.QPushButton(t("composer.send"))
         self.send_btn.setObjectName("sendBtn")
-        self.send_btn.setFixedSize(56, 26)
+        self.send_btn.setFixedHeight(26)
+        self.send_btn.setMinimumWidth(64)
+        self.send_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
         self.send_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.send_btn.clicked.connect(self._on_send_or_stop)
         self._send_busy = False
@@ -681,6 +714,14 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             if self._scroll_attach_strip_horizontal(event):
                 return True
         if self._is_composer_target(obj) and event.type() == QtCore.QEvent.KeyPress:
+            mention = getattr(self, "_mention", None)
+            if mention is not None and mention.is_open():
+                # Mention popup owns arrows / Enter / Esc / Tab.
+                try:
+                    if mention.handle_key(event):
+                        return True
+                except Exception:
+                    pass
             mods = event.modifiers()
             ctrl_v = event.key() == QtCore.Qt.Key_V and bool(
                 mods & QtCore.Qt.ControlModifier
@@ -692,6 +733,8 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             if (is_paste or ctrl_v) and self._try_paste_images():
                 return True
             if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+                if mention is not None and mention.is_open():
+                    return True
                 mods = event.modifiers()
                 # Shift+Enter → 换行；Enter → 发送
                 if mods & QtCore.Qt.ShiftModifier:
@@ -1067,7 +1110,24 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._apply_composer_splitter_sizes)
 
     def _use_tool_from_settings(self, name: str):
-        self.input_edit.setPlainText(t("composer.use_tool", name=name))
+        token = format_token("tool", name)
+        edit = self.input_edit
+        cur = edit.toPlainText()
+        if cur.strip():
+            # Append mention at cursor / end rather than wiping the draft.
+            if hasattr(edit, "insert_at_cursor"):
+                suffix = "" if cur.endswith((" ", "\n")) else " "
+                edit.insert_at_cursor(suffix + token + " ")
+            else:
+                edit.setPlainText(cur.rstrip() + " " + token + " ")
+        else:
+            edit.setPlainText(token + " ")
+        mention = getattr(self, "_mention", None)
+        if mention is not None:
+            try:
+                mention.close()
+            except Exception:
+                pass
         idx = getattr(self, "_chat_tab_index", 0)
         self.tabs.setCurrentIndex(idx)
         self.input_edit.setFocus()
@@ -1549,14 +1609,19 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self._worker.wait(800)
             if self._worker.isRunning():
                 self._schedule_force_kill_worker()
-        try:
-            self.agent.undo.cancel_open()
-        except Exception:
-            pass
-        try:
-            self.agent.memory.drop_incomplete_tool_round()
-        except Exception:
-            pass
+        # Only mutate agent memory/undo from the UI thread once the worker is
+        # gone; while it still runs, its own cancellation path
+        # (agent._emit_cancelled) does this to avoid a concurrent rewrite of
+        # the tool-call sequence mid-append.
+        if not (self._worker and self._worker.isRunning()):
+            try:
+                self.agent.undo.cancel_open()
+            except Exception:
+                pass
+            try:
+                self.agent.memory.drop_incomplete_tool_round()
+            except Exception:
+                pass
         # Finish the bubble immediately so late stream events cannot reopen it.
         self._flush_stream()
         self._stream_buf = ""
@@ -1586,6 +1651,17 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
                 w.wait(1000)
             except Exception:
                 pass
+            # The killed worker never ran its cleanup; do it here, now that it
+            # is no longer touching agent.memory / undo.
+            if not w.isRunning():
+                try:
+                    self.agent.undo.cancel_open()
+                except Exception:
+                    pass
+                try:
+                    self.agent.memory.drop_incomplete_tool_round()
+                except Exception:
+                    pass
             try:
                 from maya_agent.bridge.agent_remote import force_reset_agent_lock
 
@@ -1650,6 +1726,13 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             agent_text = text
         else:
             agent_text = t("composer.view_image")
+
+        try:
+            ref_block = expand_mentions(text, session_manager=self.sessions)
+        except Exception:
+            ref_block = ""
+        if ref_block:
+            agent_text = f"{agent_text}\n\n{ref_block}"
 
         if text:
             display = text
@@ -1770,7 +1853,9 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
     def _evt_chat_images_staged(self, event: dict) -> None:
         count = int(event.get("count") or 0)
         if count:
-            self.status_label.set_idle(f"已保存 {count} 张对话附图到本地")
+            self.status_label.set_idle(
+                t("status.chat_images_saved", count=count)
+            )
         if self._worker and self._worker.isRunning():
             self.status_label.set_thinking()
 

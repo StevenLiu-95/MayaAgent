@@ -93,8 +93,21 @@ def save_project(project: ProjectChatData, scene_path: Optional[str] = None) -> 
     from maya_agent.core.chat_session import _now_iso
 
     project.saved_at = _now_iso()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(project.to_dict(), f, ensure_ascii=False, indent=2)
+    # Atomic write: a crash mid-write must not truncate the existing sidecar
+    # (chat history is the only copy of a session).
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(project.to_dict(), f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     log.info("saved project chats to %s", path)
     return path
 

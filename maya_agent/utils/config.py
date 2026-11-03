@@ -150,6 +150,40 @@ class Config:
                 "download_dir": self.get("meshy.download_dir", ""),
                 "default_formats": self.get("meshy.default_formats", ["fbx", "glb"]),
             },
+            # tripo / hunyuan / web were missing from this whitelist, so UI
+            # changes (enabled toggle, endpoint/region, web settings) were
+            # silently lost on the next Maya start.
+            "tripo": {
+                "enabled": self.get("tripo.enabled", True),
+                "base_url": self.get("tripo.base_url", "https://openapi.tripo3d.com/v3"),
+                "timeout": self.get("tripo.timeout", 60),
+                "poll_interval": self.get("tripo.poll_interval", 5),
+                "wait_timeout": self.get("tripo.wait_timeout", 600),
+                "download_dir": self.get("tripo.download_dir", ""),
+                "default_model": self.get("tripo.default_model", ""),
+                "default_image_model": self.get("tripo.default_image_model", ""),
+                "default_formats": self.get("tripo.default_formats", ["fbx", "glb"]),
+            },
+            "hunyuan": {
+                "enabled": self.get("hunyuan.enabled", True),
+                "endpoint": self.get("hunyuan.endpoint", "ai3d.tencentcloudapi.com"),
+                "region": self.get("hunyuan.region", "ap-guangzhou"),
+                "version": self.get("hunyuan.version", "2025-05-13"),
+                "timeout": self.get("hunyuan.timeout", 60),
+                "poll_interval": self.get("hunyuan.poll_interval", 5),
+                "wait_timeout": self.get("hunyuan.wait_timeout", 600),
+                "download_dir": self.get("hunyuan.download_dir", ""),
+                "default_formats": self.get("hunyuan.default_formats", ["fbx", "glb", "obj"]),
+            },
+            "web": {
+                "enabled": self.get("web.enabled", True),
+                "timeout": self.get("web.timeout", 20),
+                "max_page_chars": self.get("web.max_page_chars", 12000),
+                "max_search_results": self.get("web.max_search_results", 8),
+                "max_images": self.get("web.max_images", 4),
+                "max_download_bytes": self.get("web.max_download_bytes", 5000000),
+                "user_agent": self.get("web.user_agent", ""),
+            },
             "bridge": {
                 "enabled": self.get("bridge.enabled", True),
                 "auto_start": self.get("bridge.auto_start", False),

@@ -1,5 +1,12 @@
 """Vision message conversion — no Maya / Qt required."""
 
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from maya_agent.core.message_codec import message_from_dict, message_to_dict
 from maya_agent.llm.anthropic_provider import AnthropicProvider
 from maya_agent.llm.base import ChatMessage, ImageAttachment
@@ -26,6 +33,7 @@ def test_vision_detect():
                 "vision_models": ["deepseek-flash"],
             },
             "providers.google": {"vision": True},
+            "providers.grok": {"vision": True},
             "providers.custom": {"vision_policy": "on"},
             "providers.openai": {"vision_policy": "off"},
             "providers.qwen": {},
@@ -34,11 +42,14 @@ def test_vision_detect():
     assert model_supports_vision("deepseek", "deepseek-v4-pro", cfg) is False
     assert model_supports_vision("deepseek", "deepseek-flash", cfg) is True
     assert model_supports_vision("google", "gemini-2.0-flash", cfg) is True
+    assert model_supports_vision("grok", "grok-4.7", cfg) is True
     assert model_supports_vision("custom", "my-model", cfg) is True
     assert model_supports_vision("openai", "gpt-4o", cfg) is False
     assert model_supports_vision("qwen", "qwen-vl-max", cfg) is True
     assert model_supports_vision("qwen", "qwen-max", cfg) is False
     assert model_supports_vision("anthropic", "claude-sonnet-4-20250514", cfg) is True
+    # Name heuristic (no provider vision flag)
+    assert model_supports_vision("custom", "grok-4.7", _Cfg({"providers.custom": {}})) is True
 
 
 def test_openai_parts():

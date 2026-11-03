@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
+from maya_agent.i18n import t
 from maya_agent.ui import chat_format
 from maya_agent.ui.palette import SPINNER_FRAMES
 from maya_agent.ui.qt_bind import QtCore, QtGui, QtWidgets
@@ -63,7 +64,7 @@ class ToolRow(QtWidgets.QFrame):
         )
         self.detail.setOpenExternalLinks(True)
         self.detail.hide()
-        self.expand_btn = QtWidgets.QPushButton("展开全部 ▾")
+        self.expand_btn = QtWidgets.QPushButton(t("chat.expand_all"))
         self.expand_btn.setObjectName("toolExpandBtn")
         self.expand_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.expand_btn.setFlat(True)
@@ -125,7 +126,7 @@ class ToolRow(QtWidgets.QFrame):
                 parent=self._image_host,
                 gallery=gallery,
                 index=idx,
-                tooltip=att.name or "视口截图",
+                tooltip=att.name or t("chat.viewport_shot"),
             )
             self._image_lay.insertWidget(self._image_lay.count() - 1, label)
             shown += 1
@@ -278,7 +279,7 @@ class ToolRow(QtWidgets.QFrame):
         suffix = self._progress_suffix()
         # Fixed-width title pulse — avoid sizeHint/layout thrash.
         self.title.setText(
-            f"{spin} 正在执行  {self._running_name}{suffix}{dots}"
+            f"{spin} {t('chat.running')}  {self._running_name}{suffix}{dots}"
         )
 
     def resizeEvent(self, event):
@@ -304,7 +305,7 @@ class ToolRow(QtWidgets.QFrame):
         self._progress_status = ""
         self._anim_frame = 0
         self.setStyleSheet(self._running_stylesheet(False))
-        self.title.setText(f"◐ 正在执行  {name}")
+        self.title.setText(f"◐ {t('chat.running')}  {name}")
         self.bar.hide()
         self.bar.setValue(0)
         self.status.hide()
@@ -347,7 +348,9 @@ class ToolRow(QtWidgets.QFrame):
             self._tick_running()
         else:
             suffix = self._progress_suffix()
-            self.title.setText(f"◐ 正在执行  {self._running_name}{suffix}")
+            self.title.setText(
+                f"◐ {t('chat.running')}  {self._running_name}{suffix}"
+            )
 
     def set_done(self, name: str, result_json: str):
         self._anim_timer.stop()
@@ -374,7 +377,7 @@ class ToolRow(QtWidgets.QFrame):
         self.detail.setFixedHeight(0)
         self._image_host.setVisible(self._has_images)
         if needs_expand and self._full_html:
-            self.expand_btn.setText("展开全部 ▾")
+            self.expand_btn.setText(t("chat.expand_all"))
             self.expand_btn.show()
         else:
             self.expand_btn.hide()
@@ -447,12 +450,12 @@ class ToolRow(QtWidgets.QFrame):
             self.detail.setText(self._full_html)
             self.detail.show()
             self._fit_detail_height()
-            self.expand_btn.setText("收起 ▴")
+            self.expand_btn.setText(t("chat.collapse"))
         else:
             self.detail.clear()
             self.detail.hide()
             self.detail.setFixedHeight(0)
-            self.expand_btn.setText("展开全部 ▾")
+            self.expand_btn.setText(t("chat.expand_all"))
         # Thumbnails remain visible while collapsed.
         self._image_host.setVisible(self._has_images)
         self.detail.updateGeometry()

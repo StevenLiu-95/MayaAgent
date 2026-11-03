@@ -10,6 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Web results may contain emoji/non-GBK characters; keep the smoke script
+# runnable in a Chinese Windows console (cp936).
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def _print(title: str, result) -> None:
     print(f"\n=== {title} ===")

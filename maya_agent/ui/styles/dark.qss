@@ -187,6 +187,49 @@ QPushButton#composerBtn:disabled {
     color: #5a5a62;
 }
 
+QFrame#mentionPopup {
+    background-color: #1e1f26;
+    border: 1px solid #3a3b44;
+    border-radius: 8px;
+}
+
+QLabel#mentionHeader {
+    color: #8a8a96;
+    font-size: 11px;
+    padding: 2px 6px 4px 6px;
+    background: transparent;
+    border: none;
+}
+
+QLabel#mentionEmpty {
+    color: #7a7a86;
+    font-size: 12px;
+    padding: 10px 8px;
+    background: transparent;
+    border: none;
+}
+
+QListWidget#mentionList {
+    background-color: transparent;
+    border: none;
+    outline: none;
+    color: #e8e8ea;
+    font-size: 13px;
+    padding: 0;
+}
+
+QListWidget#mentionList::item {
+    padding: 6px 8px;
+    border-radius: 4px;
+    min-height: 22px;
+}
+
+QListWidget#mentionList::item:selected,
+QListWidget#mentionList::item:hover {
+    background-color: #2f3340;
+    color: #ffffff;
+}
+
 QPushButton#chipBtn {
     background-color: #262730;
     border: 1px solid #3a3b44;

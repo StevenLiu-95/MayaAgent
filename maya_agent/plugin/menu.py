@@ -499,6 +499,29 @@ def reload_plugin(*_args) -> None:
     except Exception:
         pass
 
+    # Tear down the existing panel *before* dropping modules: the dock
+    # workspaceControl is reused by name, so a reload otherwise re-raises the
+    # old widget tree whose slots still point at the wiped modules ("code
+    # reloaded but the panel is still the old object").
+    try:
+        import maya.cmds as _cmds
+
+        if _cmds.workspaceControl("MayaAgentWorkspace", query=True, exists=True):
+            _cmds.deleteUI("MayaAgentWorkspace")
+    except Exception:
+        pass
+    try:
+        import maya_agent.ui.main_window as _old_main_window
+
+        _old_win = getattr(_old_main_window, "_WINDOW_INSTANCE", None)
+        if _old_win is not None:
+            try:
+                _old_win.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Keep project root on sys.path (junction / install path)
     root = ""
     try:

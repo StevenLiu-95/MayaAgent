@@ -201,6 +201,65 @@ def _http_get_bytes(url: str, max_bytes: int, *, referer: str = "") -> Tuple[byt
             return b"".join(chunks), ctype
 
 
+def _http_get_limited(
+    url: str,
+    max_bytes: int,
+    *,
+    accept: Optional[str] = None,
+) -> Tuple[str, str, str, bool]:
+    """
+    GET a page with a hard byte cap.
+
+    ``fetch_webpage`` used to read the whole response into memory before
+    truncating to ``max_page_chars``; a huge/streamed page could exhaust RAM
+    while blocking the Maya main thread. Returns (text, final_url, ctype,
+    capped) where ``capped`` means the byte budget was hit.
+    """
+    ok, err = _validate_public_url(url)
+    if not ok:
+        raise ValueError(err)
+    cfg = _web_cfg()
+    headers = _headers(accept=accept or _headers()["Accept"])
+    with httpx.Client(
+        timeout=cfg["timeout"],
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        with client.stream("GET", url) as resp:
+            final = str(resp.url)
+            ok2, err2 = _validate_public_url(final)
+            if not ok2:
+                raise ValueError(f"重定向目标不安全: {err2}")
+            resp.raise_for_status()
+            ctype = (
+                (resp.headers.get("content-type") or "")
+                .split(";")[0]
+                .strip()
+                .lower()
+            )
+            chunks: List[bytes] = []
+            total = 0
+            capped = False
+            for chunk in resp.iter_bytes():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    keep = max(0, len(chunk) - (total - max_bytes))
+                    if keep:
+                        chunks.append(chunk[:keep])
+                    capped = True
+                    break
+                chunks.append(chunk)
+            raw_bytes = b"".join(chunks)
+            encoding = resp.encoding or "utf-8"
+            try:
+                text = raw_bytes.decode(encoding, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                text = raw_bytes.decode("utf-8", errors="replace")
+            return text, final, ctype, capped
+
+
 # ---------------------------------------------------------------------------
 # HTML text extraction
 # ---------------------------------------------------------------------------
@@ -692,6 +751,7 @@ def _guess_name_from_url(url: str, mime: str) -> str:
         required=["query"],
     ),
     category="web",
+    main_thread=False,
 )
 def web_search(
     query: str,
@@ -763,6 +823,7 @@ def web_search(
         required=["url"],
     ),
     category="web",
+    main_thread=False,
 )
 def fetch_webpage(
     url: str,
@@ -781,14 +842,11 @@ def fetch_webpage(
     start_chars = max(0, int(start_chars or 0))
 
     try:
-        resp = _http_get(target)
-        resp.raise_for_status()
+        raw, final_url, ctype, capped = _http_get_limited(
+            target, max(cfg["max_download_bytes"], 2_000_000)
+        )
     except Exception as e:
         return ToolResult(ok=False, error=f"抓取失败: {e}")
-
-    ctype = (resp.headers.get("content-type") or "").lower()
-    final_url = str(resp.url)
-    raw = resp.text or ""
 
     if "application/json" in ctype:
         text = _truncate(raw, max_chars)
@@ -799,7 +857,8 @@ def fetch_webpage(
                 "content_type": ctype,
                 "title": "",
                 "text": text,
-                "truncated": len(raw) > max_chars,
+                "truncated": len(raw) > max_chars or capped,
+                "capped_bytes": capped,
             },
             message="已获取 JSON 内容",
         )
@@ -807,7 +866,7 @@ def fetch_webpage(
     title, body = _html_to_text(raw) if ("html" in ctype or "<html" in raw[:500].lower()) else ("", raw)
     if start_chars:
         body = body[start_chars:]
-    truncated = len(body) > max_chars
+    truncated = len(body) > max_chars or capped
     text = _truncate(body, max_chars)
     return ToolResult(
         ok=True,
@@ -818,6 +877,7 @@ def fetch_webpage(
             "text": text,
             "start_chars": start_chars,
             "truncated": truncated,
+            "capped_bytes": capped,
             "total_chars_from_start": len(body),
         },
         message=f"已提取网页正文「{title or final_url}」" + ("（已截断）" if truncated else ""),
@@ -846,6 +906,7 @@ def fetch_webpage(
         required=["query"],
     ),
     category="web",
+    main_thread=False,
 )
 def search_images(query: str, limit: int = 4) -> ToolResult:
     if not _web_cfg()["enabled"]:
@@ -907,6 +968,7 @@ def search_images(query: str, limit: int = 4) -> ToolResult:
     ),
     category="web",
     requires_vision=True,
+    main_thread=False,
 )
 def fetch_image(
     url: str,
@@ -1018,6 +1080,7 @@ def fetch_image(
     ),
     category="web",
     requires_vision=True,
+    main_thread=False,
 )
 def fetch_images(urls: List[str], note: str = "") -> ToolResult:
     if not _web_cfg()["enabled"]:

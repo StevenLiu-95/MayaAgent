@@ -37,6 +37,20 @@ def test_default_config_json() -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     if "providers" not in data or "llm" not in data:
         _fail("default_config.json", "missing providers/llm")
+    providers = data.get("providers") or {}
+    provider_ids = list(providers.keys())
+    if "grok" not in providers:
+        _fail("default_config.json", "missing grok provider")
+    if provider_ids[:2] != ["openai", "grok"]:
+        _fail(
+            "default_config.json",
+            f"expected openai, grok as first two providers, got {provider_ids[:2]}",
+        )
+    grok = providers["grok"]
+    if grok.get("base_url") != "https://api.x.ai/v1":
+        _fail("default_config.json", f"unexpected grok base_url: {grok.get('base_url')}")
+    if grok.get("api_key_env") != "XAI_API_KEY":
+        _fail("default_config.json", f"unexpected grok api_key_env: {grok.get('api_key_env')}")
     _ok("default_config.json")
 
 

@@ -107,7 +107,9 @@ _CHOICE_HINT_RE = re.compile(
     r"(确认|请选择|请回复|是否|还是|选项|请告诉我|你想|要不要|"
     r"请问|哪(一种|个|种)|如何|怎么|哪种|哪边|"
     r"需要我|希望|更倾向|先确认|不清楚|不确定|"
-    r"路径|命名|格式|方案|参数)",
+    r"路径|命名|格式|方案|参数|"
+    r"confirm|please\s+(choose|select|reply|tell)|which\s+(one|option)|"
+    r"would you like|do you want|prefer|option|path|naming|format|scheme|parameter)",
     re.IGNORECASE,
 )
 
@@ -481,13 +483,20 @@ def extract_user_choices(text: str) -> Tuple[str, List[Dict[str, str]]]:
     if start < len(lines) * 0.35 and end < len(lines) - 2:
         return raw, []
 
-    # Drop trailing "请回复…" lines right after the list
+    # Drop trailing "please reply…" / 「请回复…」 lines right after the list
     drop_end = end
     while drop_end < len(lines) and re.match(
-        r"^\s*(请回复.*|请选择.*|告诉我.*)?\s*$", lines[drop_end]
+        r"^\s*(请回复.*|请选择.*|告诉我.*|"
+        r"please\s+(reply|choose|select).*|tell\s+me.*)?\s*$",
+        lines[drop_end],
+        re.IGNORECASE,
     ):
         if lines[drop_end].strip():
-            if re.match(r"^\s*请(回复|选择)", lines[drop_end]):
+            if re.match(
+                r"^\s*(请(回复|选择)|please\s+(reply|choose|select))",
+                lines[drop_end],
+                re.IGNORECASE,
+            ):
                 drop_end += 1
                 break
             break
@@ -862,7 +871,9 @@ def summarize_tool_result_views(
         data = json.loads(result_json) if result_json else {}
     except json.JSONDecodeError:
         raw = (result_json or "").strip()
-        title = f"工具 {escape(name)}"
+        from maya_agent.i18n import t
+
+        title = f"{t('chat.tool_fail')} · {escape(name)}"
         if not raw:
             return title, "", "", False, False
         body = (
@@ -871,12 +882,16 @@ def summarize_tool_result_views(
         )
         return title, "", body, False, True
 
+    from maya_agent.i18n import t
+
     ok = bool(data.get("ok", True))
     message = str(data.get("message") or "").strip()
     error = str(data.get("error") or "").strip()
     payload = data.get("data")
 
-    title = f"{'完成' if ok else '失败'} · {escape(name)}"
+    title = (
+        f"{t('chat.tool_ok') if ok else t('chat.tool_fail')} · {escape(name)}"
+    )
     # Collapsed header shows one status line (prefer message, else error).
     status = message or error
 
@@ -912,33 +927,47 @@ def _format_payload(name: str, payload: Any, *, compact: bool = True) -> str:
     clip = 160 if compact else 0
 
     if name == "get_scene_info" and isinstance(payload, dict):
+        from maya_agent.i18n import t
+
         counts = payload.get("counts") or {}
         sel = payload.get("selection") or []
         sel_txt = (
-            "、".join(_short_name(s) for s in sel[:8]) if sel else "无"
+            "、".join(_short_name(s) for s in sel[:8])
+            if sel
+            else t("chat.summary.none")
         )
         rows = [
-            ("文件", payload.get("file", "")),
+            (t("chat.summary.file"), payload.get("file", "")),
             ("Maya", payload.get("maya_version", "")),
-            ("单位", f"{payload.get('units', '')} / {payload.get('time_unit', '')}"),
             (
-                "统计",
-                f"网格 {counts.get('meshes', 0)} · 变换 {counts.get('transforms', 0)} · "
-                f"骨骼 {counts.get('joints', 0)} · 灯光 {counts.get('lights', 0)} · "
-                f"相机 {counts.get('cameras', 0)}",
+                t("chat.summary.units"),
+                f"{payload.get('units', '')} / {payload.get('time_unit', '')}",
             ),
-            ("选择", sel_txt),
+            (
+                t("chat.summary.stats"),
+                t(
+                    "chat.summary.stats_body",
+                    meshes=counts.get("meshes", 0),
+                    transforms=counts.get("transforms", 0),
+                    joints=counts.get("joints", 0),
+                    lights=counts.get("lights", 0),
+                    cameras=counts.get("cameras", 0),
+                ),
+            ),
+            (t("chat.summary.selection"), sel_txt),
         ]
         return _kv_table(rows, clip=clip)
 
     if name == "get_mesh_stats" and isinstance(payload, dict):
+        from maya_agent.i18n import t
+
         return _kv_table(
             [
-                ("对象", _short_name(payload.get("node", ""))),
-                ("顶点", payload.get("vertices", "")),
-                ("边", payload.get("edges", "")),
-                ("面", payload.get("faces", "")),
-                ("三角面", payload.get("triangles", "")),
+                (t("chat.summary.object"), _short_name(payload.get("node", ""))),
+                (t("chat.summary.vertices"), payload.get("vertices", "")),
+                (t("chat.summary.edges"), payload.get("edges", "")),
+                (t("chat.summary.faces"), payload.get("faces", "")),
+                (t("chat.summary.triangles"), payload.get("triangles", "")),
                 ("UV", payload.get("uvs", "")),
             ],
             clip=clip,
@@ -958,11 +987,19 @@ def _format_payload(name: str, payload: Any, *, compact: bool = True) -> str:
         return ""
 
     if isinstance(payload, list):
+        from maya_agent.i18n import t
+
         if not payload:
-            return '<p style="margin:2px 0;color:#b0b0b8;">空列表</p>'
+            return (
+                f'<p style="margin:2px 0;color:#b0b0b8;">{t("chat.empty_list")}</p>'
+            )
         limit = 8 if compact else 40
         items = "、".join(escape_wrap(_short_name(x)) for x in payload[:limit])
-        more = f" 等 {len(payload)} 项" if len(payload) > limit else ""
+        more = (
+            f" {t('chat.more_items', n=len(payload))}"
+            if len(payload) > limit
+            else ""
+        )
         return f'<p style="margin:2px 0;color:#d0d0d6;">{items}{more}</p>'
 
     if isinstance(payload, dict):

@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 from maya_agent.i18n import init_from_config, t
 from maya_agent.tools.registry import ensure_tools_loaded, get_tool, tools_by_category
+from maya_agent.ui.palette import COLOR_MUTED, COLOR_TEXT
 from maya_agent.ui.qt_bind import QtCore, QtGui, QtWidgets
 
 class ToolsPanel(QtWidgets.QWidget):
@@ -53,7 +54,7 @@ class ToolsPanel(QtWidgets.QWidget):
             font = parent_item.font(0)
             font.setBold(True)
             parent_item.setFont(0, font)
-            parent_item.setForeground(0, QtGui.QColor("#b8c4d4"))
+            parent_item.setForeground(0, QtGui.QColor(COLOR_MUTED))
             for reg in sorted(cats[cat], key=lambda x: x.name):
                 child = QtWidgets.QTreeWidgetItem([reg.name])
                 child.setToolTip(0, reg.description)
@@ -71,7 +72,7 @@ class ToolsPanel(QtWidgets.QWidget):
         self.tool_desc.setObjectName("settingsToolDesc")
         self.tool_desc.setReadOnly(True)
         self.tool_desc.setFixedHeight(350)
-        self.tool_desc.setPlaceholderText("选择工具查看说明与参数…")
+        self.tool_desc.setPlaceholderText(t("tools.desc_placeholder"))
         layout.addWidget(self.tool_desc)
         self.tool_list = self.tool_tree
 

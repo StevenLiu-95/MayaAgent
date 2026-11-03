@@ -10,7 +10,9 @@ from typing import Any, Callable, Dict, Generator, List, Optional
 from maya_agent.core.executor import ToolExecutor
 from maya_agent.core.memory import ConversationMemory
 from maya_agent.core.tool_progress import (
+    push_cancel_checker,
     push_progress_emitter,
+    reset_cancel_checker,
     reset_progress_emitter,
 )
 from maya_agent.core.undo import UndoTurnManager
@@ -189,7 +191,7 @@ class MayaAgent:
                 "can_undo": bool(self.undo.can_undo),
             }
 
-        def _emit_cancelled(partial: str = ""):
+        def _emit_cancelled(partial: str = "") -> Dict[str, Any]:
             nonlocal turn_opened
             try:
                 self.undo.cancel_open()
@@ -209,14 +211,12 @@ class MayaAgent:
                 "model": model_name,
                 "usage": dict(turn_usage),
                 "llm_calls": llm_calls,
-            }, None
+            }
 
         try:
             for _ in range(max_rounds):
                 if self.is_cancelled():
-                    stopped, undo_evt = _emit_cancelled(final_text)
-                    if undo_evt:
-                        yield undo_evt
+                    stopped = _emit_cancelled(final_text)
                     yield stopped
                     return stopped.get("stop_notice") or ""
                 try:
@@ -233,9 +233,7 @@ class MayaAgent:
                                     except Exception:
                                         pass
                                     partial = "".join(text_parts)
-                                    stopped, undo_evt = _emit_cancelled(partial)
-                                    if undo_evt:
-                                        yield undo_evt
+                                    stopped = _emit_cancelled(partial)
                                     yield stopped
                                     return stopped.get("stop_notice") or ""
                                 piece = next(gen)
@@ -302,9 +300,7 @@ class MayaAgent:
 
                 if resp.tool_calls:
                     if self.is_cancelled():
-                        stopped, undo_evt = _emit_cancelled(resp.content or "")
-                        if undo_evt:
-                            yield undo_evt
+                        stopped = _emit_cancelled(resp.content or "")
                         yield stopped
                         return stopped.get("stop_notice") or ""
                     if auto_undo and not turn_opened:
@@ -335,9 +331,7 @@ class MayaAgent:
                     vision_batch: List[ImageAttachment] = []
                     for tc in resp.tool_calls:
                         if self.is_cancelled():
-                            stopped, undo_evt = _emit_cancelled(resp.content or "")
-                            if undo_evt:
-                                yield undo_evt
+                            stopped = _emit_cancelled(resp.content or "")
                             yield stopped
                             return stopped.get("stop_notice") or ""
                         yield from self._run_one_tool(
@@ -346,9 +340,7 @@ class MayaAgent:
                             vision_batch=vision_batch,
                         )
                     if self.is_cancelled():
-                        stopped, undo_evt = _emit_cancelled(resp.content or "")
-                        if undo_evt:
-                            yield undo_evt
+                        stopped = _emit_cancelled(resp.content or "")
                         yield stopped
                         return stopped.get("stop_notice") or ""
                     if vision_batch and vision_ok:
@@ -434,6 +426,8 @@ class MayaAgent:
             progress_q.put(payload)
 
         token = push_progress_emitter(_emit_progress)
+        # Lets long cloud-3D polls / downloads abort promptly on Stop.
+        cancel_token = push_cancel_checker(self.is_cancelled)
 
         def _execute() -> None:
             try:
@@ -467,6 +461,7 @@ class MayaAgent:
         finally:
             thread.join(timeout=30.0)
             reset_progress_emitter(token)
+            reset_cancel_checker(cancel_token)
         if self.is_cancelled():
             return
 

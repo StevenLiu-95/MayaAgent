@@ -38,9 +38,19 @@ class ToolExecutor:
 
         cfg = get_config()
 
+        def _confirm() -> bool:
+            if not self.confirm_callback:
+                return True
+            # Always ask on the Maya main thread: destructive handlers may be
+            # registered with main_thread=False (network/file tools), and
+            # creating a QMessageBox from a worker thread is undefined behavior.
+            return bool(
+                run_on_main_thread(lambda: self.confirm_callback(name, args))
+            )
+
         def _do() -> ToolResult:
             if reg.destructive and cfg.get("maya.confirm_destructive", True):
-                if self.confirm_callback and not self.confirm_callback(name, args):
+                if not _confirm():
                     return ToolResult(ok=False, error="用户取消了危险操作")
             # Off-main-thread tools (e.g. Meshy HTTP wait) skip Maya undo chunks.
             if not getattr(reg, "main_thread", True):

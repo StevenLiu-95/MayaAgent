@@ -6,9 +6,13 @@ import contextvars
 from typing import Any, Callable, Dict, Optional
 
 ProgressEmitter = Callable[[Dict[str, Any]], None]
+CancelChecker = Callable[[], bool]
 
 _emitter: contextvars.ContextVar[Optional[ProgressEmitter]] = contextvars.ContextVar(
     "maya_agent_tool_progress_emitter", default=None
+)
+_cancel_checker: contextvars.ContextVar[Optional[CancelChecker]] = contextvars.ContextVar(
+    "maya_agent_tool_cancel_checker", default=None
 )
 
 
@@ -19,6 +23,33 @@ def push_progress_emitter(cb: Optional[ProgressEmitter]):
 
 def reset_progress_emitter(token) -> None:
     _emitter.reset(token)
+
+
+def push_cancel_checker(cb: Optional[CancelChecker]):
+    """Install a cooperative-cancel checker; returns a token for reset."""
+    return _cancel_checker.set(cb)
+
+
+def reset_cancel_checker(token) -> None:
+    _cancel_checker.reset(token)
+
+
+def is_cancel_requested() -> bool:
+    """
+    True when the current Agent turn has been asked to stop.
+
+    Long-running tools (cloud 3D polling, big downloads) call this between
+    steps so a user "Stop" frees the worker thread quickly instead of waiting
+    for the full 600 s provider timeout. No-op when called outside an Agent
+    turn (e.g. a direct MCP /v1/tools/call).
+    """
+    cb = _cancel_checker.get()
+    if cb is None:
+        return False
+    try:
+        return bool(cb())
+    except Exception:
+        return False
 
 
 def report_tool_progress(

@@ -119,17 +119,27 @@ def ensure_plugin(name: str, quiet: bool = True) -> bool:
 
 
 def run_on_main_thread(fn: Callable[[], T]) -> T:
-    """Run callable on Maya main thread when needed (cmds are not thread-safe)."""
+    """
+    Run callable on Maya main thread when needed (cmds are not thread-safe).
+
+    Never re-runs ``fn`` after it raised: an earlier fallback of the form
+    ``except Exception: return fn()`` re-executed the callable in the *calling*
+    thread, which duplicated side effects (node creation, file writes) and
+    executed Maya commands off the main thread. Only a failure to resolve
+    ``executeInMainThreadWithResult`` itself falls back to a direct call.
+    """
     if not in_maya():
+        return fn()
+    if threading.current_thread() is threading.main_thread():
         return fn()
     try:
         import maya.utils
 
-        if threading.current_thread() is threading.main_thread():
-            return fn()
-        return maya.utils.executeInMainThreadWithResult(fn)
+        execute_in_main = maya.utils.executeInMainThreadWithResult
     except Exception:
+        # Maya utils unavailable (very old/limited environment) — best effort.
         return fn()
+    return execute_in_main(fn)
 
 
 def defer_idle(callback: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:

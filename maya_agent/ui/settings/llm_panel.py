@@ -708,24 +708,30 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             result = provider.test_connection()
             if result.get("ok"):
                 preview = (result.get("preview") or "").strip()
-                msg = "连接成功"
+                msg = t("settings.test_ok")
                 if preview:
                     one_line = " ".join(preview.split())
                     if len(one_line) > 48:
                         one_line = one_line[:48] + "…"
-                    msg = f"连接成功 · {one_line}"
+                    msg = t("settings.test_ok_detail", detail=one_line)
                 self._set_test_status(msg, "ok")
             else:
-                err = (result.get("error") or "未知错误").strip()
+                err = (
+                    result.get("error") or t("settings.test_unknown_error")
+                ).strip()
                 one_line = " ".join(err.split())
                 if len(one_line) > 72:
                     one_line = one_line[:72] + "…"
-                self._set_test_status(f"连接失败 · {one_line}", "fail")
+                self._set_test_status(
+                    t("settings.test_fail_detail", detail=one_line), "fail"
+                )
         except Exception as e:
             err = " ".join(str(e).split())
             if len(err) > 72:
                 err = err[:72] + "…"
-            self._set_test_status(f"连接失败 · {err}", "fail")
+            self._set_test_status(
+                t("settings.test_fail_detail", detail=err), "fail"
+            )
         finally:
             if btn is not None:
                 btn.setEnabled(True)
@@ -738,7 +744,7 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(
                 self,
                 t("settings.section.meshy"),
-                f"无法打开链接：{url}",
+                t("settings.test_open_url_fail", url=url),
             )
 
     def _test_meshy(self) -> None:
@@ -751,7 +757,7 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         try:
             QtWidgets.QApplication.processEvents()
             if not enabled:
-                self._set_meshy_test_status("Meshy 已关闭", "fail")
+                self._set_meshy_test_status(t("settings.meshy_disabled"), "fail")
                 return
             # Persist key first so MeshyClient can read it
             if key:
@@ -769,7 +775,9 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                 err = " ".join(str(e).split())
                 if len(err) > 72:
                     err = err[:72] + "…"
-                self._set_meshy_test_status(f"连接失败 · {err}", "fail")
+                self._set_meshy_test_status(
+                    t("settings.test_fail_detail", detail=err), "fail"
+                )
                 return
             from maya_agent.tools.meshy_client import mark_meshy_key_valid
 
@@ -790,18 +798,20 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                     preview = ", ".join(
                         f"{k}={data[k]}" for k in list(data.keys())[:3]
                     )
-            msg = "连接成功"
+            msg = t("settings.test_ok")
             if preview:
                 one = " ".join(str(preview).split())
                 if len(one) > 48:
                     one = one[:48] + "…"
-                msg = f"连接成功 · {one}"
+                msg = t("settings.test_ok_detail", detail=one)
             self._set_meshy_test_status(msg, "ok")
         except Exception as e:
             err = " ".join(str(e).split())
             if len(err) > 72:
                 err = err[:72] + "…"
-            self._set_meshy_test_status(f"连接失败 · {err}", "fail")
+            self._set_meshy_test_status(
+                t("settings.test_fail_detail", detail=err), "fail"
+            )
         finally:
             if btn is not None:
                 btn.setEnabled(True)
@@ -816,7 +826,7 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         try:
             QtWidgets.QApplication.processEvents()
             if not enabled:
-                self._set_tripo_test_status("Tripo 已关闭", "fail")
+                self._set_tripo_test_status(t("settings.tripo_disabled"), "fail")
                 return
             if key:
                 self.cfg.set_api_key("tripo", key)
@@ -833,7 +843,9 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                 err = " ".join(str(e).split())
                 if len(err) > 72:
                     err = err[:72] + "…"
-                self._set_tripo_test_status(f"连接失败 · {err}", "fail")
+                self._set_tripo_test_status(
+                    t("settings.test_fail_detail", detail=err), "fail"
+                )
                 return
             from maya_agent.tools.tripo_client import mark_tripo_key_valid
 
@@ -848,18 +860,20 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                     preview = ", ".join(
                         f"{k}={data[k]}" for k in list(data.keys())[:3]
                     )
-            msg = "连接成功"
+            msg = t("settings.test_ok")
             if preview:
                 one = " ".join(str(preview).split())
                 if len(one) > 48:
                     one = one[:48] + "…"
-                msg = f"连接成功 · {one}"
+                msg = t("settings.test_ok_detail", detail=one)
             self._set_tripo_test_status(msg, "ok")
         except Exception as e:
             err = " ".join(str(e).split())
             if len(err) > 72:
                 err = err[:72] + "…"
-            self._set_tripo_test_status(f"连接失败 · {err}", "fail")
+            self._set_tripo_test_status(
+                t("settings.test_fail_detail", detail=err), "fail"
+            )
         finally:
             if btn is not None:
                 btn.setEnabled(True)
@@ -892,7 +906,9 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
         try:
             QtWidgets.QApplication.processEvents()
             if not enabled:
-                self._set_hunyuan_test_status("混元已关闭", "fail")
+                self._set_hunyuan_test_status(
+                    t("settings.hunyuan_disabled"), "fail"
+                )
                 return
             if sid:
                 self.cfg.set_api_key("hunyuan_secret_id", sid)
@@ -919,10 +935,12 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
                 err = " ".join(str(e).split())
                 if len(err) > 72:
                     err = err[:72] + "…"
-                self._set_hunyuan_test_status(f"连接失败 · {err}", "fail")
+                self._set_hunyuan_test_status(
+                    t("settings.test_fail_detail", detail=err), "fail"
+                )
                 return
             mark_hunyuan_key_valid(sid or None)
-            msg = str((data or {}).get("message") or "连接成功")
+            msg = str((data or {}).get("message") or t("settings.test_ok"))
             one = " ".join(msg.split())
             if len(one) > 64:
                 one = one[:64] + "…"
@@ -931,7 +949,9 @@ class SettingsPanel(SettingsFormMixin, QtWidgets.QWidget):
             err = " ".join(str(e).split())
             if len(err) > 72:
                 err = err[:72] + "…"
-            self._set_hunyuan_test_status(f"连接失败 · {err}", "fail")
+            self._set_hunyuan_test_status(
+                t("settings.test_fail_detail", detail=err), "fail"
+            )
         finally:
             if btn is not None:
                 btn.setEnabled(True)

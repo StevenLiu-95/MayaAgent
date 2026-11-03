@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from maya_agent.utils.config import get_config
+
+
 class ConfigDefaults:
     """Factory UI values from bundled default_config (not the merged user config)."""
 

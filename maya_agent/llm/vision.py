@@ -18,7 +18,7 @@ _VISION_RE = re.compile(
     r"glm-4v|glm-4\.\d+v|"
     r"qwen[\w.-]*vl|(?:^|[-_/])vl(?:[-_.]|$)|"
     r"vision|"
-    r"grok[\w.-]*vision|"
+    r"grok[\w.-]*|"
     r"moonshot[\w.-]*vision|"
     r"deepseek[\w.-]*(?:vl|vision)|deepseek-flash"
     r")",

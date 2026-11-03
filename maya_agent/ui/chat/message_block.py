@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from maya_agent.i18n import t
 from maya_agent.ui import chat_format
 from maya_agent.ui.chat.body_view import BodyView
 from maya_agent.ui.chat.code_block import CodeBlock
@@ -63,7 +64,7 @@ class ChoiceBar(QtWidgets.QWidget):
         self._lay = QtWidgets.QVBoxLayout(self)
         self._lay.setContentsMargins(0, 4, 0, 0)
         self._lay.setSpacing(6)
-        hint = QtWidgets.QLabel("请选择：")
+        hint = QtWidgets.QLabel(t("chat.choose"))
         hint.setObjectName("choiceHint")
         self._lay.addWidget(hint)
         self._btn_col = QtWidgets.QVBoxLayout()
@@ -178,7 +179,7 @@ class MessageBlock(QtWidgets.QWidget):
         if role == "user":
             root.addStretch(self._GUTTER_STRETCH)
             root.addWidget(self.bubble, self._BUBBLE_STRETCH, QtCore.Qt.AlignTop)
-            root.addWidget(Avatar("你", "#3d7ab8"), 0, QtCore.Qt.AlignTop)
+            root.addWidget(Avatar(t("chat.you"), "#3d7ab8"), 0, QtCore.Qt.AlignTop)
         elif role == "error":
             root.addWidget(Avatar("!", "#8b3a3a"), 0, QtCore.Qt.AlignTop)
             root.addWidget(self.bubble, self._BUBBLE_STRETCH, QtCore.Qt.AlignTop)
@@ -456,7 +457,7 @@ class MessageBlock(QtWidgets.QWidget):
                 att = img
             else:
                 att = ImageAttachment.from_dict(img)
-            tip = att.name or att.mime or "图片"
+            tip = att.name or att.mime or t("chat.image")
             label = make_clickable_thumb(
                 att,
                 edge=88,
@@ -519,7 +520,7 @@ class MessageBlock(QtWidgets.QWidget):
         lay.setContentsMargins(0, 4, 0, 4)
         lay.setSpacing(4)
 
-        label_text = (alt or "").strip() or "图表"
+        label_text = (alt or "").strip() or t("chat.chart")
         caption = QtWidgets.QLabel(label_text)
         caption.setObjectName("inlineChartCaption")
         caption.setWordWrap(True)
@@ -530,7 +531,9 @@ class MessageBlock(QtWidgets.QWidget):
 
         norm = (path or "").replace("\\", "/")
         if not norm or not os.path.isfile(norm):
-            missing = QtWidgets.QLabel(f"（图表文件不可用：{norm or '未知路径'}）")
+            missing = QtWidgets.QLabel(
+                t("chat.chart_unavailable", path=norm or "?")
+            )
             missing.setObjectName("inlineChartMissing")
             missing.setWordWrap(True)
             missing.setStyleSheet(
@@ -552,7 +555,7 @@ class MessageBlock(QtWidgets.QWidget):
             att = None
 
         if att is None or not getattr(att, "data_b64", ""):
-            missing = QtWidgets.QLabel(f"（无法加载图表：{norm}）")
+            missing = QtWidgets.QLabel(t("chat.chart_load_fail", path=norm))
             missing.setWordWrap(True)
             lay.addWidget(missing)
             host.show()

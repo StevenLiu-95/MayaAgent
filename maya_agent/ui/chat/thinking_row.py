@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from maya_agent.i18n import t
 from maya_agent.ui import chat_format
 from maya_agent.ui.palette import SPINNER_FRAMES
 from maya_agent.ui.qt_bind import QtCore, QtGui, QtWidgets
@@ -28,7 +29,7 @@ class ThinkingRow(QtWidgets.QFrame):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setSpacing(4)
-        self.title = QtWidgets.QLabel("思考中…")
+        self.title = QtWidgets.QLabel(t("chat.thinking_ellipsis"))
         self.title.setWordWrap(False)
         self.title.setMinimumWidth(0)
         self.title.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
@@ -42,7 +43,7 @@ class ThinkingRow(QtWidgets.QFrame):
         self.detail.setObjectName("thinkingDetail")
         self.detail.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.detail.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        self.expand_btn = QtWidgets.QPushButton("展开全部 ▾")
+        self.expand_btn = QtWidgets.QPushButton(t("chat.expand_all"))
         self.expand_btn.setObjectName("thinkingExpandBtn")
         self.expand_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.expand_btn.setFlat(True)
@@ -115,7 +116,7 @@ class ThinkingRow(QtWidgets.QFrame):
         # Fixed-width dots pad so title sizeHint never changes.
         n = self._anim_frame % 4
         dots = "." * n + "\u00a0" * (3 - n)
-        self.title.setText(f"{spin} 思考中{dots}")
+        self.title.setText(f"{spin} {t('chat.thinking')}{dots}")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -197,12 +198,12 @@ class ThinkingRow(QtWidgets.QFrame):
         long = len(text) > self._PREVIEW_CHARS
         if long and not self._expanded:
             shown = text[: self._PREVIEW_CHARS].rstrip() + "…"
-            self.expand_btn.setText("展开全部 ▾")
+            self.expand_btn.setText(t("chat.expand_all"))
             self.expand_btn.show()
         else:
             shown = text
             if long:
-                self.expand_btn.setText("收起 ▴")
+                self.expand_btn.setText(t("chat.collapse"))
                 self.expand_btn.show()
             else:
                 self.expand_btn.hide()
@@ -221,7 +222,7 @@ class ThinkingRow(QtWidgets.QFrame):
         self._done = False
         self._expanded = True
         if not self._anim_timer.isActive():
-            self.title.setText("◐ 思考中\u00a0\u00a0\u00a0")
+            self.title.setText(f"◐ {t('chat.thinking')}\u00a0\u00a0\u00a0")
             self._anim_timer.start()
         self._refresh_detail()
 
@@ -243,7 +244,7 @@ class ThinkingRow(QtWidgets.QFrame):
         # Collapse long thinking by default once finished
         self._expanded = len(self._text) <= self._PREVIEW_CHARS
         self.setStyleSheet(self._stylesheet(running=False))
-        self.title.setText("💭 思考过程")
+        self.title.setText(f"💭 {t('chat.thinking_done')}")
         self._detail_cache = None
         self._refresh_detail()
         self.show()

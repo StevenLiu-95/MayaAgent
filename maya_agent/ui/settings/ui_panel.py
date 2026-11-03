@@ -48,9 +48,13 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             t("settings.section.appearance_hint"),
         )
         form = self._form(typo_lay)
-        self.font_family = QtWidgets.QLineEdit()
+        self.font_family = create_toolbar_combo(editable=True)
         self.font_family.setMinimumHeight(30)
-        self.font_family.setPlaceholderText(t("settings.font_ph"))
+        self.font_family.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        editor = self.font_family.lineEdit()
+        if editor is not None:
+            editor.setPlaceholderText(t("settings.font_ph"))
+        self._populate_font_families()
         self.ui_scale = create_toolbar_spin()
         self.ui_scale.setRange(75, 175)
         self.ui_scale.setSingleStep(5)
@@ -222,10 +226,90 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         self._autosave_timer.timeout.connect(self._autosave_now)
         self._wire_dirty_tracking()
 
+    @staticmethod
+    def _system_font_families() -> list:
+        """Installed font family names, preferred UI fonts first."""
+        preferred = (
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "Segoe UI",
+            "PingFang SC",
+            "Hiragino Sans GB",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Arial",
+            "Helvetica Neue",
+            "Tahoma",
+        )
+        try:
+            # PySide6: static; PySide2: instance method.
+            families_fn = getattr(QtGui.QFontDatabase, "families", None)
+            if callable(families_fn):
+                try:
+                    families = list(families_fn())
+                except TypeError:
+                    families = list(QtGui.QFontDatabase().families())
+            else:
+                families = list(QtGui.QFontDatabase().families())
+        except Exception:
+            families = []
+        # Case-insensitive de-dupe while preserving first-seen casing.
+        by_lower = {}
+        for name in families:
+            key = str(name).strip()
+            if not key:
+                continue
+            by_lower.setdefault(key.lower(), key)
+        ordered = []
+        seen = set()
+        for name in preferred:
+            real = by_lower.get(name.lower())
+            if real and real.lower() not in seen:
+                ordered.append(real)
+                seen.add(real.lower())
+        for name in sorted(by_lower.values(), key=lambda s: s.lower()):
+            if name.lower() not in seen:
+                ordered.append(name)
+                seen.add(name.lower())
+        return ordered
+
+    def _populate_font_families(self) -> None:
+        combo = self.font_family
+        current = combo.currentText().strip() if combo.count() else ""
+        families = self._system_font_families()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            for family in families:
+                combo.addItem(family)
+            # Typing filters the long system-font list.
+            completer = QtWidgets.QCompleter(families, combo)
+            completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            completer.setFilterMode(QtCore.Qt.MatchContains)
+            combo.setCompleter(completer)
+            if current:
+                self._set_font_family(current)
+        finally:
+            combo.blockSignals(False)
+
+    def _font_family_value(self) -> str:
+        return self.font_family.currentText().strip()
+
+    def _set_font_family(self, family: str) -> None:
+        name = (family or "").strip() or "Microsoft YaHei UI"
+        idx = self.font_family.findText(name, QtCore.Qt.MatchFixedString)
+        if idx < 0:
+            # Keep a custom / missing family selectable without polluting the list.
+            self.font_family.insertItem(0, name)
+            idx = 0
+        self.font_family.setCurrentIndex(idx)
+        if self.font_family.isEditable() and self.font_family.lineEdit() is not None:
+            self.font_family.setEditText(name)
+
     def _snapshot(self) -> tuple:
         return (
             self.language_combo.currentData(),
-            self.font_family.text().strip(),
+            self._font_family_value(),
             int(self.ui_scale.value()),
             self.temp_dir_edit.text().strip(),
             self.adv_path_edit.text().strip(),
@@ -411,7 +495,8 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
 
     def _wire_dirty_tracking(self) -> None:
         self.language_combo.currentIndexChanged.connect(self._schedule_autosave)
-        self.font_family.textChanged.connect(self._schedule_autosave)
+        self.font_family.currentIndexChanged.connect(self._schedule_autosave)
+        self.font_family.editTextChanged.connect(self._schedule_autosave)
         self.ui_scale.valueChanged.connect(self._schedule_autosave)
         self.temp_dir_edit.textChanged.connect(self._schedule_autosave)
         self.adv_path_edit.textChanged.connect(self._schedule_autosave)
@@ -431,8 +516,8 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
             lidx = self.language_combo.findData(lang)
             self.language_combo.setCurrentIndex(lidx if lidx >= 0 else 0)
-            self.font_family.setText(
-                self.cfg.get("ui.font_family", "Microsoft YaHei UI")
+            self._set_font_family(
+                str(self.cfg.get("ui.font_family", "Microsoft YaHei UI") or "")
             )
             self.ui_scale.setValue(_resolve_ui_scale_pct(self.cfg))
             self.temp_dir_edit.setText(
@@ -476,7 +561,7 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         old_lang = str(self.cfg.get("app.language", "zh-CN") or "zh-CN")
         new_lang = str(self.language_combo.currentData() or "zh-CN")
         self.cfg.set("app.language", new_lang)
-        self.cfg.set("ui.font_family", self.font_family.text().strip())
+        self.cfg.set("ui.font_family", self._font_family_value())
         self.cfg.set("ui.ui_scale", int(self.ui_scale.value()))
         self.cfg.set(
             "ui.temp_dir",

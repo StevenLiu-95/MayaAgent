@@ -729,6 +729,8 @@ class MeshyClient:
         poll_interval: Optional[float] = None,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
+        from maya_agent.core.tool_progress import is_cancel_requested
+
         limit = float(timeout if timeout is not None else self.wait_timeout)
         interval = float(poll_interval if poll_interval is not None else self.poll_interval)
         deadline = time.monotonic() + max(5.0, limit)
@@ -759,6 +761,11 @@ class MeshyClient:
                 pass
 
         while True:
+            if is_cancel_requested():
+                raise MeshyError(
+                    "已请求停止：中断等待 Meshy 任务"
+                    "（任务仍会在服务商侧继续，稍后可用 meshy_get_task 查询）"
+                )
             last, retry_after = self.get(kind, task_id)
             status = str(last.get("status") or "")
             _emit()

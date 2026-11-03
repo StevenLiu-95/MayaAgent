@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from typing import Any, List, Optional, Sequence, Union
 
+from maya_agent.i18n import t
 from maya_agent.llm.base import ImageAttachment
 from maya_agent.utils.maya_compat import import_qt
 
@@ -66,7 +67,7 @@ def show_image_viewer(
         def __init__(self, items: List[ImageAttachment], start: int, parent=None):
             super().__init__(parent)
             self.setObjectName("imageViewerDialog")
-            self.setWindowTitle(title or "图片查看")
+            self.setWindowTitle(title or t("viewer.title"))
             self.setModal(False)
             self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
             try:
@@ -128,9 +129,7 @@ def show_image_viewer(
             header = QtWidgets.QHBoxLayout()
             self._title_lbl = QtWidgets.QLabel("")
             self._title_lbl.setObjectName("viewerTitle")
-            self._hint_lbl = QtWidgets.QLabel(
-                "左键拖动 · 滚轮缩放 · 双击适应窗口 · Esc 关闭"
-            )
+            self._hint_lbl = QtWidgets.QLabel(t("viewer.hint"))
             self._hint_lbl.setObjectName("viewerHint")
             header.addWidget(self._title_lbl, 1)
             header.addWidget(self._hint_lbl, 0, QtCore.Qt.AlignRight)
@@ -150,13 +149,13 @@ def show_image_viewer(
 
             bar = QtWidgets.QHBoxLayout()
             bar.setSpacing(8)
-            self._copy_btn = QtWidgets.QPushButton("复制图片")
+            self._copy_btn = QtWidgets.QPushButton(t("viewer.copy"))
             self._copy_btn.setObjectName("viewerBtn")
             self._copy_btn.clicked.connect(self._copy_image)
-            self._prev_btn = QtWidgets.QPushButton("← 上一张")
+            self._prev_btn = QtWidgets.QPushButton(t("viewer.prev"))
             self._prev_btn.setObjectName("viewerBtn")
             self._prev_btn.clicked.connect(lambda: self._nav(-1))
-            self._fit_btn = QtWidgets.QPushButton("适应窗口")
+            self._fit_btn = QtWidgets.QPushButton(t("viewer.fit"))
             self._fit_btn.setObjectName("viewerBtn")
             self._fit_btn.clicked.connect(self._fit_to_view)
             self._zoom_out = QtWidgets.QPushButton("−")
@@ -167,10 +166,10 @@ def show_image_viewer(
             self._zoom_in.setObjectName("viewerBtn")
             self._zoom_in.setFixedWidth(36)
             self._zoom_in.clicked.connect(lambda: self._nudge_zoom(1.15))
-            self._next_btn = QtWidgets.QPushButton("下一张 →")
+            self._next_btn = QtWidgets.QPushButton(t("viewer.next"))
             self._next_btn.setObjectName("viewerBtn")
             self._next_btn.clicked.connect(lambda: self._nav(1))
-            self._save_btn = QtWidgets.QPushButton("保存图片")
+            self._save_btn = QtWidgets.QPushButton(t("viewer.save"))
             self._save_btn.setObjectName("viewerBtn")
             self._save_btn.clicked.connect(self._save_image)
             bar.addWidget(self._copy_btn)
@@ -192,7 +191,7 @@ def show_image_viewer(
         def _load_current(self) -> None:
             att = self._items[self._index]
             self._source = qimage_from_attachment(att)
-            name = att.name or att.mime or "图片"
+            name = att.name or att.mime or t("chat.image")
             if len(self._items) > 1:
                 name = f"{name}  ({self._index + 1}/{len(self._items)})"
             self._title_lbl.setText(name)
@@ -235,36 +234,47 @@ def show_image_viewer(
             return name
 
         def _title_base(self) -> str:
-            return (
-                self._title_lbl.text()
-                .split("  ·  已保存")[0]
-                .split("  ·  已复制")[0]
-            )
+            saved = f"  ·  {t('viewer.saved')}"
+            copied = f"  ·  {t('viewer.copied')}"
+            text = self._title_lbl.text()
+            return text.split(saved)[0].split(copied)[0]
 
         def _copy_image(self) -> None:
             if self._source is None or self._source.isNull():
-                QtWidgets.QMessageBox.warning(self, "复制图片", "当前没有可复制的图片。")
+                QtWidgets.QMessageBox.warning(
+                    self, t("viewer.copy"), t("viewer.no_image_copy")
+                )
                 return
             clip = QtWidgets.QApplication.clipboard()
             if clip is None:
-                QtWidgets.QMessageBox.warning(self, "复制图片", "无法访问系统剪贴板。")
+                QtWidgets.QMessageBox.warning(
+                    self, t("viewer.copy"), t("viewer.no_clipboard")
+                )
                 return
             try:
                 clip.setImage(self._source)
             except Exception as e:
-                QtWidgets.QMessageBox.warning(self, "复制图片", f"复制失败：{e}")
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    t("viewer.copy"),
+                    t("viewer.copy_fail", error=e),
+                )
                 return
-            self._title_lbl.setText(f"{self._title_base()}  ·  已复制")
+            self._title_lbl.setText(
+                f"{self._title_base()}  ·  {t('viewer.copied')}"
+            )
 
         def _save_image(self) -> None:
             if self._source is None or self._source.isNull():
-                QtWidgets.QMessageBox.warning(self, "保存图片", "当前没有可保存的图片。")
+                QtWidgets.QMessageBox.warning(
+                    self, t("viewer.save"), t("viewer.no_image_save")
+                )
                 return
             path, selected = QtWidgets.QFileDialog.getSaveFileName(
                 self,
-                "保存图片",
+                t("viewer.save"),
                 self._default_save_name(),
-                "JPEG 图片 (*.jpg *.jpeg);;PNG 图片 (*.png);;所有文件 (*.*)",
+                t("viewer.save_filter"),
             )
             if not path:
                 return
@@ -292,17 +302,21 @@ def show_image_viewer(
                 try:
                     raw = base64.b64decode(att.data_b64 or "")
                     if not raw:
-                        raise ValueError("空数据")
+                        raise ValueError(t("viewer.empty_data"))
                     with open(path, "wb") as f:
                         f.write(raw)
                     ok = True
                 except Exception as e:
                     QtWidgets.QMessageBox.warning(
-                        self, "保存图片", f"保存失败：{e}"
+                        self,
+                        t("viewer.save"),
+                        t("viewer.save_fail", error=e),
                     )
                     return
             if ok:
-                self._title_lbl.setText(f"{self._title_base()}  ·  已保存")
+                self._title_lbl.setText(
+                    f"{self._title_base()}  ·  {t('viewer.saved')}"
+                )
 
         def _viewport_size(self):
             vp = self._scroll.viewport().size()
@@ -310,7 +324,7 @@ def show_image_viewer(
 
         def _render(self) -> None:
             if self._source is None or self._source.isNull():
-                self._image_lbl.setText("无法解码图片")
+                self._image_lbl.setText(t("viewer.decode_fail"))
                 self._image_lbl.resize(200, 80)
                 return
             w, h = self._source.width(), self._source.height()
@@ -569,10 +583,11 @@ def make_clickable_thumb(
         label.setPixmap(pix)
     else:
         label.setFixedSize(max_w, max_h)
-        label.setText("图片")
-    tip = tooltip or attachment.name or attachment.mime or "图片"
-    if "单击查看" not in tip:
-        tip = f"{tip}\n单击查看大图"
+        label.setText(t("chat.image"))
+    tip = tooltip or attachment.name or attachment.mime or t("chat.image")
+    click_hint = t("viewer.click_hint")
+    if click_hint not in tip:
+        tip = f"{tip}\n{click_hint}"
     label.setToolTip(tip)
 
     gallery_list = list(gallery) if gallery is not None else [attachment]

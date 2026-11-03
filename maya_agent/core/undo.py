@@ -98,31 +98,34 @@ class UndoTurnManager:
                 return {"ok": False, "error": str(e)}
 
             undone = 0
-            try:
-                for _ in range(24):
-                    try:
-                        next_name = cmds.undoInfo(query=True, undoName=True) or ""
-                    except Exception:
-                        next_name = ""
-                    if not next_name:
-                        break
+            while undone < 24:
+                try:
+                    next_name = str(cmds.undoInfo(query=True, undoName=True) or "")
+                except Exception:
+                    next_name = ""
+                if not next_name:
+                    break
+                # Inspect the top of the undo stack *before* undoing it: the
+                # old loop called cmds.undo() first, so a normal user edit on
+                # top of the Agent chunk was silently consumed.
+                if not (
+                    next_name == TURN_CHUNK or next_name.startswith("MayaAgent")
+                ):
+                    break
+                try:
                     cmds.undo()
-                    undone += 1
-                    if (
-                        next_name == TURN_CHUNK
-                        or next_name.startswith("MayaAgent_")
-                        or next_name.startswith("MayaAgent")
-                    ):
-                        break
-                    if "MayaAgent" not in next_name:
-                        break
-            except RuntimeError as e:
-                if undone == 0:
-                    self._can_undo = False
-                    return {"ok": False, "error": f"没有可撤销的操作: {e}"}
-            except Exception as e:
-                if undone == 0:
-                    return {"ok": False, "error": str(e)}
+                except RuntimeError as e:
+                    if undone == 0:
+                        self._can_undo = False
+                        return {"ok": False, "error": f"没有可撤销的操作: {e}"}
+                    break
+                except Exception as e:
+                    if undone == 0:
+                        return {"ok": False, "error": str(e)}
+                    break
+                undone += 1
+                if next_name == TURN_CHUNK:
+                    break
 
             if undone == 0:
                 self._can_undo = False
