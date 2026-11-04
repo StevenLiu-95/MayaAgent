@@ -867,23 +867,16 @@ QPushButton#chatJumpBtn {
     background: transparent;
     border: none;
     border-radius: 0px;
-    color: #e8e9ef;
-    font-size: 13px;
-    font-weight: 700;
     padding: 0px;
     margin: 0px;
-    text-align: center;
 }
 QPushButton#chatJumpBtn:hover {
-    color: #ffffff;
-    background-color: rgba(255, 255, 255, 36);
+    background-color: rgba(255, 255, 255, 52);
 }
 QPushButton#chatJumpBtn:pressed {
-    color: #ffffff;
-    background-color: rgba(91, 143, 199, 90);
+    background-color: rgba(91, 143, 199, 110);
 }
 QPushButton#chatJumpBtn:disabled {
-    color: #707179;
     background: transparent;
 }
 QFrame#chatTurnSeparatorLine {

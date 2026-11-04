@@ -69,14 +69,12 @@ class ChatPanel(QtWidgets.QWidget):
         rail_lay.setContentsMargins(0, 0, 0, 0)
         rail_lay.setSpacing(0)
 
-        self._jump_top_btn = self._make_jump_btn("▲", "chat.jump_top_tip")
-        self._jump_prev_btn = self._make_jump_btn(
-            "■", "chat.jump_prev_tip", font_px=14
+        self._jump_top_btn = self._make_jump_btn("top", "chat.jump_top_tip")
+        self._jump_prev_btn = self._make_jump_btn("prev", "chat.jump_prev_tip")
+        self._jump_next_btn = self._make_jump_btn("next", "chat.jump_next_tip")
+        self._jump_bottom_btn = self._make_jump_btn(
+            "bottom", "chat.jump_bottom_tip"
         )
-        self._jump_next_btn = self._make_jump_btn(
-            "■", "chat.jump_next_tip", font_px=14
-        )
-        self._jump_bottom_btn = self._make_jump_btn("▼", "chat.jump_bottom_tip")
         self._jump_top_btn.clicked.connect(self.jump_to_top)
         self._jump_prev_btn.clicked.connect(self.jump_prev_user)
         self._jump_next_btn.clicked.connect(self.jump_next_user)
@@ -143,21 +141,94 @@ class ChatPanel(QtWidgets.QWidget):
         if not self._layout_timer.isActive():
             self._layout_timer.start()
 
-    def _make_jump_btn(self, label: str, tip_key: str, font_px: int = 13):
+    @staticmethod
+    def _paint_jump_glyph(
+        painter: "QtGui.QPainter", kind: str, size: float, color: "QtGui.QColor"
+    ) -> None:
+        """Draw a filled nav glyph — solid shapes read better on the thin rail."""
+        s = float(size)
+        cx = s * 0.5
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(color)
+
+        def triangle(tip_y: float, base_y: float, half_w: float) -> None:
+            path = QtGui.QPainterPath()
+            path.moveTo(cx, tip_y)
+            path.lineTo(cx - half_w, base_y)
+            path.lineTo(cx + half_w, base_y)
+            path.closeSubpath()
+            painter.fillPath(path, color)
+
+        def bar(y: float, thickness: float, half_w: float) -> None:
+            painter.fillRect(
+                QtCore.QRectF(cx - half_w, y - thickness * 0.5, half_w * 2.0, thickness),
+                color,
+            )
+
+        hw = s * 0.38
+        bar_hw = s * 0.36
+        bar_th = max(1.6, s * 0.14)
+
+        if kind == "top":
+            bar(s * 0.22, bar_th, bar_hw)
+            triangle(s * 0.36, s * 0.82, hw)
+        elif kind == "bottom":
+            triangle(s * 0.64, s * 0.18, hw)
+            bar(s * 0.78, bar_th, bar_hw)
+        elif kind == "prev":
+            triangle(s * 0.22, s * 0.78, hw)
+        else:  # next
+            triangle(s * 0.78, s * 0.22, hw)
+
+    @classmethod
+    def _make_jump_icon(cls, kind: str, size: int = 12) -> "QtGui.QIcon":
+        """Paint jump icons (no font glyphs) with Normal / Disabled variants."""
+        dpr = 1.0
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                dpr = float(app.devicePixelRatio() or 1.0)
+        except Exception:
+            dpr = 1.0
+        dpr = max(dpr, 1.0)
+        logical = max(8, int(size))
+        px = max(1, int(round(logical * dpr)))
+
+        def _pixmap(color: str) -> "QtGui.QPixmap":
+            img = QtGui.QImage(px, px, QtGui.QImage.Format_ARGB32_Premultiplied)
+            img.fill(QtCore.Qt.transparent)
+            try:
+                img.setDevicePixelRatio(dpr)
+            except Exception:
+                pass
+            p = QtGui.QPainter(img)
+            try:
+                cls._paint_jump_glyph(p, kind, float(px), QtGui.QColor(color))
+            finally:
+                p.end()
+            return QtGui.QPixmap.fromImage(img)
+
+        icon = QtGui.QIcon()
+        # Near-white fill for contrast on #3a3b42 rail; muted gray when disabled.
+        icon.addPixmap(_pixmap("#f5f6fa"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        icon.addPixmap(_pixmap("#8a8b94"), QtGui.QIcon.Disabled, QtGui.QIcon.Off)
+        return icon
+
+    def _make_jump_btn(self, kind: str, tip_key: str):
         from maya_agent.i18n import t
 
-        btn = QtWidgets.QPushButton(label)
+        btn = QtWidgets.QPushButton()
         btn.setObjectName("chatJumpBtn")
-        # Match narrow rail; glyph size comes from font_px (unchanged).
-        btn.setFixedSize(14, 22 if font_px > 13 else 20)
+        # Match narrow rail; filled triangles read clearer than stroked chevrons.
+        btn.setFixedSize(14, 22)
         btn.setCursor(QtCore.Qt.PointingHandCursor)
         btn.setToolTip(t(tip_key))
         btn.setFocusPolicy(QtCore.Qt.NoFocus)
         btn.setFlat(True)
-        font = btn.font()
-        font.setPixelSize(int(font_px))
-        font.setBold(True)
-        btn.setFont(font)
+        btn.setText("")
+        btn.setIcon(self._make_jump_icon(kind, size=12))
+        btn.setIconSize(QtCore.QSize(12, 12))
         return btn
 
     def _jump_buttons(self):
