@@ -40,10 +40,19 @@ from maya_discover import (  # noqa: E402
     find_mayapy as _discover_find_mayapy,
     find_mayapy_beside_executable as _discover_find_mayapy_beside,
 )
+from maya_abi import (  # noqa: E402
+    abi_tag_for_maya,
+    abi_tag_from_version_info,
+    copy_vendor_cache_to_project,
+    parse_tags_arg,
+    resolve_vendor_dir,
+    vendor_tag_dir,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 VENDOR_DIR = PROJECT_ROOT / ".vendor"
+VENDOR_CACHE_DIR = PROJECT_ROOT / "vendor_cache"
 
 # Packages we must be able to import after install (module name, pip name).
 # matplotlib is required for generate_chart; omitting it caused install.bat to
@@ -193,7 +202,7 @@ def detect_http_proxy() -> Optional[str]:
 
 
 def mayapy_python_tag(mayapy: Path) -> str:
-    """Return PEP 425 tag like '39' for mayapy's Python."""
+    """Return PEP 425 numeric tag like '39' for mayapy's Python (wheel download)."""
     proc = _run(
         [
             str(mayapy),
@@ -205,6 +214,47 @@ def mayapy_python_tag(mayapy: Path) -> str:
         return "39"
     tag = (proc.stdout or "").strip()
     return tag if tag.isdigit() else "39"
+
+
+def mayapy_abi_tag(mayapy: Path) -> str:
+    """Return ABI dir name like ``cp39`` for mayapy."""
+    num = mayapy_python_tag(mayapy)
+    return f"cp{num}" if not num.startswith("cp") else num
+
+
+def _is_usable_python(executable: Path) -> bool:
+    """True if ``executable -c`` runs (rejects maya.exe)."""
+    try:
+        proc = _run([str(executable), "-c", "import sys; print(sys.version)"], timeout=30)
+        return proc.returncode == 0 and bool((proc.stdout or "").strip())
+    except Exception:
+        return False
+
+
+def resolve_pip_python(preferred: Optional[Path] = None) -> Optional[Path]:
+    """
+    Pick an interpreter that can run ``-m pip``.
+
+    Prefer ``preferred`` (usually mayapy); never use a bare maya.exe.
+    """
+    candidates: List[Path] = []
+    if preferred is not None:
+        candidates.append(Path(preferred))
+    # Beside current executable (Maya bin → mayapy)
+    beside = find_mayapy_beside_executable()
+    if beside is not None:
+        candidates.append(beside)
+    # Current interpreter if it is actually Python
+    candidates.append(Path(sys.executable))
+    seen = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        if cand.is_file() and _is_usable_python(cand):
+            return cand
+    return None
 
 
 def verify_imports(
@@ -247,14 +297,33 @@ def verify_imports_in_process(
     return missing
 
 
-def ensure_vendor_on_sys_path() -> Optional[Path]:
-    """Prepend project ``.vendor`` to ``sys.path`` if it exists."""
-    if VENDOR_DIR.is_dir():
-        path = str(VENDOR_DIR.resolve())
-        if path not in sys.path:
-            sys.path.insert(0, path)
-        return VENDOR_DIR
-    return None
+def ensure_vendor_on_sys_path(
+    *,
+    tag: Optional[str] = None,
+    maya_version: Optional[str] = None,
+) -> Optional[Path]:
+    """Prepend matching ``.vendor/<abi>/`` (or legacy flat) to ``sys.path``."""
+    resolved = resolve_vendor_dir(VENDOR_DIR, tag=tag, maya_version=maya_version)
+    if resolved is None:
+        return None
+    path = str(resolved.resolve())
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    return resolved
+
+
+def apply_vendor_cache(
+    tags: Sequence[str],
+    *,
+    vendor_cache: Optional[Path] = None,
+    force: bool = False,
+) -> List[str]:
+    """Copy prebuilt ``vendor_cache/<tag>`` trees into project ``.vendor/<tag>``."""
+    cache = Path(vendor_cache or VENDOR_CACHE_DIR)
+    if not cache.is_dir():
+        print(f"  [vendor-cache] not found: {cache}")
+        return []
+    return copy_vendor_cache_to_project(cache, VENDOR_DIR, tags, force=force)
 
 
 def _trusted_host_args() -> List[str]:
@@ -581,21 +650,62 @@ def download_wheels_with_host_python(req: Path, wheel_dir: Path, py_tag: str) ->
     return _download(False)
 
 
-def install_to_vendor(req: Path, *, force: bool = False) -> bool:
+def install_to_vendor(
+    req: Path,
+    *,
+    force: bool = False,
+    tag: Optional[str] = None,
+    python_exe: Optional[Path] = None,
+    maya_version: Optional[str] = None,
+    vendor_cache: Optional[Path] = None,
+) -> bool:
     """
-    Install deps into project ``.vendor`` with the host Python.
+    Install deps into project ``.vendor/<abi>/``.
 
-    Maya Agent prepends this folder to ``sys.path`` on import, so chat can work
-    even when mayapy site-packages is unwritable / broken.
+    Prefer copying from ``vendor_cache`` (offline installer). Otherwise use
+    ``python_exe`` / mayapy for ``pip install --target`` (never maya.exe).
     """
-    host_py = sys.executable
-    if force and VENDOR_DIR.exists():
-        print(f"  [vendor] 清理旧目录 {VENDOR_DIR}")
+    use_tag = tag or (
+        abi_tag_for_maya(maya_version) if maya_version else abi_tag_from_version_info()
+    )
+    target = vendor_tag_dir(VENDOR_DIR, use_tag)
+
+    # Offline: copy prebuilt tree first
+    cache = Path(vendor_cache) if vendor_cache else VENDOR_CACHE_DIR
+    if cache.is_dir() and (cache / use_tag).is_dir():
+        copied = apply_vendor_cache([use_tag], vendor_cache=cache, force=force)
+        if use_tag in copied:
+            ensure_vendor_on_sys_path(tag=use_tag)
+            # Verify with pip python if available
+            host = resolve_pip_python(python_exe)
+            if host and not verify_imports(
+                host, critical=CRITICAL_IMPORTS, extra_paths=[target]
+            ):
+                print(f"  [成功] vendor-cache → {target}")
+                return True
+            if not verify_imports_in_process(critical=CRITICAL_IMPORTS):
+                # In-process may work after path inject
+                ensure_vendor_on_sys_path(tag=use_tag)
+                if not verify_imports_in_process(critical=CRITICAL_IMPORTS):
+                    print(f"  [成功] vendor-cache → {target}")
+                    return True
+            # Even if verify failed in this interpreter, cache copy is OK for Maya
+            if (target / "httpx").exists() or any(target.glob("httpx*")):
+                print(f"  [成功] vendor-cache 已就位 → {target}")
+                return True
+
+    host_py = resolve_pip_python(python_exe)
+    if host_py is None:
+        print("  [失败] 无可用 Python/mayapy 写入 .vendor（且无匹配 vendor_cache）")
+        return False
+
+    if force and target.exists():
+        print(f"  [vendor] 清理 {target}")
         try:
-            shutil.rmtree(VENDOR_DIR)
+            shutil.rmtree(target)
         except OSError as e:
             print(f"  [警告] 无法清理 vendor: {e}")
-    VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
 
     proxy = detect_http_proxy()
     env = _proxy_env(proxy)
@@ -605,29 +715,35 @@ def install_to_vendor(req: Path, *, force: bool = False) -> bool:
 
     for label, index in PIP_INDEXES:
         cmd = [
-            host_py,
+            str(host_py),
             "-m",
             "pip",
             "install",
             "--upgrade",
             "--target",
-            str(VENDOR_DIR),
+            str(target),
             *pkgs,
         ]
         cmd.extend(_trusted_host_args())
         cmd.extend(_index_args(index))
         if proxy:
             cmd.extend(["--proxy", proxy])
-        print(f"  [vendor] 安装到 .vendor via {label} …")
+        print(f"  [vendor] 安装到 {target} via {label} ({host_py.name}) …")
         proc = _run(cmd, env=env, timeout=600)
         _print_proc(proc)
         if proc.returncode == 0:
-            # Verify full critical set (incl. matplotlib for charts)
-            ensure_vendor_on_sys_path()
+            ensure_vendor_on_sys_path(tag=use_tag)
+            left = verify_imports(
+                host_py, critical=CRITICAL_IMPORTS, extra_paths=[target]
+            )
+            if not left:
+                print(f"  [成功] vendor 依赖已就绪 → {target}")
+                return True
             missing = verify_imports_in_process(critical=CRITICAL_IMPORTS)
             if not missing:
-                print(f"  [成功] vendor 依赖已就绪 → {VENDOR_DIR}")
+                print(f"  [成功] vendor 依赖已就绪 → {target}")
                 return True
+    ensure_vendor_on_sys_path(tag=use_tag)
     missing = verify_imports_in_process(critical=CRITICAL_IMPORTS)
     if missing:
         print(f"  [失败] vendor 仍缺: {', '.join(missing)}")
@@ -641,19 +757,64 @@ def install_for_mayapy(
     *,
     force: bool = False,
     allow_vendor: bool = True,
+    maya_version: Optional[str] = None,
+    vendor_cache: Optional[Path] = None,
 ) -> bool:
     req = Path(req or REQUIREMENTS)
     if not req.is_file():
         print(f"  [错误] 缺少 {req}")
         return False
 
+    abi = mayapy_abi_tag(mayapy)
+    if maya_version:
+        abi = abi_tag_for_maya(maya_version)
+
     print(f"  mayapy: {mayapy}")
+    print(f"  abi: {abi}")
+
+    # Prefer offline vendor_cache before touching network
+    cache_root = Path(vendor_cache) if vendor_cache else VENDOR_CACHE_DIR
+    if allow_vendor and cache_root.is_dir() and (cache_root / abi).is_dir():
+        print("  [步骤 0] 应用预置 vendor_cache …")
+        if install_to_vendor(
+            req,
+            force=force,
+            tag=abi,
+            python_exe=mayapy,
+            maya_version=maya_version,
+            vendor_cache=cache_root,
+        ):
+            left = verify_imports(
+                mayapy,
+                critical=CRITICAL_IMPORTS,
+                extra_paths=[vendor_tag_dir(VENDOR_DIR, abi)],
+            )
+            if not left and not force:
+                print("  [成功] 预置依赖可用，跳过 pip")
+                return True
+            if not left:
+                print("  [成功] 预置依赖可用")
+                return True
+
     if not ensure_pip(mayapy):
         print("  [警告] mayapy pip 不可用，将尝试 vendor 兜底")
-        return bool(allow_vendor and install_to_vendor(req, force=force))
+        return bool(
+            allow_vendor
+            and install_to_vendor(
+                req,
+                force=force,
+                tag=abi,
+                python_exe=mayapy,
+                maya_version=maya_version,
+                vendor_cache=vendor_cache,
+            )
+        )
 
-    extra = [VENDOR_DIR] if VENDOR_DIR.is_dir() else None
-    missing = verify_imports(mayapy, extra_paths=extra)
+    extra_paths = []
+    resolved = resolve_vendor_dir(VENDOR_DIR, tag=abi)
+    if resolved is not None:
+        extra_paths.append(resolved)
+    missing = verify_imports(mayapy, extra_paths=extra_paths or None)
     if not missing and not force:
         print("  [成功] 关键依赖已就绪，跳过安装")
         return True
@@ -696,7 +857,7 @@ def install_for_mayapy(
     if still:
         print(f"  仍缺失: {', '.join(still)}")
 
-    print("  [步骤 3/4] 系统 Python 下载 wheel + mayapy 离线安装 …")
+    print("  [步骤 3/4] 可用 Python 下载 wheel + mayapy 离线安装 …")
     py_tag = mayapy_python_tag(mayapy)
     with tempfile.TemporaryDirectory(prefix="maya_agent_wheels_") as tmp:
         wheel_dir = Path(tmp)
@@ -708,21 +869,34 @@ def install_for_mayapy(
             print("  [失败] 无法下载依赖包")
 
     if allow_vendor:
-        print("  [步骤 4/4] 项目 .vendor 兜底（不依赖 mayapy site-packages）…")
-        if install_to_vendor(req, force=force):
-            # Also confirm mayapy can see vendor when we inject path
+        print("  [步骤 4/4] 项目 .vendor/<abi> 兜底 …")
+        if install_to_vendor(
+            req,
+            force=force,
+            tag=abi,
+            python_exe=mayapy,
+            maya_version=maya_version,
+            vendor_cache=vendor_cache,
+        ):
+            tag_dir = vendor_tag_dir(VENDOR_DIR, abi)
             left = verify_imports(
-                mayapy, critical=CRITICAL_IMPORTS, extra_paths=[VENDOR_DIR]
+                mayapy, critical=CRITICAL_IMPORTS, extra_paths=[tag_dir]
             )
             if not left:
                 print("  [成功] mayapy 可通过 .vendor 导入关键包")
                 return True
-            # Vendor works in-process; Maya Agent __init__ will inject path
+            ensure_vendor_on_sys_path(tag=abi)
             if not verify_imports_in_process(critical=CRITICAL_IMPORTS):
                 print("  [成功] .vendor 可用（Maya Agent 启动时自动注入）")
                 return True
+            if tag_dir.is_dir() and any(tag_dir.iterdir()):
+                print("  [成功] .vendor 已写入（启动时注入）")
+                return True
 
-    left = verify_imports(mayapy, extra_paths=[VENDOR_DIR] if VENDOR_DIR.is_dir() else None)
+    tag_dir = resolve_vendor_dir(VENDOR_DIR, tag=abi)
+    left = verify_imports(
+        mayapy, extra_paths=[tag_dir] if tag_dir else None
+    )
     if left:
         print(f"  [失败] 仍缺失: {', '.join(left)}")
         crit = " ".join(pip for _mod, pip in CRITICAL_IMPORTS)
@@ -741,6 +915,7 @@ def install_versions(
     *,
     force: bool = False,
     allow_vendor: bool = True,
+    vendor_cache: Optional[Path] = None,
 ) -> int:
     req = Path(req or REQUIREMENTS)
     failures = 0
@@ -750,15 +925,33 @@ def install_versions(
         mayapy = find_mayapy(ver)
         if not mayapy:
             print("  [跳过] 未找到 mayapy.exe，仅会写入脚本挂钩")
+            if allow_vendor:
+                tag = abi_tag_for_maya(ver)
+                install_to_vendor(
+                    req,
+                    force=force,
+                    tag=tag,
+                    maya_version=ver,
+                    vendor_cache=vendor_cache,
+                )
             continue
         found_any = True
-        if not install_for_mayapy(mayapy, req, force=force, allow_vendor=allow_vendor):
+        if not install_for_mayapy(
+            mayapy,
+            req,
+            force=force,
+            allow_vendor=allow_vendor,
+            maya_version=ver,
+            vendor_cache=vendor_cache,
+        ):
             failures += 1
 
     if not found_any:
         print("\n[警告] 未找到任何 mayapy。")
         print("  将尝试写入项目 .vendor，供 Maya 启动时加载。")
-        if allow_vendor and install_to_vendor(req, force=force):
+        if allow_vendor and install_to_vendor(
+            req, force=force, vendor_cache=vendor_cache
+        ):
             return 0
         print("  [警告] 依赖未安装。菜单仍可出现，但对话功能需要 httpx。")
         return 1
@@ -794,11 +987,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Only populate project .vendor (skip mayapy)",
     )
+    parser.add_argument(
+        "--vendor-cache",
+        default="",
+        help="Prebuilt vendor_cache root (default: <project>/vendor_cache)",
+    )
+    parser.add_argument(
+        "--tag",
+        default="",
+        help="ABI tag for --vendor-only (e.g. cp311). Default: current interpreter.",
+    )
+    parser.add_argument(
+        "--tags",
+        default="",
+        help="Comma-separated ABI tags to copy from vendor_cache (with --vendor-only).",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     req = Path(args.requirements)
+    cache = Path(args.vendor_cache) if args.vendor_cache else None
     if args.vendor_only:
-        ok = install_to_vendor(req, force=args.force)
+        if args.tags:
+            tags = parse_tags_arg(args.tags)
+            copied = apply_vendor_cache(
+                tags, vendor_cache=cache or VENDOR_CACHE_DIR, force=args.force
+            )
+            if copied:
+                return 0
+            # Fall through to pip target install per tag
+            ok_any = False
+            for tag in tags:
+                if install_to_vendor(
+                    req, force=args.force, tag=tag, vendor_cache=cache
+                ):
+                    ok_any = True
+            return 0 if ok_any else 1
+        tag = args.tag.strip() or None
+        ok = install_to_vendor(req, force=args.force, tag=tag, vendor_cache=cache)
         return 0 if ok else 1
 
     versions = list(args.versions)
@@ -810,6 +1035,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         req,
         force=args.force,
         allow_vendor=not args.no_vendor,
+        vendor_cache=cache,
     )
     return 1 if failures else 0
 

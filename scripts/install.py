@@ -317,8 +317,14 @@ def write_module(modules: Path, root: Path, uninstall: bool = False) -> None:
             print(f"Removed {mod}")
         return
     root_fwd = str(root).replace("\\", "/")
+    try:
+        from version_utils import read_version
+
+        mod_ver = read_version(PROJECT_ROOT)
+    except Exception:
+        mod_ver = "1.0.0"
     mod.write_text(
-        f"+ MayaAgent 1.5.6 {root_fwd}\n"
+        f"+ MayaAgent {mod_ver} {root_fwd}\n"
         f"scripts: {root_fwd}\n"
         f"PYTHONPATH+:= {root_fwd}\n",
         encoding="utf-8",

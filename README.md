@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.5.6** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨蒙皮、动画、材质、灯光与导出。内置 **235 个工具 / 18 个类别**，支持 **15 家**主流大模型（含视觉模型）与云端 AI 3D（Meshy / Tripo / 腾讯混元3D），并可通过 MCP 在 Cursor / VS Code / Claude Desktop 中调用同一套能力。
+**v1.6.0** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨蒙皮、动画、材质、灯光与导出。内置 **235 个工具 / 18 个类别**，支持 **15 家**主流大模型（含视觉模型）与云端 AI 3D（Meshy / Tripo / 腾讯混元3D），并可通过 MCP 在 Cursor / VS Code / Claude Desktop 中调用同一套能力。
 
 ## 核心能力
 
@@ -29,11 +29,25 @@
 
 ## 快速开始
 
-### 方式 A：Windows 一键安装（推荐）
+### 方式 A：Windows 图形安装器（推荐，免系统 Python）
+
+面向最终用户的商业安装包（Inno Setup）：
+
+1. 运行 **`MayaAgent-Setup-1.6.0.exe`**（由 `installer\build.bat` 生成，见 [`installer/README.md`](installer/README.md)）
+2. 选择安装目录（默认 `%LOCALAPPDATA%\MayaAgent`）与要挂钩的 **Maya 版本**
+3. **完全退出并重启 Maya** → 菜单 **Maya Agent** / 工具架 **MayaAgent**
+
+- **不需要**本机安装系统 Python；安装引擎通过 **mayapy** 写挂钩并应用预置 `vendor_cache` → `.vendor/cp37|cp39|cp311`
+- 不含 MCP / 代码签名 / 自动更新（MCP 仍见下文「MCP」）
+- 构建者：先 `python scripts/build_vendor_cache.py`，再 `installer\build.bat`
+
+### 方式 B：`install.bat`（源码 / TD，优先 mayapy）
 
 1. 双击项目根目录 **`install.bat`**（可选：`install.bat 2025` / `install.bat all` / `install.bat force` / `install.bat uninstall`）
 2. **完全退出并重启 Maya**
 3. 菜单栏应出现 **Maya Agent**，工具架出现 **MayaAgent** 页签
+
+`install.bat` / `uninstall.bat` **优先查找 mayapy**，找不到再回退系统 Python；无 Python 时可改用图形安装器或拖入 mel。
 
 版本与 mayapy 由 `scripts/maya_discover.py` 统一探测（Documents 用户目录、注册表、常见安装路径）。非标准安装可设置：
 
@@ -51,9 +65,9 @@ python scripts/doctor.py
 python scripts/doctor.py --maya-version 2025
 ```
 
-卸载：双击 **`uninstall.bat`**（或 `python scripts/install.py --uninstall`）。
+卸载：双击 **`uninstall.bat`**，或 `mayapy scripts/install_engine.py --uninstall`。
 
-### 方式 B：拖入式安装（当前会话立即生效）
+### 方式 C：拖入式安装（当前会话立即生效）
 
 1. 打开 Maya
 2. 将 **`install_dragdrop.mel`** 拖进 **视口**（或工具架 / Script Editor）
@@ -63,29 +77,33 @@ python scripts/doctor.py --maya-version 2025
 
 ### 依赖（对话必需 httpx；图表必需 matplotlib）
 
-`install.bat` / `install.py` 会自动安装。失败时的加固路径（依次降级）：
+`install.bat` / `install_engine.py` / 图形安装器会自动安装。失败时的加固路径（依次降级）：
 
-1. mayapy pip（PyPI → 清华 → 阿里 → 腾讯镜像，多镜像 + 代理/直连）
-2. 逐包安装缺失模块
-3. 系统 Python 下载 wheel → mayapy 离线安装
-4. 写入项目 **`.vendor`**（`maya_agent` 启动时自动注入 `sys.path`）
+1. 预置 **`vendor_cache/<abi>/`** → 项目 **`.vendor/<abi>/`**（离线）
+2. mayapy pip（PyPI → 清华 → 阿里 → 腾讯镜像，多镜像 + 代理/直连）
+3. 逐包安装缺失模块
+4. 可用 Python 下载 wheel → mayapy 离线安装
+5. mayapy `pip install --target .vendor/<abi>`（启动时按解释器 ABI 注入）
 
 手动：
 
 ```bash
 python scripts/install_deps.py --maya-version 2025 --force
-python scripts/install_deps.py --vendor-only
+python scripts/install_deps.py --vendor-only --tags cp311
+python scripts/build_vendor_cache.py --tags cp311
 ```
 
 ### 命令行安装
 
 ```bash
-python scripts/install.py
+# 统一引擎（推荐；可用 mayapy 运行）
+mayapy scripts/install_engine.py
+mayapy scripts/install_engine.py --maya-version 2025
+mayapy scripts/install_engine.py --force-deps
+mayapy scripts/install_engine.py --uninstall
+
 python scripts/install.py --maya-version 2025
-python scripts/install.py --force-deps
 python scripts/install.py --dry-run
-python scripts/install.py --list-versions
-python scripts/install.py --uninstall
 python scripts/doctor.py
 ```
 
@@ -281,12 +299,15 @@ MCP 连接时会把与面板相同的系统提示词（`resources/prompts/system
 | `%APPDATA%/MayaAgent/logs/maya_agent.log` | 运行日志 |
 | `<场景文件>.mayaagent.json` | 会话 sidecar（与场景同目录）；未命名场景暂存临时目录 |
 | `<项目同级>/MayaAgentTempFile/` | 默认临时根目录：对话附图/附件、云 3D 下载、视口截图、未命名会话（设置 `ui.temp_dir` 可改） |
-| `<项目>/.vendor/` | 依赖兜底目录（安装失败时自动生成，已 gitignore） |
+| `<项目>/.vendor/cp37\|cp39\|cp311/` | 按 ABI 分目录的依赖兜底（安装器从 `vendor_cache` 拷贝；已 gitignore） |
+| `<项目>/vendor_cache/` | 构建机预置的离线依赖树（打进 Setup；已 gitignore） |
+| `<项目>/dist/` | `MayaAgent-Setup-*.exe` 输出目录 |
 
 ## 项目结构
 
 ```
 MayaAgent/
+├── VERSION                      # 唯一版本号源（发版改这里）
 ├── config/default_config.yaml   # 默认配置（人类可读）
 ├── config/default_config.json   # 运行时加载（无第三方依赖）
 ├── maya_agent/
@@ -303,18 +324,29 @@ MayaAgent/
 │   └── maya_plugin/             # 自动加载插件模板
 ├── scripts/
 │   ├── maya_mcp.py              # MCP stdio 代理（系统 Python）
-│   ├── install.py               # 安装 / 卸载挂钩 + Install Report
-│   ├── install_deps.py          # mayapy 依赖（ensurepip/镜像/逐包/.vendor）
+│   ├── install_engine.py        # 安装器/bat 统一引擎（mayapy 可跑）
+│   ├── install.py               # 挂钩写入 + Install Report
+│   ├── install_deps.py          # mayapy 依赖 / vendor_cache / .vendor/<abi>
+│   ├── build_vendor_cache.py    # 构建离线 vendor_cache
+│   ├── version_utils.py         # 读 VERSION / 同步各处副本
+│   ├── sync_version.py / bump_version.py
+│   ├── maya_abi.py              # Maya 版本 ↔ cp37/cp39/cp311
 │   ├── maya_discover.py         # Maya 版本 / mayapy 统一探测
 │   ├── doctor.py                # 安装健康检查（只读）
 │   ├── drag_install.py          # 拖入式安装逻辑（含依赖加固）
-│   └── test_*.py                # 17 个离线/冒烟测试脚本
-├── install.bat / uninstall.bat
+│   └── test_*.py                # 离线/冒烟测试脚本
+├── installer/                   # Inno Setup 商业安装器
+│   ├── MayaAgent.iss
+│   ├── build.bat
+│   └── README.md
+├── install.bat / uninstall.bat  # 优先 mayapy
 ├── install_dragdrop.mel         # 拖进视口安装
 ├── recover_tools_dragdrop.mel   # 工具注册表异常时急救
 ├── requirements.txt             # Maya 内依赖（httpx / PyYAML / matplotlib）
 ├── requirements-mcp.txt         # IDE MCP 代理依赖（系统 Python）
-└── .vendor/                     # 依赖兜底目录（自动生成，已 gitignore）
+├── vendor_cache/                # 预置离线依赖（构建生成，已 gitignore）
+├── dist/                        # Setup.exe 输出
+└── .vendor/                     # 运行时 ABI 依赖树（自动生成，已 gitignore）
 ```
 
 ## 测试与诊断
@@ -337,6 +369,7 @@ MayaAgent/
 | 现象 | 处理 |
 | ---- | ---- |
 | 安装状态不明 | 运行 `python scripts/doctor.py`，对照 Install Report |
+| 需要发给无系统 Python 的用户 | 使用 `installer\build.bat` 生成的 `MayaAgent-Setup-*.exe` |
 | 插件列表有 MayaAgent，但无菜单/工具架 | 拖入 `install_dragdrop.mel`，或 Script Editor（**Python**）执行 `import maya_agent; maya_agent.reload()` |
 | MCP `tool_count` 异常 / 工具变少 | 拖入 `recover_tools_dragdrop.mel`，或执行 `maya_agent.reload()` 后重启 MCP |
 | 未检测到 mayapy / 自定义安装路径 | 设置 `MAYA_AGENT_MAYAPY_ROOTS` 后重跑 `install.bat` |
@@ -349,6 +382,24 @@ MayaAgent/
 | MCP 连不上 / unauthorized | 先在 Maya 启动 MCP；重启 MCP 会刷新 token；确认 `pip install -r requirements-mcp.txt` 用的是 mcp.json 里的同一个 Python |
 | 云 3D 任务失败 | 检查密钥、余额与网络；Tripo/混元导入优先 FBX（非 FBX 会自动转换）；混元不支持本地网格直传 |
 | 会话没随场景恢复 | 确认场景已保存（sidecar 写在场景同目录），或检查 `agent.auto_save_sessions` 是否开启 |
+
+## 版本管理
+
+**唯一源文件**：项目根目录 [`VERSION`](VERSION)（当前内容即发布版本号）。
+
+运行时 UI / About / Bridge / `.mod` 挂钩均读取该文件（经 `maya_agent.__version__` 或 `scripts/version_utils.py`）。发版时同步副本：
+
+```bash
+# 只同步（改完 VERSION 之后）
+python scripts/sync_version.py
+
+# 或直接升版并同步
+python scripts/bump_version.py 1.5.7
+python scripts/bump_version.py --patch
+```
+
+会更新：`pyproject.toml`、`installer/MayaAgent.iss`、`config/default_config.*`、README / installer 文档中的 Setup 文件名。  
+`installer\build.bat` 打包前会自动执行 `sync_version.py`。
 
 ## 许可
 

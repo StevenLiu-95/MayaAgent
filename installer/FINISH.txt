@@ -1,0 +1,16 @@
+Installation files are in place.
+
+IMPORTANT — fully quit and restart Maya, then check:
+  1. Top menu bar shows "Maya Agent"
+  2. Shelf has a "MayaAgent" tab
+  3. Script Editor has no ModuleNotFoundError for httpx
+
+If the menu is missing:
+  - Drag install_dragdrop.mel from the install folder into the Maya viewport
+  - Or in Script Editor (Python):  import maya_agent; maya_agent.reload()
+
+Install log (if created):
+  %LOCALAPPDATA%\MayaAgent\install_engine.log
+
+MCP for Cursor/VS Code is optional and not part of this installer —
+see README.md section "MCP".

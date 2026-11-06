@@ -8,6 +8,11 @@ build/
 .venv/
 venv/
 .vendor/
+vendor_cache/
+installer/Output/
+unins_versions.txt
+install_engine.log
+*.mayaagent.json
 .env
 renders/
 *.log

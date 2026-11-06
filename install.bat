@@ -6,12 +6,11 @@ title Maya Agent 安装程序
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Maya Agent 一键安装
+echo   Maya Agent 一键安装（优先 mayapy，无需系统 Python）
 echo ============================================================
 echo   目录: %CD%
 echo.
 
-REM ---- 可选参数: 2025 / all / uninstall / force ----
 set "TARGET_VER="
 set "FORCE_DEPS=0"
 for %%A in (%*) do (
@@ -26,155 +25,137 @@ for %%A in (%*) do (
 )
 if "%TARGET_VER%"=="" set "TARGET_VER=all"
 
-REM ---- 检查项目文件 ----
 if not exist "%CD%\maya_agent\__init__.py" (
   echo [错误] 未找到 maya_agent 包，请把本 bat 放在 MayaAgent 项目根目录。
   goto :END_FAIL
 )
-if not exist "%CD%\scripts\install.py" (
-  echo [错误] 未找到 scripts\install.py
-  goto :END_FAIL
-)
-if not exist "%CD%\scripts\install_deps.py" (
-  echo [错误] 未找到 scripts\install_deps.py
-  goto :END_FAIL
-)
-if not exist "%CD%\scripts\maya_discover.py" (
-  echo [错误] 未找到 scripts\maya_discover.py
-  goto :END_FAIL
-)
-if not exist "%CD%\requirements.txt" (
-  echo [错误] 未找到 requirements.txt
-  goto :END_FAIL
-)
-if not exist "%CD%\config\default_config.json" (
-  echo [警告] 缺少 config\default_config.json，将尝试继续…
-)
-
-REM ---- 找 Python（优先系统 python，其次 py launcher）----
-set "PYEXE="
-where python >nul 2>&1 && set "PYEXE=python"
-if not defined PYEXE (
-  where py >nul 2>&1 && set "PYEXE=py -3"
-)
-if not defined PYEXE (
-  echo [错误] 未找到系统 Python。请先安装 Python 3，或确认 python 在 PATH 中。
+if not exist "%CD%\scripts\install_engine.py" (
+  echo [错误] 未找到 scripts\install_engine.py
   goto :END_FAIL
 )
 
-echo [1/4] 使用解释器: %PYEXE%
+call :RESOLVE_PY
+if not defined PYEXE (
+  echo [错误] 未找到 mayapy 或系统 Python。
+  echo   请安装 Maya，或设置 MAYA_AGENT_MAYAPY_ROOTS 后重试。
+  echo   也可打开 Maya，将 install_dragdrop.mel 拖进视口安装。
+  goto :END_FAIL
+)
+
+echo [1/3] 使用解释器: %PYEXE%
 if "!FORCE_DEPS!"=="1" echo      模式: 强制重装依赖 (--force)
 if defined MAYA_AGENT_MAYAPY_ROOTS echo      MAYA_AGENT_MAYAPY_ROOTS=%MAYA_AGENT_MAYAPY_ROOTS%
 echo.
 
-REM ---- 收集要安装的 Maya 版本（统一由 maya_discover.py 探测）----
 set "VER_LIST="
 if /I not "%TARGET_VER%"=="all" (
   set "VER_LIST=%TARGET_VER%"
 ) else (
-  for /f "usebackq delims=" %%V in (`%PYEXE% "%CD%\scripts\maya_discover.py" --print-versions 2^>nul`) do (
+  for /f "usebackq delims=" %%V in (`"%PYEXE%" "%CD%\scripts\maya_discover.py" --print-versions 2^>nul`) do (
     set "VER_LIST=%%V"
   )
 )
-
 if "%VER_LIST%"=="" (
   echo [警告] 未自动检测到 Maya，将默认安装到 2025。
-  echo         可设置 MAYA_AGENT_MAYAPY_ROOTS 指向自定义安装根目录。
   set "VER_LIST=2025"
 )
 
-echo [2/4] 目标 Maya 版本:%VER_LIST%
+echo [2/3] 目标 Maya 版本: %VER_LIST%
 echo.
-
-REM ---- 为每个版本安装 mayapy 依赖（代理 / 镜像 / 逐包 / .vendor 兜底）----
-echo [3/4] 安装 Python 依赖到各版本 mayapy ...
-set "DEP_ARGS="
-for %%V in (%VER_LIST%) do (
-  set "DEP_ARGS=!DEP_ARGS! --maya-version %%V"
-)
-if "!FORCE_DEPS!"=="1" set "DEP_ARGS=!DEP_ARGS! --force"
-%PYEXE% "%CD%\scripts\install_deps.py" !DEP_ARGS!
-set "DEP_RC=!ERRORLEVEL!"
-if !DEP_RC! NEQ 0 (
-  echo.
-  echo   [警告] 部分 mayapy 依赖安装失败。
-  echo          将尝试仅写入项目 .vendor 兜底目录 …
-  %PYEXE% "%CD%\scripts\install_deps.py" --vendor-only
-  if !ERRORLEVEL! EQU 0 (
-    echo   [成功] .vendor 已就绪；Maya Agent 启动时会自动注入该路径。
-  ) else (
-    echo   [警告] .vendor 也失败。菜单仍可出现；对话需要 httpx，图表需要 matplotlib。
-    echo          可稍后执行: install.bat force
-  )
+echo [3/3] 运行安装引擎 …
+set "EXTRA="
+for %%V in (%VER_LIST%) do set "EXTRA=!EXTRA! --maya-version %%V"
+if "!FORCE_DEPS!"=="1" set "EXTRA=!EXTRA! --force-deps"
+if exist "%CD%\vendor_cache\" (
+  "%PYEXE%" "%CD%\scripts\install_engine.py" --project-root "%CD%" !EXTRA! --vendor-cache "%CD%\vendor_cache"
 ) else (
-  echo   [成功] 依赖检查通过。
+  "%PYEXE%" "%CD%\scripts\install_engine.py" --project-root "%CD%" !EXTRA!
 )
-
-echo.
-echo [4/4] 写入 userSetup / modules / 目录联接 ...
-set "HOOK_FAIL=0"
-for %%V in (%VER_LIST%) do (
-  echo   - 配置 Maya %%V
-  %PYEXE% "%CD%\scripts\install.py" --maya-version %%V --skip-deps
-  if !ERRORLEVEL! NEQ 0 (
-    echo     [失败] Maya %%V 配置出错
-    set "HOOK_FAIL=1"
-  ) else (
-    echo     [成功] Maya %%V
-  )
-)
+set "RC=!ERRORLEVEL!"
 
 echo.
 echo ============================================================
-echo   安装完成
-echo ============================================================
-echo   请完全退出并重启 Maya，然后检查:
-echo     1. 顶部菜单是否有「Maya Agent」
-echo     2. 工具架是否有「MayaAgent」页签
-echo     3. 对话前确认 Script Editor 无 ModuleNotFoundError: httpx / matplotlib
-echo.
-echo   诊断: python scripts\doctor.py
-echo.
-echo   若依赖仍缺，任选其一:
-echo     A. install.bat force
-echo     B. python scripts\install_deps.py --force
-echo     C. python scripts\install_deps.py --vendor-only
-echo.
-echo   若菜单仍未出现，任选其一:
-echo     A. 把项目根目录的 install_dragdrop.mel 拖进 Maya 视口
-echo     B. 在 Script Editor ^(Python^) 执行:
-echo          import maya_agent
-echo          maya_agent.reload()
-echo.
-echo   自定义 mayapy 搜索根目录:
-echo     set MAYA_AGENT_MAYAPY_ROOTS=D:\path\to\Maya2025
-echo.
-echo   卸载请双击: uninstall.bat
-echo ============================================================
-if "!HOOK_FAIL!"=="1" goto :END_FAIL
-if !DEP_RC! NEQ 0 (
-  REM 挂钩成功但依赖有警告时仍视为可用安装
-  goto :END_OK
+if !RC! NEQ 0 (
+  echo   安装未完全成功 ^(exit !RC!^)
+  echo   诊断: "%PYEXE%" "%CD%\scripts\doctor.py"
+  echo   或拖入 install_dragdrop.mel
+  echo ============================================================
+  goto :END_FAIL
 )
+echo   安装完成 — 请完全退出并重启 Maya
+echo   菜单应出现「Maya Agent」，工具架应有「MayaAgent」
+echo ============================================================
 goto :END_OK
 
 
 :UNINSTALL
-echo ============================================================
-echo   Maya Agent 卸载
-echo ============================================================
-set "PYEXE="
-where python >nul 2>&1 && set "PYEXE=python"
-if not defined PYEXE where py >nul 2>&1 && set "PYEXE=py -3"
+call :RESOLVE_PY
 if not defined PYEXE (
-  echo [错误] 未找到 Python
+  echo [错误] 未找到 mayapy 或系统 Python，无法卸载挂钩。
   goto :END_FAIL
 )
-%PYEXE% "%CD%\scripts\install.py" --uninstall --skip-deps
+echo 使用: %PYEXE%
+"%PYEXE%" "%CD%\scripts\install_engine.py" --project-root "%CD%" --uninstall
 echo.
-echo 卸载完成。如需删除 Documents\maya\版本\MayaAgent 联接目录，可手动删除。
-echo 项目 .vendor 目录如需清理可手动删除。
+echo 卸载完成。请重启 Maya。
 goto :END_OK
+
+
+:RESOLVE_PY
+set "PYEXE="
+REM 1) mayapy from env roots / common install paths (no system Python needed)
+call :FIND_MAYAPY_DIRECT
+REM 2) specific version if user passed one
+if /I not "%TARGET_VER%"=="" if /I not "%TARGET_VER%"=="all" (
+  if not defined PYEXE call :FIND_MAYAPY_FOR %TARGET_VER%
+)
+REM 3) system python / py launcher
+if not defined PYEXE where python >nul 2>&1 && for /f "delims=" %%P in ('where python') do (
+  if not defined PYEXE set "PYEXE=%%P"
+)
+if not defined PYEXE (
+  where py >nul 2>&1 && set "PYEXE=py -3"
+)
+goto :EOF
+
+
+:FIND_MAYAPY_DIRECT
+if defined MAYA_AGENT_MAYAPY_ROOTS (
+  for %%R in ("%MAYA_AGENT_MAYAPY_ROOTS:;=" "%") do (
+    if not defined PYEXE if exist "%%~R\bin\mayapy.exe" set "PYEXE=%%~R\bin\mayapy.exe"
+    if not defined PYEXE if exist "%%~R\mayapy.exe" set "PYEXE=%%~R\mayapy.exe"
+  )
+)
+for %%V in (2026 2025 2024 2023 2022 2020) do (
+  if not defined PYEXE call :FIND_MAYAPY_FOR %%V
+)
+goto :EOF
+
+
+:FIND_MAYAPY_FOR
+set "V=%~1"
+if defined PYEXE goto :EOF
+if exist "%ProgramFiles%\Autodesk\Maya%V%\bin\mayapy.exe" (
+  set "PYEXE=%ProgramFiles%\Autodesk\Maya%V%\bin\mayapy.exe"
+  goto :EOF
+)
+if exist "%ProgramFiles(x86)%\Autodesk\Maya%V%\bin\mayapy.exe" (
+  set "PYEXE=%ProgramFiles(x86)%\Autodesk\Maya%V%\bin\mayapy.exe"
+  goto :EOF
+)
+if exist "C:\Program Files\Autodesk\Maya%V%\bin\mayapy.exe" (
+  set "PYEXE=C:\Program Files\Autodesk\Maya%V%\bin\mayapy.exe"
+  goto :EOF
+)
+if exist "D:\Program Files\Autodesk\Maya%V%\bin\mayapy.exe" (
+  set "PYEXE=D:\Program Files\Autodesk\Maya%V%\bin\mayapy.exe"
+  goto :EOF
+)
+if exist "D:\LAS\LAD\Maya\Program\%V%\Maya%V%\bin\mayapy.exe" (
+  set "PYEXE=D:\LAS\LAD\Maya\Program\%V%\Maya%V%\bin\mayapy.exe"
+  goto :EOF
+)
+goto :EOF
 
 
 :END_OK

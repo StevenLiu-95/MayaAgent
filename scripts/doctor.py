@@ -209,12 +209,30 @@ def run_doctor(versions: Optional[Sequence[str]] = None) -> int:
 
     vendor = PROJECT_ROOT / ".vendor"
     if vendor.is_dir():
-        rows.append(_ok(".vendor", str(vendor)))
+        tag_dirs = [
+            p.name for p in vendor.iterdir() if p.is_dir() and p.name.startswith("cp")
+        ]
+        if tag_dirs:
+            rows.append(_ok(".vendor", f"{vendor} tags={','.join(sorted(tag_dirs))}"))
+        else:
+            rows.append(_ok(".vendor", f"{vendor} (flat/legacy)"))
     else:
         rows.append(
             _warn(
                 ".vendor",
                 "not present (ok if mayapy site-packages has httpx/matplotlib)",
+            )
+        )
+
+    vcache = PROJECT_ROOT / "vendor_cache"
+    if vcache.is_dir() and any(vcache.glob("cp*")):
+        tags = sorted(p.name for p in vcache.iterdir() if p.is_dir() and p.name.startswith("cp"))
+        rows.append(_ok("vendor_cache", ",".join(tags)))
+    else:
+        rows.append(
+            _warn(
+                "vendor_cache",
+                "missing (run scripts/build_vendor_cache.py before commercial Setup)",
             )
         )
 

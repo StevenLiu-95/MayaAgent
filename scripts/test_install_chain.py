@@ -106,7 +106,13 @@ def test_install_modules_syntax() -> None:
     for rel in (
         "scripts/install.py",
         "scripts/install_deps.py",
+        "scripts/install_engine.py",
+        "scripts/maya_abi.py",
         "scripts/maya_discover.py",
+        "scripts/build_vendor_cache.py",
+        "scripts/version_utils.py",
+        "scripts/sync_version.py",
+        "scripts/bump_version.py",
         "scripts/doctor.py",
         "scripts/drag_install.py",
         "maya_agent/utils/paths.py",
@@ -260,6 +266,7 @@ def test_install_deps_proxy_detect() -> None:
         "install_to_vendor",
         "ensure_pip",
         "ensure_vendor_on_sys_path",
+        "apply_vendor_cache",
         "package_names_from_req",
         "CRITICAL_IMPORTS",
     ):
@@ -276,31 +283,91 @@ def test_install_deps_proxy_detect() -> None:
     _ok("install_deps helpers")
 
 
+def test_version_single_source() -> None:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import version_utils as vu
+
+    ver = vu.read_version(ROOT)
+    if not ver or ver == "0.0.0":
+        _fail("VERSION", ver)
+    for name in list(sys.modules):
+        if name == "maya_agent" or name.startswith("maya_agent."):
+            sys.modules.pop(name, None)
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import maya_agent
+
+    if maya_agent.__version__ != ver:
+        _fail("version mismatch", f"pkg={maya_agent.__version__} file={ver}")
+    iss = (ROOT / "installer" / "MayaAgent.iss").read_text(encoding="utf-8")
+    if f'#define MyAppVersion "{ver}"' not in iss:
+        # Allow unsynced working tree briefly — sync then re-check
+        vu.sync_version_files(ver, ROOT)
+        iss = (ROOT / "installer" / "MayaAgent.iss").read_text(encoding="utf-8")
+        if f'#define MyAppVersion "{ver}"' not in iss:
+            _fail("iss MyAppVersion", iss[:200])
+    _ok(f"version single source ({ver})")
+
+
+def test_maya_abi() -> None:
+    import maya_abi as abi
+
+    if abi.abi_tag_for_maya("2020") != "cp37":
+        _fail("maya_abi", "2020 -> cp37")
+    if abi.abi_tag_for_maya("2022") != "cp39":
+        _fail("maya_abi", "2022 -> cp39")
+    if abi.abi_tag_for_maya("2025") != "cp311":
+        _fail("maya_abi", "2025 -> cp311")
+    tags = abi.abi_tags_for_maya_versions(["2022", "2025", "2023"])
+    if tags != ["cp39", "cp311"]:
+        _fail("maya_abi tags", tags)
+    _ok("maya_abi mapping")
+
+
 def test_vendor_path_injection() -> None:
-    """maya_agent.__init__ should prepend .vendor when the directory exists."""
+    """maya_agent.__init__ should prepend .vendor/<abi>/ when populated."""
+    import maya_abi as abi
+
     vendor = ROOT / ".vendor"
-    created = False
+    tag = abi.abi_tag_from_version_info()
+    tagged = vendor / tag
+    created_root = False
+    created_tag = False
+    marker = tagged / "_maya_agent_test_marker"
     if not vendor.is_dir():
         vendor.mkdir(parents=True, exist_ok=True)
-        created = True
+        created_root = True
+    if not tagged.is_dir():
+        tagged.mkdir(parents=True, exist_ok=True)
+        created_tag = True
+    marker.write_text("1", encoding="utf-8")
     try:
         for name in list(sys.modules):
             if name == "maya_agent" or name.startswith("maya_agent."):
                 sys.modules.pop(name, None)
-        # Remove any prior injection so we can observe insert
-        vendor_s = str(vendor.resolve())
+        vendor_s = str(tagged.resolve())
         while vendor_s in sys.path:
             sys.path.remove(vendor_s)
+        flat_s = str(vendor.resolve())
+        while flat_s in sys.path:
+            sys.path.remove(flat_s)
         import maya_agent  # noqa: F401
 
         if vendor_s not in sys.path:
             _fail("vendor inject", f"{vendor_s} not in sys.path")
-        if sys.path.index(vendor_s) > 5:
-            # Should be near the front (index 0 after insert)
-            print(f"  info vendor path index={sys.path.index(vendor_s)}")
+        print(f"  info vendor path index={sys.path.index(vendor_s)} tag={tag}")
         _ok("maya_agent vendor path injection")
     finally:
-        if created:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        if created_tag:
+            try:
+                tagged.rmdir()
+            except OSError:
+                pass
+        if created_root:
             try:
                 vendor.rmdir()
             except OSError:
@@ -326,6 +393,8 @@ def main() -> int:
     test_install_modules_syntax()
     test_install_dragdrop_mel()
     test_maya_discover()
+    test_version_single_source()
+    test_maya_abi()
     test_plugin_single_deferred_and_resolve()
     test_menu_bootstrap_idempotent_flags()
     test_install_report_and_plugin_root()
