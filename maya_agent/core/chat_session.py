@@ -24,6 +24,8 @@ class ChatSession:
     updated_at: str
     memory: List[Dict[str, Any]] = field(default_factory=list)
     ui_blocks: List[Dict[str, Any]] = field(default_factory=list)
+    mode: str = "agent"
+    pending_plan: Optional[Dict[str, Any]] = None
 
     @classmethod
     def create(cls, title: str = "") -> "ChatSession":
@@ -41,17 +43,27 @@ class ChatSession:
         self.updated_at = _now_iso()
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "memory": self.memory,
             "ui_blocks": self.ui_blocks,
+            "mode": self.mode or "agent",
         }
+        if self.pending_plan:
+            payload["pending_plan"] = self.pending_plan
+        return payload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChatSession":
+        mode = str(data.get("mode") or "agent").strip().lower() or "agent"
+        if mode not in ("agent", "ask", "plan"):
+            mode = "agent"
+        plan = data.get("pending_plan")
+        if plan is not None and not isinstance(plan, dict):
+            plan = None
         return cls(
             id=str(data.get("id") or new_session_id()),
             title=str(data.get("title") or "对话"),
@@ -59,6 +71,8 @@ class ChatSession:
             updated_at=str(data.get("updated_at") or _now_iso()),
             memory=list(data.get("memory") or []),
             ui_blocks=list(data.get("ui_blocks") or []),
+            mode=mode,
+            pending_plan=plan,
         )
 
 

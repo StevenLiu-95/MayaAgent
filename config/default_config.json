@@ -230,7 +230,19 @@
     "show_thinking": true,
     "auto_select_tools": true,
     "auto_save_sessions": true,
-    "max_sessions_per_project": 50
+    "max_sessions_per_project": 50,
+    "default_mode": "agent",
+    "context_compress": true,
+    "context_protect_recent_groups": 2,
+    "context_tool_soft_limit": 1200,
+    "context_tool_head_chars": 600,
+    "context_tool_tail_chars": 200,
+    "context_strip_old_images": true,
+    "loop_guard": true,
+    "consecutive_same_call_limit": 3,
+    "turn_dedup_readonly": true,
+    "user_rules_enabled": true,
+    "user_rules_max_chars": 8000
   },
   "web": {
     "enabled": true,

@@ -16,6 +16,9 @@
 | **多模型** | 默认 DeepSeek；另含 OpenAI / Grok (xAI) / Azure OpenAI / Claude / Gemini、通义千问、智谱 GLM、Kimi、豆包、百川、硅基流动、Cursor 代理、Ollama 与自定义 OpenAI 兼容接口，共 **15 家** |
 | **云端 AI 3D** | **Meshy（16 工具）/ Tripo（27 工具）/ 腾讯混元3D（20 工具）**：文/图/多视图生 3D、贴图、减面、UV、绑骨、动画与格式转换；任务轮询后下载 FBX 并导入 Maya |
 | **Maya 内嵌 UI** | 停靠深色面板：**对话 / 模型 / 设置 / 工具 / 帮助** 五个页签；紧凑输入区；发送与停止合并为同一按钮（绿 / 红）；Enter 发送、Shift+Enter 换行；Ctrl+V 粘贴截图、拖入文件附件 |
+| **Agent / Ask / Plan 模式** | 对话栏可切换：**Agent**（全工具）、**Ask**（只读调研）、**Plan**（先 `create_plan` 出步骤卡片，用户「批准执行」后再改场景）；工具按模式白名单裁剪，执行器二次拦截；MCP `mayaagent_chat` 可传 `mode` |
+| **上下文压缩与环路守卫** | 发给 LLM 时自动压缩较旧的工具结果（会话 sidecar 仍存全文）；同轮只读工具去重、连续相同调用熔断（可在 `agent.context_compress` / `agent.loop_guard` 关闭） |
+| **User Rules** | 设置页或项目 `rules/*.md` 写持久规范（命名/轴向/导出等），自动注入 system prompt；`_` 开头为草稿不注入；不覆盖 Ask/危险确认 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景文件.mayaagent.json`（与场景同目录，随工程拷贝）；未命名场景暂存临时目录，保存后迁移 |
 | **安全可逆** | 场景类工具在 Maya 主线程执行（网络/文件类工具不阻塞主线程）；整轮 Undo 块（一轮修改一次 Ctrl+Z 回退，MCP 侧 `mayaagent_undo`）；危险操作确认；本地文件读写白名单；默认不擅自新建或保存场景 |
 | **工具开发** | `maya_dev` 18 个元工具：查 Maya API、检索 cmds 帮助、校验/写入/运行脚本、生成工具模板、创建工具架按钮、加载插件 |

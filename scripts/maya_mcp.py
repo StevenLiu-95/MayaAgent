@@ -151,10 +151,17 @@ class BridgeClient:
             timeout=300.0,
         )
 
-    def agent_chat(self, text: str, images: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def agent_chat(
+        self,
+        text: str,
+        images: Optional[List[Dict[str, Any]]] = None,
+        mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"text": text, "stream": False}
         if images:
             body["images"] = images
+        if mode:
+            body["mode"] = mode
         # Long-running multi-round agent
         return self.request("POST", "/v1/agent/chat", json_body=body, timeout=1800.0)
 
@@ -204,6 +211,14 @@ META_TOOLS = [
                     "type": "array",
                     "description": "Optional images as {mime, data_b64, name}",
                     "items": {"type": "object"},
+                },
+                "mode": {
+                    "type": "string",
+                    "description": (
+                        "Agent mode: agent (default, full tools), ask (read-only), "
+                        "plan (planning), or plan_executing (after user approved a plan)"
+                    ),
+                    "enum": ["agent", "ask", "plan", "plan_executing"],
                 },
             },
             "required": ["text"],
@@ -268,7 +283,9 @@ def _run_meta(name: str, arguments: Dict[str, Any]) -> str:
         images = (arguments or {}).get("images")
         if images is not None and not isinstance(images, list):
             images = None
-        out = CLIENT.agent_chat(text, images=images)
+        mode = (arguments or {}).get("mode")
+        mode_s = str(mode).strip() if mode else None
+        out = CLIENT.agent_chat(text, images=images, mode=mode_s or None)
         # Compact summary for the IDE model
         summary = {
             "ok": out.get("ok"),

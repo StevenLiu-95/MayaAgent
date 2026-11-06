@@ -37,9 +37,23 @@ class ConversationMemory:
         self.clear()
         self.messages.extend(messages)
 
-    def as_list(self) -> List[ChatMessage]:
-        """Return a sanitized copy safe to send to the LLM API."""
-        return self._sanitized_copy(self.messages)
+    def as_list(self, *, for_llm: bool = True) -> List[ChatMessage]:
+        """Return a sanitized copy safe to send to the LLM API.
+
+        When ``for_llm`` is True (default), older tool results may be
+        compressed for context. Pass ``for_llm=False`` for full payloads
+        (tests / debugging). Session export uses ``to_serializable`` and
+        is never compressed.
+        """
+        cleaned = self._sanitized_copy(self.messages)
+        if not for_llm:
+            return cleaned
+        try:
+            from maya_agent.core.context_compress import compress_from_config
+
+            return compress_from_config(cleaned)
+        except Exception:
+            return cleaned
 
     def drop_incomplete_tool_round(self) -> None:
         """

@@ -987,3 +987,171 @@ QPushButton#imageChipRemove:hover {
     color: #ffe0e0;
     border-color: #804848;
 }
+
+QFrame#planCard {
+    background-color: #2a2c36;
+    border: 1px solid #4a6a8a;
+    border-radius: 8px;
+    margin: 2px 0;
+}
+
+QLabel#planBadge {
+    background-color: #3d5a80;
+    color: #e8f0ff;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QLabel#planTitle {
+    color: #e8e8ea;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QLabel#planOverview {
+    color: #a8a8b2;
+    font-size: 12px;
+}
+
+QLabel#planStep {
+    color: #c8c8d0;
+    font-size: 12px;
+}
+
+QPushButton#planApproveBtn {
+    background-color: #2d6a4f;
+    border: 1px solid #40916c;
+    border-radius: 6px;
+    color: #ffffff;
+    padding: 4px 12px;
+    min-height: 24px;
+    font-size: 12px;
+}
+
+QPushButton#planApproveBtn:hover {
+    background-color: #40916c;
+}
+
+QPushButton#planRejectBtn {
+    background-color: #3a3b44;
+    border: 1px solid #555664;
+    border-radius: 6px;
+    color: #c8c8d0;
+    padding: 4px 12px;
+    min-height: 24px;
+    font-size: 12px;
+}
+
+QPushButton#planRejectBtn:hover {
+    background-color: #4a3030;
+    border-color: #804848;
+    color: #ffe0e0;
+}
+
+QListWidget#rulesList {
+    background-color: #22232a;
+    border: 1px solid #3a3b44;
+    border-radius: 6px;
+    outline: none;
+    padding: 4px;
+}
+
+QListWidget#rulesList::item {
+    background-color: #2a2b32;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    margin: 1px 0;
+    padding: 0;
+}
+
+QListWidget#rulesList::item:hover:!selected {
+    background-color: #32343e;
+    border-color: #3f4150;
+}
+
+QListWidget#rulesList::item:selected {
+    background-color: #2f3f58;
+    border-color: #4a6f9a;
+}
+
+QListWidget#rulesList::item:selected:hover {
+    background-color: #354968;
+    border-color: #5b8fc7;
+}
+
+QWidget#rulesListRow {
+    background: transparent;
+}
+
+QLabel#rulesListTitle {
+    background: transparent;
+    border: none;
+    color: #e8e8ea;
+    font-size: 12px;
+}
+
+QListWidget#rulesList::item:selected QLabel#rulesListTitle {
+    color: #ffffff;
+}
+
+QCheckBox#rulesRowEnableCb {
+    background: transparent;
+    spacing: 0;
+    margin: 0;
+    padding: 0;
+}
+
+QCheckBox#rulesRowEnableCb::indicator {
+    width: 14px;
+    height: 14px;
+}
+
+QLabel#rulesBadgeInactive,
+QLabel#rulesBadgeUnsaved {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 5px;
+    margin: 0;
+    min-height: 14px;
+}
+
+QLabel#rulesBadgeInactive {
+    background-color: #3a3b44;
+    border-color: #525366;
+    color: #b0b0ba;
+}
+
+QLabel#rulesBadgeUnsaved {
+    background-color: #4a3a28;
+    border-color: #8a6a3a;
+    color: #f0c888;
+}
+
+QPushButton#rulesRowDeleteBtn {
+    background-color: transparent;
+    border: none;
+    border-radius: 11px;
+    color: #8e8e9a;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 0;
+    margin: 0;
+    text-align: center;
+}
+
+QPushButton#rulesRowDeleteBtn:hover {
+    background-color: rgba(180, 70, 70, 0.28);
+    border: none;
+    color: #ffc8c8;
+}
+
+QPushButton#rulesRowDeleteBtn:pressed {
+    background-color: rgba(180, 70, 70, 0.45);
+    border: none;
+    color: #ffffff;
+}

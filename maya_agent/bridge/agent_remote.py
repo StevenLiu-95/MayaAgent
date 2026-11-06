@@ -162,10 +162,13 @@ def run_agent_chat(
     *,
     images: Optional[List[Any]] = None,
     stream: bool = False,
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run full MayaAgent.chat loop under the shared lock.
     Returns {ok, events, final, error}.
+
+    ``mode``: agent | ask | plan | plan_executing (optional).
     """
     cfg = get_config()
     timeout = float(cfg.get("bridge.agent_timeout", 0) or 0)
@@ -189,7 +192,15 @@ def run_agent_chat(
         # panel agent keeps its own confirm callback.
         events: List[Dict[str, Any]] = []
         final = ""
-        for event in agent.chat(text or "", stream=bool(stream), images=images):
+        chat_mode = mode
+        if chat_mode:
+            try:
+                agent.set_mode(chat_mode)
+            except Exception:
+                pass
+        for event in agent.chat(
+            text or "", stream=bool(stream), images=images, mode=chat_mode
+        ):
             if isinstance(event, dict):
                 events.append(event)
                 et = event.get("type")

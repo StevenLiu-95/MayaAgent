@@ -424,6 +424,9 @@ def create_help_panel(parent=None):
             t("help.rules.5"),
             t("help.rules.6"),
             t("help.rules.7"),
+            t("help.rules.8"),
+            t("help.rules.9"),
+            t("help.rules.10"),
         ),
     )
     root.addWidget(rules)

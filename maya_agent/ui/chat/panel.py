@@ -112,6 +112,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._pending_separator = False
         self._on_choice_reply = None
         self._active_choice_block = None
+        self._on_plan_approve = None
+        self._on_plan_reject = None
+        self._active_plan_card = None  # type: ignore[assignment]
         self._stick_to_bottom = True
         self._scrolling_programmatic = False
         self._layout_timer = QtCore.QTimer(self)
@@ -495,6 +498,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._turn_charts = []
         self._pending_separator = False
         self._active_choice_block = None
+        self._active_plan_card = None
         self._stick_to_bottom = True
         self._deferred_scroll = False
         self._scroll_settle_pending = False
@@ -506,6 +510,14 @@ class ChatPanel(QtWidgets.QWidget):
         """fn(reply_text) called when user clicks a confirmation button."""
         self._on_choice_reply = fn
 
+    def set_plan_handlers(
+        self,
+        on_approve: Optional[Any] = None,
+        on_reject: Optional[Any] = None,
+    ) -> None:
+        self._on_plan_approve = on_approve
+        self._on_plan_reject = on_reject
+
     def disable_active_choices(self) -> None:
         if self._active_choice_block is not None:
             try:
@@ -513,6 +525,52 @@ class ChatPanel(QtWidgets.QWidget):
             except Exception:
                 pass
             self._active_choice_block = None
+
+    def add_plan(self, plan: Dict[str, Any], *, interactive: bool = True) -> None:
+        """Insert a plan card into the transcript."""
+        from maya_agent.ui.chat.plan_card import PlanCard
+
+        # Only one interactive plan at a time.
+        if self._active_plan_card is not None:
+            try:
+                self._active_plan_card.set_interactive(False)
+            except Exception:
+                pass
+            self._active_plan_card = None
+
+        def _approve():
+            if self._on_plan_approve:
+                self._on_plan_approve(dict(plan or {}))
+
+        def _reject():
+            if self._on_plan_reject:
+                self._on_plan_reject(dict(plan or {}))
+
+        card = PlanCard(
+            plan,
+            on_approve=_approve if interactive else None,
+            on_reject=_reject if interactive else None,
+        )
+        if not interactive:
+            card.set_interactive(False)
+        self._insert_before_stretch(card)
+        payload = {"type": "plan", "plan": dict(plan or {})}
+        self._blocks.append(payload)
+        if interactive and str(plan.get("status") or "pending") == "pending":
+            self._active_plan_card = card
+        self._scroll_to_bottom(force=True)
+
+    def update_active_plan(self, plan: Dict[str, Any]) -> None:
+        if self._active_plan_card is not None:
+            try:
+                self._active_plan_card.update_plan(plan)
+            except Exception:
+                pass
+        # Keep last plan block in sync for persistence.
+        for block in reversed(self._blocks):
+            if block.get("type") == "plan":
+                block["plan"] = dict(plan or {})
+                break
 
     def _insert_before_stretch(self, widget: QtWidgets.QWidget):
         """Append a chat row (name kept for call-site compatibility)."""
@@ -950,6 +1008,30 @@ class ChatPanel(QtWidgets.QWidget):
                     mb = MessageBlock("error")
                     mb.set_plain_text(block.get("text") or "")
                     self._insert_before_stretch(mb)
+                elif btype == "plan":
+                    from maya_agent.ui.chat.plan_card import PlanCard
+
+                    plan = block.get("plan") or {}
+                    interactive = str(plan.get("status") or "pending") == "pending"
+
+                    def _approve(p=plan):
+                        if self._on_plan_approve:
+                            self._on_plan_approve(dict(p or {}))
+
+                    def _reject(p=plan):
+                        if self._on_plan_reject:
+                            self._on_plan_reject(dict(p or {}))
+
+                    card = PlanCard(
+                        plan,
+                        on_approve=_approve if interactive else None,
+                        on_reject=_reject if interactive else None,
+                    )
+                    if not interactive:
+                        card.set_interactive(False)
+                    self._insert_before_stretch(card)
+                    if interactive:
+                        self._active_plan_card = card
                 elif btype == "assistant":
                     self._restore_assistant(block)
 

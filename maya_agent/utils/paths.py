@@ -35,6 +35,16 @@ def user_secrets_path() -> Path:
     return user_config_dir() / "secrets.json"
 
 
+def user_rules_path() -> Path:
+    """UI-managed user rules JSON under the MayaAgent config dir."""
+    return user_config_dir() / "user_rules.json"
+
+
+def project_rules_dir() -> Path:
+    """Project-root ``rules/`` directory for file-based User Rules."""
+    return project_root() / "rules"
+
+
 def default_config_json() -> Path:
     return _PROJECT_ROOT / "config" / "default_config.json"
 

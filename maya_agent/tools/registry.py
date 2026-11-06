@@ -100,8 +100,16 @@ def all_tools() -> List[RegisteredTool]:
     return list(_REGISTRY.values())
 
 
-def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
-    """Return OpenAI-style tool schemas. Vision-only / unavailable Meshy/Tripo/Hunyuan/ADV tools omitted."""
+def tool_specs(*, vision: bool = True, mode: Optional[str] = None) -> List[ToolSpec]:
+    """Return OpenAI-style tool schemas.
+
+    Vision-only / unavailable Meshy/Tripo/Hunyuan/ADV tools omitted.
+    ``mode`` further restricts to Ask / Plan planning / Plan executing sets.
+    """
+    from maya_agent.core.agent_mode import is_tool_allowed, normalize_mode
+
+    filter_mode = normalize_mode(mode)
+
     meshy_ok = True
     try:
         from maya_agent.tools.meshy_client import meshy_tools_available
@@ -145,6 +153,8 @@ def tool_specs(*, vision: bool = True) -> List[ToolSpec]:
         if t.category == "hunyuan" and not hunyuan_ok:
             continue
         if t.category == "adv" and not adv_ok:
+            continue
+        if not is_tool_allowed(t, filter_mode):
             continue
         specs.append(
             ToolSpec(name=t.name, description=t.description, parameters=t.parameters)

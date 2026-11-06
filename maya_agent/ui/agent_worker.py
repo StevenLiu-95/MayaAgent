@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import traceback
+from typing import Optional
 
 from maya_agent.core.agent import MayaAgent
 from maya_agent.ui.qt_bind import QtCore
@@ -23,6 +24,7 @@ class AgentWorker(QtCore.QThread):
         text: str,
         stream: bool,
         images=None,
+        mode: Optional[str] = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -30,6 +32,7 @@ class AgentWorker(QtCore.QThread):
         self.text = text
         self.stream = stream
         self.images = images
+        self.mode = mode
         self.signals = _WorkerSignals()
 
     def run(self):
@@ -43,7 +46,10 @@ class AgentWorker(QtCore.QThread):
             return
         try:
             for event in self.agent.chat(
-                self.text, stream=self.stream, images=self.images
+                self.text,
+                stream=self.stream,
+                images=self.images,
+                mode=self.mode,
             ):
                 self.signals.event.emit(event)
             self.signals.finished.emit()
@@ -54,6 +60,13 @@ class AgentWorker(QtCore.QThread):
 
 
 def create_agent_worker(
-    agent: MayaAgent, text: str, stream: bool, images=None, parent=None
+    agent: MayaAgent,
+    text: str,
+    stream: bool,
+    images=None,
+    mode: Optional[str] = None,
+    parent=None,
 ) -> AgentWorker:
-    return AgentWorker(agent, text, stream, images, parent=parent)
+    return AgentWorker(
+        agent, text, stream, images, mode=mode, parent=parent
+    )

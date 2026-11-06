@@ -106,6 +106,8 @@ class SessionManager:
         s = self.active()
         s.memory = []
         s.ui_blocks = []
+        s.pending_plan = None
+        # Keep mode preference across clear.
         s.touch()
         self.save()
         return s

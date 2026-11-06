@@ -18,11 +18,14 @@ class ToolExecutor:
         self,
         confirm_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None,
         turn_undo_active: Optional[Callable[[], bool]] = None,
+        mode_provider: Optional[Callable[[], str]] = None,
     ) -> None:
         self.confirm_callback = confirm_callback
         # When a turn-level undo chunk is already open, skip per-tool chunks
         # so the whole Agent reply collapses into one Ctrl+Z / 撤销.
         self.turn_undo_active = turn_undo_active
+        # Optional callable returning current agent mode (ask/plan/…).
+        self.mode_provider = mode_provider
 
     def execute(self, name: str, arguments_json: str) -> ToolResult:
         try:
@@ -35,6 +38,15 @@ class ToolExecutor:
         reg = get_tool(name)
         if not reg:
             return ToolResult(ok=False, error=f"未知工具: {name}")
+
+        if self.mode_provider is not None:
+            from maya_agent.core.agent_mode import is_tool_allowed, mode_denied_message
+
+            mode = self.mode_provider() or "agent"
+            if not is_tool_allowed(reg, mode):
+                return ToolResult(
+                    ok=False, error=mode_denied_message(name, mode)
+                )
 
         cfg = get_config()
 

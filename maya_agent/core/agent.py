@@ -7,8 +7,19 @@ import queue
 import threading
 from typing import Any, Callable, Dict, Generator, List, Optional
 
+from maya_agent.core.agent_mode import (
+    MODE_AGENT,
+    MODE_ASK,
+    MODE_PLAN_EXECUTING,
+    MODE_PLAN_PLANNING,
+    normalize_mode,
+    ui_mode_from_internal,
+)
 from maya_agent.core.executor import ToolExecutor
+from maya_agent.core.loop_guards import TurnLoopGuard
 from maya_agent.core.memory import ConversationMemory
+from maya_agent.core.plan_context import set_plan_store_fallback
+from maya_agent.core.plan_store import PlanStore
 from maya_agent.core.tool_progress import (
     push_cancel_checker,
     push_progress_emitter,
@@ -55,13 +66,19 @@ class MayaAgent:
         self.model = model
         self.memory = ConversationMemory(limit=int(cfg.get("agent.history_limit", 40)))
         self.undo = UndoTurnManager()
+        self.plans = PlanStore()
+        default_mode = normalize_mode(cfg.get("agent.default_mode", MODE_AGENT))
+        self.mode = default_mode
+        self._active_mode = default_mode
         self.executor = ToolExecutor(
             confirm_callback=confirm_callback,
             turn_undo_active=lambda: self.undo.is_open,
+            mode_provider=lambda: self._active_mode,
         )
         self.on_tool_start = on_tool_start
         self.on_tool_end = on_tool_end
         self._cancel_event = threading.Event()
+        set_plan_store_fallback(self.plans)
         self._ensure_system_prompt()
 
     def request_cancel(self) -> None:
@@ -74,13 +91,24 @@ class MayaAgent:
     def is_cancelled(self) -> bool:
         return self._cancel_event.is_set()
 
-    def _ensure_system_prompt(self) -> None:
+    def set_mode(self, mode: Optional[str]) -> str:
+        """Set persistent agent mode (agent/ask/plan). Returns normalized internal mode."""
+        self.mode = normalize_mode(mode)
+        self._active_mode = self.mode
+        self._ensure_system_prompt()
+        return self.mode
+
+    def get_ui_mode(self) -> str:
+        return ui_mode_from_internal(self.mode)
+
+    def _ensure_system_prompt(self, mode: Optional[str] = None) -> None:
         from maya_agent.core.system_prompt import build_system_prompt
 
-        full = build_system_prompt()
+        use_mode = normalize_mode(mode if mode is not None else self._active_mode)
+        full = build_system_prompt(mode=use_mode)
         for i, m in enumerate(self.memory.messages):
             if m.role == "system":
-                # Refresh when Meshy availability / tool count changes mid-session
+                # Refresh when Meshy availability / tool count / mode changes
                 if m.content != full:
                     self.memory.messages[i] = ChatMessage(role="system", content=full)
                 return
@@ -88,6 +116,7 @@ class MayaAgent:
 
     def reset(self) -> None:
         self.memory.clear()
+        self.plans.clear()
         self._ensure_system_prompt()
 
     def load_session_memory(self, serialized: List[Dict[str, Any]]) -> None:
@@ -102,6 +131,12 @@ class MayaAgent:
     def export_session_memory(self) -> List[Dict[str, Any]]:
         return self.memory.to_serializable()
 
+    def load_pending_plan(self, data: Optional[Dict[str, Any]]) -> None:
+        self.plans.load(data)
+
+    def export_pending_plan(self) -> Optional[Dict[str, Any]]:
+        return self.plans.export()
+
     def set_provider(self, provider_id: str, model: Optional[str] = None) -> None:
         self.provider_id = provider_id
         if model:
@@ -114,11 +149,19 @@ class MayaAgent:
     def undo_last_turn(self) -> Dict[str, Any]:
         return self.undo.undo_last()
 
+    def approve_pending_plan(self) -> Optional[Dict[str, Any]]:
+        plan = self.plans.mark_approved()
+        return plan.to_dict() if plan else None
+
+    def reject_pending_plan(self) -> None:
+        self.plans.mark_rejected()
+
     def chat(
         self,
         user_text: str,
         stream: bool = False,
         images: Optional[List[Any]] = None,
+        mode: Optional[str] = None,
     ) -> Generator[Dict[str, Any], None, str]:
         """
         Yields event dicts:
@@ -127,6 +170,8 @@ class MayaAgent:
           {"type":"tool_start","name":"...","arguments":"..."}
           {"type":"tool_progress","name":"...","progress":0-100,"status":"...","message":"..."}
           {"type":"tool_end","name":"...","result":"...","images":[...optional...]}
+          {"type":"plan_proposed","plan":{...}}
+          {"type":"plan_updated","plan":{...}}
           {"type":"vision_context","count":N}
           {"type":"chat_images_staged","count":N,"paths":[...]}
           {"type":"error","content":"...","stop_notice":"..."}
@@ -136,11 +181,27 @@ class MayaAgent:
         Returns final assistant text.
         """
         self.clear_cancel()
+        turn_mode = normalize_mode(mode if mode is not None else self.mode)
+        self._active_mode = turn_mode
+        # Persist UI-facing mode (plan_executing still shows as Plan).
+        if turn_mode == MODE_PLAN_EXECUTING:
+            self.mode = MODE_PLAN_PLANNING  # stay on Plan in UI after execute
+        else:
+            self.mode = turn_mode
+        set_plan_store_fallback(self.plans)
+
         attached = [img for img in (images or []) if getattr(img, "data_b64", "")]
         text = (user_text or "").strip()
         if attached and not text:
             text = "请查看附图。"
-        self._ensure_system_prompt()
+        if turn_mode == MODE_PLAN_EXECUTING and self.plans.plan:
+            # Ensure approved + inject plan summary once if user text is the approve cue.
+            if self.plans.plan.status in ("pending", "approved"):
+                self.plans.mark_approved()
+            summary = self.plans.plan.summary_for_prompt()
+            if summary and summary not in text:
+                text = f"{text}\n\n{summary}" if text else summary
+        self._ensure_system_prompt(turn_mode)
         self.memory.add(
             ChatMessage(role="user", content=text, images=attached or None)
         )
@@ -162,11 +223,15 @@ class MayaAgent:
         max_rounds = int(cfg.get("maya.max_tool_rounds", 30))
         use_stream = stream and cfg.get("agent.stream", True)
         auto_undo = bool(cfg.get("maya.auto_undo", True)) and in_maya()
+        # Ask / Plan planning should not open undo chunks (read-only tools).
+        if turn_mode in (MODE_ASK, MODE_PLAN_PLANNING):
+            auto_undo = False
         final_text = ""
         turn_opened = False
         had_tools = False
         turn_usage: Dict[str, int] = {}
         llm_calls = 0
+        loop_guard = TurnLoopGuard.from_config(cfg)
 
         try:
             provider = create_provider(self.provider_id, model=self.model)
@@ -177,7 +242,9 @@ class MayaAgent:
         model_name = getattr(provider, "model", "") or self.model or ""
         vision_ok = bool(getattr(provider, "supports_vision", False))
         tools = (
-            tool_specs(vision=vision_ok) if provider.supports_tools else None
+            tool_specs(vision=vision_ok, mode=turn_mode)
+            if provider.supports_tools
+            else None
         )
 
         def _close_undo_turn():
@@ -334,10 +401,19 @@ class MayaAgent:
                             stopped = _emit_cancelled(resp.content or "")
                             yield stopped
                             return stopped.get("stop_notice") or ""
+                        decision = loop_guard.evaluate(
+                            tc.name or "", tc.arguments or "{}"
+                        )
+                        if decision.skip_execute and decision.result is not None:
+                            yield from self._emit_synthetic_tool(
+                                tc, decision.result
+                            )
+                            continue
                         yield from self._run_one_tool(
                             tc,
                             vision_ok=vision_ok,
                             vision_batch=vision_batch,
+                            loop_guard=loop_guard,
                         )
                     if self.is_cancelled():
                         stopped = _emit_cancelled(resp.content or "")
@@ -401,12 +477,41 @@ class MayaAgent:
             if turn_opened:
                 self.undo.end_turn(had_edits=had_tools)
 
+    def _emit_synthetic_tool(
+        self, tc: ToolCall, result: ToolResult
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Emit tool_start/tool_end for guard short-circuits (dedup / fuse)."""
+        if self.on_tool_start:
+            self.on_tool_start(tc.name, tc.arguments)
+        yield {"type": "tool_start", "name": tc.name, "arguments": tc.arguments}
+        text = result.to_str()
+        # Prefer full cached payload for dedup so the model still sees data.
+        if (
+            result.ok
+            and isinstance(result.data, dict)
+            and result.data.get("deduplicated")
+            and result.data.get("cached_result")
+        ):
+            text = str(result.data.get("cached_result") or text)
+        if self.on_tool_end:
+            self.on_tool_end(tc.name, text)
+        yield {"type": "tool_end", "name": tc.name, "result": text}
+        self.memory.add(
+            ChatMessage(
+                role="tool",
+                content=text,
+                name=tc.name,
+                tool_call_id=tc.id,
+            )
+        )
+
     def _run_one_tool(
         self,
         tc: ToolCall,
         *,
         vision_ok: bool = False,
         vision_batch: Optional[List[ImageAttachment]] = None,
+        loop_guard: Optional[TurnLoopGuard] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         if self.on_tool_start:
             self.on_tool_start(tc.name, tc.arguments)
@@ -486,6 +591,25 @@ class MayaAgent:
         if image_dicts:
             evt["images"] = image_dicts
         yield evt
+        if result.ok and tc.name == "create_plan":
+            plan_data = result.data if isinstance(result.data, dict) else self.plans.export()
+            if plan_data:
+                yield {"type": "plan_proposed", "plan": plan_data}
+        elif result.ok and tc.name == "update_plan_step":
+            plan_data = None
+            if isinstance(result.data, dict):
+                plan_data = result.data.get("plan")
+            if not plan_data:
+                plan_data = self.plans.export()
+            if plan_data:
+                yield {"type": "plan_updated", "plan": plan_data}
+        if loop_guard is not None and result.ok:
+            try:
+                loop_guard.remember_success(
+                    tc.name or "", tc.arguments or "{}", text
+                )
+            except Exception:
+                pass
         self.memory.add(
             ChatMessage(
                 role="tool",
@@ -514,9 +638,14 @@ class MayaAgent:
             data=result.data,
         )
 
-    def chat_sync(self, user_text: str, images: Optional[List[Any]] = None) -> str:
+    def chat_sync(
+        self,
+        user_text: str,
+        images: Optional[List[Any]] = None,
+        mode: Optional[str] = None,
+    ) -> str:
         final = ""
-        for event in self.chat(user_text, stream=False, images=images):
+        for event in self.chat(user_text, stream=False, images=images, mode=mode):
             if event["type"] in ("done", "error"):
                 final = event.get("content", "")
         return final

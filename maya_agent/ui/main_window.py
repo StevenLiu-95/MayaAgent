@@ -327,6 +327,10 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
 
         self.chat = create_chat_panel(chat_page)
         self.chat.set_choice_handler(self._on_choice_reply)
+        self.chat.set_plan_handlers(
+            on_approve=self._on_plan_approve,
+            on_reject=self._on_plan_reject,
+        )
         splitter.addWidget(self.chat)
 
         composer = self._build_composer()
@@ -467,6 +471,22 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         clear_btn.setCursor(QtCore.Qt.PointingHandCursor)
         clear_btn.clicked.connect(self._on_clear)
 
+        self.mode_combo = create_toolbar_combo(composer)
+        self.mode_combo.setFixedHeight(26)
+        self.mode_combo.setMinimumWidth(88)
+        self.mode_combo.setMaximumWidth(120)
+        self.mode_combo.setToolTip(t("mode.tip"))
+        from maya_agent.core.agent_mode import MODE_AGENT, MODE_ASK, MODE_PLAN
+
+        for mid, key in (
+            (MODE_AGENT, "mode.agent"),
+            (MODE_ASK, "mode.ask"),
+            (MODE_PLAN, "mode.plan"),
+        ):
+            self.mode_combo.addItem(t(key), mid)
+        self._sync_mode_combo_from_agent()
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+
         # Send/stop merged button: green Send idle, red Stop while busy.
         self.send_btn = QtWidgets.QPushButton(t("composer.send"))
         self.send_btn.setObjectName("sendBtn")
@@ -483,6 +503,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         action_row.addWidget(self.status_label, 1, QtCore.Qt.AlignVCenter)
         action_row.addWidget(self._quick_toggle, 0, QtCore.Qt.AlignVCenter)
         action_row.addWidget(clear_btn, 0, QtCore.Qt.AlignVCenter)
+        action_row.addWidget(self.mode_combo, 0, QtCore.Qt.AlignVCenter)
         action_row.addWidget(self.send_btn, 0, QtCore.Qt.AlignVCenter)
         composer_layout.addLayout(action_row)
 
@@ -918,6 +939,10 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             return
         try:
             active_id = self.sessions.active().id
+            session = self.sessions.project.get_session(active_id)
+            if session is not None:
+                session.mode = self.agent.get_ui_mode()
+                session.pending_plan = self.agent.export_pending_plan()
             self.sessions.sync_session(
                 active_id,
                 self.agent.memory.messages,
@@ -936,13 +961,29 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self._stream_timer.stop()
         if self.chat._current is not None:
             self.chat.finish_assistant()
+        mode = getattr(session, "mode", None) or "agent"
+        self.agent.set_mode(mode)
+        self.agent.load_pending_plan(getattr(session, "pending_plan", None))
+        self._sync_mode_combo_from_agent()
         blocks = session.ui_blocks
+        pending = getattr(session, "pending_plan", None)
         if blocks:
             self.agent.load_session_memory(session.memory)
             self.chat.restore_blocks(blocks)
         else:
             self.agent.reset()
+            self.agent.set_mode(mode)
+            self.agent.load_pending_plan(pending)
             self._show_welcome()
+        if (
+            pending
+            and str(pending.get("status") or "") == "pending"
+            and not any(b.get("type") == "plan" for b in (blocks or []))
+        ):
+            try:
+                self.chat.add_plan(pending, interactive=True)
+            except Exception:
+                pass
 
     def _load_active_session(self):
         self._cancel_pending_save()
@@ -1092,7 +1133,21 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self._stream_buf = ""
             self.chat.append_assistant_text(piece)
 
-    def _on_settings_saved(self, language_changed: bool = False):
+    def _on_settings_saved(
+        self, language_changed: bool = False, *, rules_only: bool = False
+    ):
+        if rules_only:
+            # Rule toggle/edit already persisted to user_rules.json — only
+            # refresh the agent system prompt. Full settings-saved path
+            # (stylesheet + panel reload) flashes a Maya native chrome frame.
+            try:
+                from maya_agent.core.rules_manager import reload_rules
+
+                reload_rules()
+                self.agent._ensure_system_prompt()
+            except Exception:
+                pass
+            return
         get_config().reload()
         init_from_config()
         if language_changed:
@@ -1101,6 +1156,13 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             return
         self.setStyleSheet(load_stylesheet_safe())
         self._apply_provider_from_config()
+        try:
+            from maya_agent.core.rules_manager import reload_rules
+
+            reload_rules()
+            self.agent._ensure_system_prompt()
+        except Exception:
+            pass
         ui_panel = getattr(self, "ui_panel", None)
         if ui_panel is not None:
             try:
@@ -1578,8 +1640,11 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         if reply != QtWidgets.QMessageBox.Yes:
             return
         self._cancel_pending_save()
+        keep_mode = self._current_ui_mode()
         self.sessions.reset_active()
         self.agent.reset()
+        self.agent.set_mode(keep_mode)
+        self._sync_mode_combo_from_agent()
         self._pending_images = []
         self._pending_files = []
         self._rebuild_attach_strip()
@@ -1681,6 +1746,81 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self.input_edit.setReadOnly(busy)
         if hasattr(self, "image_btn"):
             self.image_btn.setEnabled(not busy)
+        if hasattr(self, "mode_combo"):
+            self.mode_combo.setEnabled(not busy)
+
+    def _sync_mode_combo_from_agent(self) -> None:
+        combo = getattr(self, "mode_combo", None)
+        if combo is None:
+            return
+        ui_mode = self.agent.get_ui_mode()
+        combo.blockSignals(True)
+        idx = combo.findData(ui_mode)
+        if idx < 0:
+            idx = 0
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _current_ui_mode(self) -> str:
+        combo = getattr(self, "mode_combo", None)
+        if combo is None:
+            return self.agent.get_ui_mode()
+        data = combo.currentData()
+        return str(data or "agent")
+
+    def _on_mode_changed(self, _index: int = 0) -> None:
+        if self._worker and self._worker.isRunning():
+            self._sync_mode_combo_from_agent()
+            return
+        mode = self._current_ui_mode()
+        self.agent.set_mode(mode)
+        self._schedule_persist()
+        tip = {
+            "ask": t("mode.ask_status"),
+            "plan": t("mode.plan_status"),
+        }.get(mode, t("mode.agent_status"))
+        self.status_label.set_idle(tip)
+
+    def _on_plan_approve(self, plan: Optional[dict] = None) -> None:
+        if self._worker and self._worker.isRunning():
+            return
+        if plan:
+            self.agent.load_pending_plan(plan)
+        approved = self.agent.approve_pending_plan()
+        if not approved:
+            self.status_label.set_idle(t("plan.none"))
+            return
+        from maya_agent.core.agent_mode import MODE_PLAN_EXECUTING
+
+        # Keep UI combo on Plan while executing.
+        self._sync_mode_combo_from_agent()
+        display = t("plan.approve_user")
+        self.chat.add_user(display)
+        self.chat.begin_assistant()
+        self._stream_buf = ""
+        self._thinking_buf = ""
+        self._skip_confirm_this_turn = False
+        self._stopped_by_user = False
+        self._set_busy(True)
+        self.status_label.set_thinking()
+        stream = bool(get_config().get("agent.stream", True))
+        self._worker = create_agent_worker(
+            self.agent,
+            t("plan.approve_prompt"),
+            stream,
+            None,
+            mode=MODE_PLAN_EXECUTING,
+            parent=self,
+        )
+        self._worker.signals.event.connect(self._on_event)
+        self._worker.signals.finished.connect(self._on_finished)
+        self._worker.signals.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_plan_reject(self, plan: Optional[dict] = None) -> None:
+        self.agent.reject_pending_plan()
+        self.status_label.set_idle(t("plan.rejected"))
+        self._schedule_persist()
 
     def _on_send(self):
         text = self.input_edit.toPlainText().strip()
@@ -1764,8 +1904,15 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self.status_label.set_thinking()
 
         stream = bool(get_config().get("agent.stream", True))
+        send_mode = self._current_ui_mode()
+        self.agent.set_mode(send_mode)
         self._worker = create_agent_worker(
-            self.agent, agent_text, stream, images or None, parent=self
+            self.agent,
+            agent_text,
+            stream,
+            images or None,
+            mode=send_mode,
+            parent=self,
         )
         self._worker.signals.event.connect(self._on_event)
         self._worker.signals.finished.connect(self._on_finished)
@@ -1782,6 +1929,8 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             "tool_start": self._evt_tool_start,
             "tool_progress": self._evt_tool_progress,
             "tool_end": self._evt_tool_end,
+            "plan_proposed": self._evt_plan_proposed,
+            "plan_updated": self._evt_plan_updated,
             "vision_context": self._evt_vision_context,
             "chat_images_staged": self._evt_chat_images_staged,
             "error": self._evt_error,
@@ -1842,6 +1991,20 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             )
         if self._worker and self._worker.isRunning():
             self.status_label.set_thinking()
+
+    def _evt_plan_proposed(self, event: dict) -> None:
+        self._flush_stream()
+        plan = event.get("plan") or {}
+        if plan:
+            self.agent.load_pending_plan(plan)
+            self.chat.add_plan(plan, interactive=True)
+            self.status_label.set_idle(t("plan.waiting_approve"))
+
+    def _evt_plan_updated(self, event: dict) -> None:
+        plan = event.get("plan") or {}
+        if plan:
+            self.agent.load_pending_plan(plan)
+            self.chat.update_active_plan(plan)
 
     def _evt_vision_context(self, event: dict) -> None:
         count = int(event.get("count") or 0)

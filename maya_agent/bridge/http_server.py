@@ -285,10 +285,17 @@ def _build_handler(state: BridgeState):
                 return error_body(err or "bad request", status=400)
             text = str(data.get("text") or data.get("message") or "")
             stream = bool(data.get("stream", False))
+            mode = data.get("mode")
+            mode_s = str(mode).strip() if mode is not None else None
             images = self._parse_images(data)
             if not text.strip() and not images:
                 return error_body("text or images required", status=400)
-            out = run_agent_chat(text, images=images or None, stream=stream)
+            out = run_agent_chat(
+                text,
+                images=images or None,
+                stream=stream,
+                mode=mode_s or None,
+            )
             status = 200 if out.get("ok") else 200
             return json_bytes(out, status=status)
 
@@ -318,6 +325,7 @@ def _build_handler(state: BridgeState):
         def _system_prompt(self) -> Tuple[int, bytes, str]:
             from maya_agent.core.system_prompt import build_system_prompt
 
+            # Optional ?mode= / body not used on GET — default agent.
             text = build_system_prompt()
             return json_bytes(
                 {
