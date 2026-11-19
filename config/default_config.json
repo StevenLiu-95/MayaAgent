@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.6.0",
+    "version": "1.6.1",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -242,7 +242,10 @@
     "consecutive_same_call_limit": 3,
     "turn_dedup_readonly": true,
     "user_rules_enabled": true,
-    "user_rules_max_chars": 8000
+    "user_rules_max_chars": 8000,
+    "skills_enabled": true,
+    "skills_dir": "",
+    "skills_max_catalog_chars": 4000
   },
   "web": {
     "enabled": true,

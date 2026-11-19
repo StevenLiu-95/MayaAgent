@@ -41,6 +41,14 @@ def build_system_prompt(mode: Optional[str] = None) -> str:
     )
     full = prompt + env + mode_system_addon(filter_mode)
     try:
+        from maya_agent.core.skills_manager import get_skills_catalog_for_prompt
+
+        skills = get_skills_catalog_for_prompt()
+    except Exception:
+        skills = ""
+    if skills:
+        full = full + "\n\n" + skills
+    try:
         rules = get_rules_for_prompt()
     except Exception:
         rules = ""

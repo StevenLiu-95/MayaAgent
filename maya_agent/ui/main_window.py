@@ -20,6 +20,7 @@ from maya_agent.ui.composer import (
 from maya_agent.ui.mention import expand_mentions, format_token
 from maya_agent.ui.flow_layout import create_flow_layout
 from maya_agent.ui.settings import (
+    create_extensions_panel,
     create_help_panel,
     create_settings_panel,
     create_tools_panel,
@@ -248,6 +249,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._build_chat_tab()
         self._build_settings_tab()
         self._build_ui_tab()
+        self._build_extensions_tab()
         self._build_tools_tab()
         self._build_help_tab()
 
@@ -663,6 +665,13 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self._tools_placeholder, t("tab.tools")
         )
 
+    def _build_extensions_tab(self):
+        self.extensions_panel = None
+        self._extensions_placeholder = QtWidgets.QWidget()
+        self._extensions_tab_index = self.tabs.addTab(
+            self._extensions_placeholder, t("tab.extensions")
+        )
+
     def _build_help_tab(self):
         self.help_panel = None
         self._help_placeholder = QtWidgets.QWidget()
@@ -679,6 +688,8 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self._ensure_ui_panel()
         elif index == getattr(self, "_tools_tab_index", -1):
             self._ensure_tools_panel()
+        elif index == getattr(self, "_extensions_tab_index", -1):
+            self._ensure_extensions_panel()
         elif index == getattr(self, "_help_tab_index", -1):
             self._ensure_help_panel()
 
@@ -714,6 +725,15 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         )
         self._replace_tab_widget(self._tools_tab_index, self.tools_panel)
         return self.tools_panel
+
+    def _ensure_extensions_panel(self):
+        if self.extensions_panel is not None:
+            return self.extensions_panel
+        self.extensions_panel = create_extensions_panel(
+            self, on_saved=self._on_settings_saved
+        )
+        self._replace_tab_widget(self._extensions_tab_index, self.extensions_panel)
+        return self.extensions_panel
 
     def _ensure_help_panel(self):
         if self.help_panel is not None:
@@ -1134,7 +1154,11 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self.chat.append_assistant_text(piece)
 
     def _on_settings_saved(
-        self, language_changed: bool = False, *, rules_only: bool = False
+        self,
+        language_changed: bool = False,
+        *,
+        rules_only: bool = False,
+        skills_only: bool = False,
     ):
         if rules_only:
             # Rule toggle/edit already persisted to user_rules.json — only
@@ -1144,6 +1168,15 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
                 from maya_agent.core.rules_manager import reload_rules
 
                 reload_rules()
+                self.agent._ensure_system_prompt()
+            except Exception:
+                pass
+            return
+        if skills_only:
+            try:
+                from maya_agent.core.skills_manager import reload_skills
+
+                reload_skills()
                 self.agent._ensure_system_prompt()
             except Exception:
                 pass
@@ -1158,8 +1191,10 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._apply_provider_from_config()
         try:
             from maya_agent.core.rules_manager import reload_rules
+            from maya_agent.core.skills_manager import reload_skills
 
             reload_rules()
+            reload_skills()
             self.agent._ensure_system_prompt()
         except Exception:
             pass
@@ -1167,6 +1202,12 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         if ui_panel is not None:
             try:
                 ui_panel.reload_from_config()
+            except Exception:
+                pass
+        ext_panel = getattr(self, "extensions_panel", None)
+        if ext_panel is not None:
+            try:
+                ext_panel.reload_from_config()
             except Exception:
                 pass
         QtCore.QTimer.singleShot(0, self._apply_composer_splitter_sizes)

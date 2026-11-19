@@ -202,6 +202,21 @@ def create_help_panel(parent=None):
     )
     root.addWidget(ui_help)
 
+    extensions, extensions_lay = _section(
+        t("help.extensions.title"), t("help.extensions.hint")
+    )
+    _add_help_lines(
+        extensions_lay,
+        (
+            t("help.extensions.1"),
+            t("help.extensions.2"),
+            t("help.extensions.3"),
+            t("help.extensions.4"),
+            t("help.extensions.5"),
+        ),
+    )
+    root.addWidget(extensions)
+
     mcp, mcp_lay = _section(t("help.mcp.title"), t("help.mcp.hint"))
     _add_help_lines(
         mcp_lay,
@@ -372,6 +387,12 @@ def create_help_panel(parent=None):
             "脚手架与 UI：scaffold_maya_tool、create_shelf_button、list_shelves；"
             "插件：list_plugins、load_or_unload_plugin、eval_python_expr",
         ),
+        (
+            "skills",
+            "help.tools.cat.skills",
+            "list_skills、read_skill、read_skill_resource（Agent Skills 渐进披露；"
+            "在「扩展」页配置目录）",
+        ),
     )
     use_zh = str(get_language() or "").startswith("zh")
     _EN_TOOL_DESCS = {
@@ -392,7 +413,8 @@ def create_help_panel(parent=None):
         "tripo": ('tripo_text_to_model, tripo_image_to_model, tripo_multiview_to_model, tripo_text_to_image, tripo_image_to_image, tripo_image_to_multiview, tripo_edit_multiview, tripo_texture, tripo_convert, tripo_mesh_segment, tripo_mesh_complete, tripo_mesh_decimate, tripo_rig_check, tripo_rig, tripo_retarget, tripo_list_animations, tripo_upload_file, tripo_get_task, tripo_wait_task, tripo_list_tasks, tripo_download, tripo_import_to_maya, tripo_balance, tripo_usage, tripo_prepare_rig_export, tripo_apply_to_meshes, tripo_apply_animation'),
         "hunyuan": ('hunyuan_text_to_3d_pro / image / multiview, rapid variants, profile templates, texture / reduce_face / part / uv, auto_rig / motions, job wait / convert / download / import_to_maya, test_connection (SecretId/SecretKey; public file_url or upstream JobId)'),
         "scripting": ('execute_python (atomic rollback default), execute_mel, generate_python_snippet'),
-        "maya_dev": ('get_maya_dev_env, lookup_cmds_help, search_cmds, lookup_api_help, inspect_node, list_node_types, validate_python, read/write/list/run script files, scaffold_maya_tool, create_shelf_button, list_shelves, list_plugins, load_or_unload_plugin, eval_python_expr')
+        "maya_dev": ('get_maya_dev_env, lookup_cmds_help, search_cmds, lookup_api_help, inspect_node, list_node_types, validate_python, read/write/list/run script files, scaffold_maya_tool, create_shelf_button, list_shelves, list_plugins, load_or_unload_plugin, eval_python_expr'),
+        "skills": ('list_skills, read_skill, read_skill_resource (progressive Agent Skills; configure path on Extensions tab)'),
     }
     for category, label_key, names_zh in tool_groups:
         label = t(label_key)

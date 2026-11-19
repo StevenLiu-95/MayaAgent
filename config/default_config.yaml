@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.6.0"
+  version: "1.6.1"
   language: zh-CN
   theme: dark
 
@@ -222,6 +222,9 @@ agent:
   turn_dedup_readonly: true
   user_rules_enabled: true
   user_rules_max_chars: 8000
+  skills_enabled: true
+  skills_dir: ""
+  skills_max_catalog_chars: 4000
 
 # 网络检索（web_search / fetch_webpage / search_images / fetch_image）
 web:

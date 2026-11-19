@@ -31,6 +31,9 @@ class ConfigDefaults:
         maya = data.get("maya") if isinstance(data, dict) else {}
         if not isinstance(maya, dict):
             maya = {}
+        agent = data.get("agent") if isinstance(data, dict) else {}
+        if not isinstance(agent, dict):
+            agent = {}
         try:
             bridge_port = int(bridge.get("port", 8765) or 8765)
         except (TypeError, ValueError):
@@ -51,4 +54,6 @@ class ConfigDefaults:
                 bridge.get("confirm_mode") or "maya_dialog"
             ),
             "bridge_share_agent": bool(bridge.get("share_panel_agent", True)),
+            "skills_enabled": bool(agent.get("skills_enabled", True)),
+            "skills_dir": str(agent.get("skills_dir") or ""),
         }

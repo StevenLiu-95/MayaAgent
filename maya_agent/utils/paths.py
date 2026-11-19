@@ -92,3 +92,33 @@ def agent_temp_subdir(name: str) -> Path:
     except OSError:
         pass
     return path
+
+
+def default_agent_skills_root() -> Path:
+    """Sibling of the MayaAgent project: .../MayaAgentSkills."""
+    return _PROJECT_ROOT.parent / "MayaAgentSkills"
+
+
+def agent_skills_root() -> Path:
+    """
+    Root directory for Agent Skills packages (``*/SKILL.md``).
+
+    Reads ``agent.skills_dir`` from config when set; otherwise
+    ``default_agent_skills_root()``.
+    """
+    raw = ""
+    try:
+        from maya_agent.utils.config import get_config
+
+        raw = str(get_config().get("agent.skills_dir") or "").strip()
+    except Exception:
+        raw = ""
+    if raw:
+        path = Path(os.path.expandvars(os.path.expanduser(raw)))
+    else:
+        path = default_agent_skills_root()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return path
