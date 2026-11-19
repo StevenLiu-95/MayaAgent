@@ -4,7 +4,7 @@
 ; No system Python required on the end-user machine: post-install runs mayapy.
 
 #define MyAppName "Maya Agent"
-#define MyAppVersion "1.6.1"
+#define MyAppVersion "1.6.2"
 #define MyAppPublisher "MayaAgent"
 #define MyAppURL "https://github.com/"
 #define MyAppExeName "install.bat"

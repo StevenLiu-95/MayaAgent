@@ -48,6 +48,20 @@ class ToolExecutor:
                     ok=False, error=mode_denied_message(name, mode)
                 )
 
+        from maya_agent.core.tool_exposure import (
+            EXPOSURE_LAYERED,
+            get_exposure_router,
+            not_activated_message,
+        )
+
+        router = get_exposure_router()
+        if (
+            router is not None
+            and getattr(router, "exposure", "") == EXPOSURE_LAYERED
+            and not router.is_active(name, category=getattr(reg, "category", "") or "")
+        ):
+            return ToolResult(ok=False, error=not_activated_message(name))
+
         cfg = get_config()
 
         def _confirm() -> bool:

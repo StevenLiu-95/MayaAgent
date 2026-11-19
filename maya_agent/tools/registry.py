@@ -101,65 +101,19 @@ def all_tools() -> List[RegisteredTool]:
 
 
 def tool_specs(*, vision: bool = True, mode: Optional[str] = None) -> List[ToolSpec]:
-    """Return OpenAI-style tool schemas.
+    """Return OpenAI-style tool schemas (availability + mode; no router).
 
     Vision-only / unavailable Meshy/Tripo/Hunyuan/ADV tools omitted.
     ``mode`` further restricts to Ask / Plan planning / Plan executing sets.
+
+    Agent chat layered exposure uses ``resolve_tool_specs`` with a ToolRouter;
+    MCP catalog and tests keep this full-after-gates catalog API.
     """
-    from maya_agent.core.agent_mode import is_tool_allowed, normalize_mode
+    from maya_agent.core.tool_exposure import ExposureContext, resolve_tool_specs
 
-    filter_mode = normalize_mode(mode)
-
-    meshy_ok = True
-    try:
-        from maya_agent.tools.meshy_client import meshy_tools_available
-
-        meshy_ok = meshy_tools_available()
-    except Exception:
-        meshy_ok = False
-
-    tripo_ok = True
-    try:
-        from maya_agent.tools.tripo_client import tripo_tools_available
-
-        tripo_ok = tripo_tools_available()
-    except Exception:
-        tripo_ok = False
-
-    hunyuan_ok = True
-    try:
-        from maya_agent.tools.hunyuan_client import hunyuan_tools_available
-
-        hunyuan_ok = hunyuan_tools_available()
-    except Exception:
-        hunyuan_ok = False
-
-    adv_ok = True
-    try:
-        from maya_agent.tools.adv_rig import adv_tools_available
-
-        adv_ok = adv_tools_available()
-    except Exception:
-        adv_ok = False
-
-    specs = []
-    for t in _REGISTRY.values():
-        if t.requires_vision and not vision:
-            continue
-        if t.category == "meshy" and not meshy_ok:
-            continue
-        if t.category == "tripo" and not tripo_ok:
-            continue
-        if t.category == "hunyuan" and not hunyuan_ok:
-            continue
-        if t.category == "adv" and not adv_ok:
-            continue
-        if not is_tool_allowed(t, filter_mode):
-            continue
-        specs.append(
-            ToolSpec(name=t.name, description=t.description, parameters=t.parameters)
-        )
-    return specs
+    return resolve_tool_specs(
+        ExposureContext.for_catalog(mode=mode, vision=vision)
+    )
 
 
 def tools_by_category() -> Dict[str, List[RegisteredTool]]:

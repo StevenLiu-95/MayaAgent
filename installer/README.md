@@ -36,7 +36,7 @@ installer\build.bat --skip-cache
 Steps:
 
 1. If `vendor_cache/MANIFEST.txt` is missing → `python scripts/build_vendor_cache.py`
-2. Compile `MayaAgent.iss` → `dist/MayaAgent-Setup-1.6.1.exe`
+2. Compile `MayaAgent.iss` → `dist/MayaAgent-Setup-1.6.2.exe`
 
 Rebuild cache:
 

@@ -33,10 +33,13 @@ def build_system_prompt(mode: Optional[str] = None) -> str:
             )
     except Exception:
         pass
+    from maya_agent.core.tool_exposure import exposure_status_for_prompt
+
     env = (
         f"\n\n## 运行环境\n- Maya: {maya_version() if in_maya() else '未在 Maya 内'}\n"
         f"{adv_line}"
-        f"- 工具数量: {len(tool_specs(mode=filter_mode))}\n"
+        f"- 工具数量(全量门控后): {len(tool_specs(mode=filter_mode))}\n"
+        f"{exposure_status_for_prompt(mode=filter_mode, vision=True)}"
         f"- Agent 模式: {filter_mode}\n"
     )
     full = prompt + env + mode_system_addon(filter_mode)

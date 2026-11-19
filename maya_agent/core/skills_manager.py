@@ -20,33 +20,7 @@ _FRONTMATTER_RE = re.compile(
 
 _MAX_RESOURCE_CHARS = 120_000
 _skills_cache: Optional[List["SkillInfo"]] = None
-
-_EXAMPLE_SKILL_MD = """---
-name: game-asset-uv
-description: >-
-  Game-ready UV workflow for Maya meshes. Use when the user asks for UVs,
-  unwrap, texel density, atlas layout, UDIM, or prepare_game_uv.
----
-
-# Game Asset UV
-
-## When to use
-
-- User wants game-ready UVs on selected meshes
-- Mentions unwrap, texel density, atlas, UDIM, or UV quality checks
-
-## Workflow
-
-1. Call `preflight_uv` on the target meshes (optional but recommended).
-2. Call `prepare_game_uv` with `cut_mode=auto` unless the user specifies seams.
-3. Optionally `set_texel_density` (e.g. 10.24 px/cm) then `layout_uv`.
-4. Call `capture_uv_layout` (or `check_uv_quality`) and report issues.
-
-## Notes
-
-- Prefer existing MayaAgent UV tools; do not invent MEL that duplicates them.
-- Ask before destructive UV operations if the user is in Ask mode (tools are read-only there).
-"""
+_REQUIRE_KEYS = frozenset({"meshy", "tripo", "hunyuan", "adv"})
 
 _DRAFT_EXAMPLE_MD = """---
 name: example
@@ -63,8 +37,15 @@ description: Draft template — directories starting with _ are skipped by disco
 2. 放入 `SKILL.md`，YAML frontmatter 至少包含 `name` 与 `description`
 3. 在「扩展」页点击刷新
 
+内置 Skill 位于插件 `resources/skills/`；用户目录同名包会覆盖内置。
+
 参考规范：https://agentskills.io/specification
 """
+
+
+def bundled_skills_root() -> Path:
+    """Shipped skills under ``<project>/resources/skills``."""
+    return Path(__file__).resolve().parent.parent.parent / "resources" / "skills"
 
 
 @dataclass
@@ -204,8 +185,56 @@ def _coerce_metadata(raw: Any) -> Dict[str, str]:
     for k, v in raw.items():
         if v is None:
             continue
-        out[str(k)] = str(v)
+        if isinstance(v, (list, tuple)):
+            out[str(k)] = ",".join(str(x).strip() for x in v if str(x).strip())
+        else:
+            out[str(k)] = str(v)
     return out
+
+
+def skill_requirement_met(skill: "SkillInfo") -> bool:
+    """Return False when metadata.requires names an unavailable tool family."""
+    req = (skill.metadata.get("requires") or "").strip().lower()
+    if not req:
+        return True
+    # Allow comma-separated requires (all must be met).
+    parts = [p.strip() for p in re.split(r"[\s,]+", req) if p.strip()]
+    for part in parts:
+        if part not in _REQUIRE_KEYS:
+            continue
+        if part == "meshy":
+            try:
+                from maya_agent.tools.meshy_client import meshy_tools_available
+
+                if not meshy_tools_available():
+                    return False
+            except Exception:
+                return False
+        elif part == "tripo":
+            try:
+                from maya_agent.tools.tripo_client import tripo_tools_available
+
+                if not tripo_tools_available():
+                    return False
+            except Exception:
+                return False
+        elif part == "hunyuan":
+            try:
+                from maya_agent.tools.hunyuan_client import hunyuan_tools_available
+
+                if not hunyuan_tools_available():
+                    return False
+            except Exception:
+                return False
+        elif part == "adv":
+            try:
+                from maya_agent.tools.adv_rig import adv_tools_available
+
+                if not adv_tools_available():
+                    return False
+            except Exception:
+                return False
+    return True
 
 
 def skill_info_from_dir(skill_dir: Path) -> Optional[SkillInfo]:
@@ -274,18 +303,39 @@ def skill_info_from_dir(skill_dir: Path) -> Optional[SkillInfo]:
     )
 
 
+def _retire_legacy_seeded_uv(root: Path) -> None:
+    """
+    Older installs auto-seeded ``game-asset-uv`` without metadata.category.
+
+    That user copy would override the richer bundled skill — move it aside once.
+    """
+    legacy = root / "game-asset-uv"
+    if not legacy.is_dir():
+        return
+    info = skill_info_from_dir(legacy)
+    if info is None:
+        return
+    if info.metadata.get("category") or info.metadata.get("categories"):
+        return
+    dest = root / "_legacy-game-asset-uv"
+    if dest.exists():
+        return
+    try:
+        legacy.rename(dest)
+        log.info("retired legacy user skill game-asset-uv → %s", dest.name)
+    except OSError as e:
+        log.warning("failed to retire legacy game-asset-uv: %s", e)
+
+
 def ensure_skills_dir() -> Path:
-    """Create skills root and seed example packages if missing."""
+    """Create user skills root and seed draft ``_example`` if missing."""
     root = agent_skills_root()
     root.mkdir(parents=True, exist_ok=True)
 
-    example = root / "game-asset-uv"
-    if not (example / "SKILL.md").is_file():
-        try:
-            example.mkdir(parents=True, exist_ok=True)
-            (example / "SKILL.md").write_text(_EXAMPLE_SKILL_MD, encoding="utf-8")
-        except OSError as e:
-            log.warning("failed to write example skill: %s", e)
+    try:
+        _retire_legacy_seeded_uv(root)
+    except Exception:
+        log.exception("retire legacy uv skill failed")
 
     draft = root / "_example"
     if not (draft / "SKILL.md").is_file():
@@ -325,15 +375,22 @@ def reload_skills() -> None:
 
 
 def discover_skills(force_reload: bool = False) -> List[SkillInfo]:
-    """Return cached list of valid skills under the configured root."""
+    """
+    Return cached skills: bundled ``resources/skills`` then user root.
+
+    Same-name packages in the user skills directory override bundled ones.
+    """
     global _skills_cache
     if force_reload or _skills_cache is None:
         try:
             ensure_skills_dir()
         except Exception:
             log.exception("ensure_skills_dir failed")
-        root = agent_skills_root()
-        _skills_cache = _scan_skills(root)
+        by_name: Dict[str, SkillInfo] = {}
+        for root in (bundled_skills_root(), agent_skills_root()):
+            for info in _scan_skills(root):
+                by_name[info.name] = info
+        _skills_cache = sorted(by_name.values(), key=lambda s: s.name.lower())
     return list(_skills_cache or [])
 
 
@@ -465,7 +522,7 @@ def get_skills_catalog_for_prompt(max_chars: Optional[int] = None) -> str:
     skills = [
         s
         for s in discover_skills()
-        if not s.disable_model_invocation
+        if not s.disable_model_invocation and skill_requirement_met(s)
     ]
     if not skills:
         return ""
@@ -477,9 +534,11 @@ def get_skills_catalog_for_prompt(max_chars: Optional[int] = None) -> str:
     header = (
         "<available_skills>\n"
         "The following Agent Skills are installed. When a task matches a skill "
-        "description, call `read_skill` with that skill name to load full instructions. "
+        "description, call `read_skill` with that skill name to load full instructions "
+        "(and activate the skill's tool category pack under layered exposure). "
         "Use `read_skill_resource` for files referenced from the skill "
-        "(scripts/, references/, assets/). Use `list_skills` to refresh the list.\n\n"
+        "(scripts/, references/, assets/). Use `list_skills` to refresh the list. "
+        "If no skill matches, use `search_tools` / `activate_tool_pack`.\n\n"
     )
     footer = "\n</available_skills>"
     overhead = len(header) + len(footer)

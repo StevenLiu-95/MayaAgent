@@ -1,7 +1,7 @@
 # Maya Agent 默认配置
 app:
   name: Maya Agent
-  version: "1.6.1"
+  version: "1.6.2"
   language: zh-CN
   theme: dark
 
@@ -207,10 +207,13 @@ agent:
   stream: true
   show_tool_calls: true
   show_thinking: true
-  auto_select_tools: true
   auto_save_sessions: true
   max_sessions_per_project: 50
   default_mode: agent
+  # full = expose all tools after availability/mode gates (legacy)
+  # layered = core + activated packs via search/activate/read_skill
+  tool_exposure: layered
+  tool_search_top_k: 15
   context_compress: true
   context_protect_recent_groups: 2
   context_tool_soft_limit: 1200

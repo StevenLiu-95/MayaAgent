@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.6.1** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨蒙皮、动画、材质、灯光与导出。内置 **235 个工具 / 18 个类别**，支持 **15 家**主流大模型（含视觉模型）与云端 AI 3D（Meshy / Tripo / 腾讯混元3D），并可通过 MCP 在 Cursor / VS Code / Claude Desktop 中调用同一套能力。
+**v1.6.2** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨蒙皮、动画、材质、灯光与导出。内置 **235 个工具 / 18 个类别**，支持 **15 家**主流大模型（含视觉模型）与云端 AI 3D（Meshy / Tripo / 腾讯混元3D），并可通过 MCP 在 Cursor / VS Code / Claude Desktop 中调用同一套能力。
 
 ## 核心能力
 
@@ -19,7 +19,7 @@
 | **Agent / Ask / Plan 模式** | 对话栏可切换：**Agent**（全工具）、**Ask**（只读调研）、**Plan**（先 `create_plan` 出步骤卡片，用户「批准执行」后再改场景）；工具按模式白名单裁剪，执行器二次拦截；MCP `mayaagent_chat` 可传 `mode` |
 | **上下文压缩与环路守卫** | 发给 LLM 时自动压缩较旧的工具结果（会话 sidecar 仍存全文）；同轮只读工具去重、连续相同调用熔断（可在 `agent.context_compress` / `agent.loop_guard` 关闭） |
 | **User Rules** | 「扩展」页或项目 `rules/*.md` 写持久规范（命名/轴向/导出等），自动注入 system prompt；`_` 开头为草稿不注入；不覆盖 Ask/危险确认 |
-| **Agent Skills** | 兼容 [agentskills.io](https://agentskills.io/specification) 的 `SKILL.md` 包；「扩展」页配置目录（默认 MayaAgent 同级 `MayaAgentSkills`）；元数据注入 system prompt，正文经 `read_skill` 按需加载；与 User Rules 独立 |
+| **Agent Skills** | 兼容 [agentskills.io](https://agentskills.io/specification) 的 `SKILL.md` 包；内置工作流在 `resources/skills/`（建模/UV/绑骨/云端 3D 等，`read_skill` 会激活对应工具类别）；用户目录（默认同级 `MayaAgentSkills`）可覆盖同名包；与 User Rules 独立 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景文件.mayaagent.json`（与场景同目录，随工程拷贝）；未命名场景暂存临时目录，保存后迁移 |
 | **安全可逆** | 场景类工具在 Maya 主线程执行（网络/文件类工具不阻塞主线程）；整轮 Undo 块（一轮修改一次 Ctrl+Z 回退，MCP 侧 `mayaagent_undo`）；危险操作确认；本地文件读写白名单；默认不擅自新建或保存场景 |
 | **工具开发** | `maya_dev` 18 个元工具：查 Maya API、检索 cmds 帮助、校验/写入/运行脚本、生成工具模板、创建工具架按钮、加载插件 |
@@ -34,7 +34,7 @@
 
 面向最终用户的商业安装包（Inno Setup）：
 
-1. 运行 **`MayaAgent-Setup-1.6.1.exe`**（由 `installer\build.bat` 生成，见 [`installer/README.md`](installer/README.md)）
+1. 运行 **`MayaAgent-Setup-1.6.2.exe`**（由 `installer\build.bat` 生成，见 [`installer/README.md`](installer/README.md)）
 2. 选择安装目录（默认 `%LOCALAPPDATA%\MayaAgent`）与要挂钩的 **Maya 版本**
 3. **完全退出并重启 Maya** → 菜单 **Maya Agent** / 工具架 **MayaAgent**
 
@@ -301,7 +301,7 @@ MCP 连接时会把与面板相同的系统提示词（`resources/prompts/system
 | `%APPDATA%/MayaAgent/logs/maya_agent.log` | 运行日志 |
 | `<场景文件>.mayaagent.json` | 会话 sidecar（与场景同目录）；未命名场景暂存临时目录 |
 | `<项目同级>/MayaAgentTempFile/` | 默认临时根目录：对话附图/附件、云 3D 下载、视口截图、未命名会话（设置 `ui.temp_dir` 可改） |
-| `<项目同级>/MayaAgentSkills/` | 默认 Agent Skills 根目录（`*/SKILL.md`）；「扩展」页 `agent.skills_dir` 可改 |
+| `<项目同级>/MayaAgentSkills/` | 用户 Agent Skills 根目录（`*/SKILL.md`）；与内置 `resources/skills/` 合并发现，同名覆盖内置；「扩展」页 `agent.skills_dir` 可改 |
 | `<项目>/.vendor/cp37\|cp39\|cp311/` | 按 ABI 分目录的依赖兜底（安装器从 `vendor_cache` 拷贝；已 gitignore） |
 | `<项目>/vendor_cache/` | 构建机预置的离线依赖树（打进 Setup；已 gitignore） |
 | `<项目>/dist/` | `MayaAgent-Setup-*.exe` 输出目录 |

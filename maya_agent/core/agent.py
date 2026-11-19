@@ -20,6 +20,14 @@ from maya_agent.core.loop_guards import TurnLoopGuard
 from maya_agent.core.memory import ConversationMemory
 from maya_agent.core.plan_context import set_plan_store_fallback
 from maya_agent.core.plan_store import PlanStore
+from maya_agent.core.tool_exposure import (
+    ExposureContext,
+    ToolRouter,
+    push_exposure_router,
+    reset_exposure_router,
+    resolve_tool_specs,
+    set_exposure_router_fallback,
+)
 from maya_agent.core.tool_progress import (
     push_cancel_checker,
     push_progress_emitter,
@@ -39,7 +47,7 @@ from maya_agent.llm.base import (
 )
 from maya_agent.llm.image_codec import MAX_IMAGES
 from maya_agent.llm.registry import create_provider
-from maya_agent.tools.registry import ToolResult, ensure_tools_loaded, tool_specs
+from maya_agent.tools.registry import ToolResult, ensure_tools_loaded
 from maya_agent.utils.config import get_config
 from maya_agent.utils.logger import get_logger
 from maya_agent.utils.maya_compat import in_maya
@@ -241,11 +249,20 @@ class MayaAgent:
 
         model_name = getattr(provider, "model", "") or self.model or ""
         vision_ok = bool(getattr(provider, "supports_vision", False))
-        tools = (
-            tool_specs(vision=vision_ok, mode=turn_mode)
-            if provider.supports_tools
-            else None
-        )
+        router = ToolRouter.from_config()
+        router.mode = turn_mode
+        router.vision = vision_ok
+        router_token = push_exposure_router(router)
+        set_exposure_router_fallback(router)
+
+        def _resolve_tools():
+            if not provider.supports_tools:
+                return None
+            return resolve_tool_specs(
+                ExposureContext.for_agent_turn(
+                    mode=turn_mode, vision=vision_ok, router=router
+                )
+            )
 
         def _close_undo_turn():
             nonlocal turn_opened
@@ -286,6 +303,7 @@ class MayaAgent:
                     stopped = _emit_cancelled(final_text)
                     yield stopped
                     return stopped.get("stop_notice") or ""
+                tools = _resolve_tools()
                 try:
                     if use_stream:
                         gen = provider.chat(self.memory.as_list(), tools=tools, stream=True)
@@ -476,6 +494,15 @@ class MayaAgent:
             # Safety: never leave an open Maya undo chunk behind
             if turn_opened:
                 self.undo.end_turn(had_edits=had_tools)
+            try:
+                reset_exposure_router(router_token)
+            except Exception:
+                pass
+            set_exposure_router_fallback(None)
+            try:
+                router.reset()
+            except Exception:
+                pass
 
     def _emit_synthetic_tool(
         self, tc: ToolCall, result: ToolResult

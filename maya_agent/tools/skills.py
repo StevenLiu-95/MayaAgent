@@ -15,7 +15,9 @@ def _skills_disabled() -> bool:
     name="list_skills",
     description=(
         "List installed Agent Skills (name, description, path, flags). "
-        "Use when checking which skills are available or before read_skill."
+        "Use when checking which skills are available or before read_skill. "
+        "Skills whose metadata.requires is unmet (e.g. Meshy key missing) are "
+        "hidden unless include_unavailable=true."
     ),
     parameters=obj_schema(
         {
@@ -26,12 +28,21 @@ def _skills_disabled() -> bool:
                     "(manual / explicit use only). Default true."
                 ),
             },
+            "include_unavailable": {
+                "type": "boolean",
+                "description": (
+                    "Include skills whose metadata.requires is not met "
+                    "(missing API / ADV). Default false."
+                ),
+            },
         }
     ),
     category="skills",
     main_thread=False,
 )
-def list_skills(include_manual: bool = True) -> ToolResult:
+def list_skills(
+    include_manual: bool = True, include_unavailable: bool = False
+) -> ToolResult:
     if _skills_disabled():
         return ToolResult(ok=False, error="Agent Skills are disabled in settings (扩展)")
     skills_manager.reload_skills()
@@ -39,12 +50,17 @@ def list_skills(include_manual: bool = True) -> ToolResult:
     for s in skills_manager.discover_skills(force_reload=True):
         if s.disable_model_invocation and not include_manual:
             continue
+        if not include_unavailable and not skills_manager.skill_requirement_met(s):
+            continue
         items.append(s.to_dict())
     return ToolResult(
         ok=True,
         message=f"发现 {len(items)} 个 Skill",
         data={
             "skills_dir": skills_manager.skills_root_display(),
+            "bundled_skills_dir": str(skills_manager.bundled_skills_root()).replace(
+                "\\", "/"
+            ),
             "count": len(items),
             "skills": items,
         },
@@ -78,11 +94,23 @@ def read_skill(name: str) -> ToolResult:
         return ToolResult(ok=False, error=str(e))
     except Exception as e:
         return ToolResult(ok=False, error=f"failed to load skill: {e}")
-    return ToolResult(
-        ok=True,
-        message=f"已加载 Skill: {payload.get('name')}",
-        data=payload,
-    )
+
+    activation = None
+    try:
+        from maya_agent.core.tool_exposure import get_exposure_router
+
+        router = get_exposure_router()
+        if router is not None:
+            activation = router.activate_from_skill(payload)
+            payload = dict(payload)
+            payload["tool_activation"] = activation
+    except Exception:
+        activation = None
+
+    msg = f"已加载 Skill: {payload.get('name')}"
+    if isinstance(activation, dict) and activation.get("activated_via"):
+        msg = f"{msg}（已按 {activation.get('activated_via')} 激活相关工具）"
+    return ToolResult(ok=True, message=msg, data=payload)
 
 
 @tool(
