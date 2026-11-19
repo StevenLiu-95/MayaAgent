@@ -18,7 +18,7 @@
 | **Maya 内嵌 UI** | 停靠深色面板：**对话 / 模型 / 设置 / 工具 / 帮助** 五个页签；紧凑输入区；发送与停止合并为同一按钮（绿 / 红）；Enter 发送、Shift+Enter 换行；Ctrl+V 粘贴截图、拖入文件附件 |
 | **Agent / Ask / Plan 模式** | 对话栏可切换：**Agent**（全工具）、**Ask**（只读调研）、**Plan**（先 `create_plan` 出步骤卡片，用户「批准执行」后再改场景）；工具按模式白名单裁剪，执行器二次拦截；MCP `mayaagent_chat` 可传 `mode` |
 | **上下文压缩与环路守卫** | 发给 LLM 时自动压缩较旧的工具结果（会话 sidecar 仍存全文）；同轮只读工具去重、连续相同调用熔断（可在 `agent.context_compress` / `agent.loop_guard` 关闭） |
-| **User Rules** | 设置页或项目 `rules/*.md` 写持久规范（命名/轴向/导出等），自动注入 system prompt；`_` 开头为草稿不注入；不覆盖 Ask/危险确认 |
+| **User Rules** | 「扩展」页或项目 `rules/*.md` 写持久规范（命名/轴向/导出等），自动注入 system prompt；`_` 开头为草稿不注入；不覆盖 Ask/危险确认 |
 | **Agent Skills** | 兼容 [agentskills.io](https://agentskills.io/specification) 的 `SKILL.md` 包；「扩展」页配置目录（默认 MayaAgent 同级 `MayaAgentSkills`）；元数据注入 system prompt，正文经 `read_skill` 按需加载；与 User Rules 独立 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景文件.mayaagent.json`（与场景同目录，随工程拷贝）；未命名场景暂存临时目录，保存后迁移 |
 | **安全可逆** | 场景类工具在 Maya 主线程执行（网络/文件类工具不阻塞主线程）；整轮 Undo 块（一轮修改一次 Ctrl+Z 回退，MCP 侧 `mayaagent_undo`）；危险操作确认；本地文件读写白名单；默认不擅自新建或保存场景 |
@@ -136,8 +136,8 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 | ---- | ---- |
 | **对话** | 多会话（新建 / 重命名 / 删除 / 切换）、流式回复、思考过程、工具卡片（进度/参数/结果/图片）、可点击选项按钮、快捷指令芯片、图片与文件附件、发送/停止合并按钮 |
 | **模型** | 4 个子页：**LLM**（连接 / 生成 / 行为 / 限制，含测试连接）、**Meshy**、**Tripo**、**混元**（启用开关 + 密钥 + 测试连接/余额） |
-| **设置** | 语言、字体族、整体缩放（75–175%）、临时文件目录、AdvancedSkeleton 路径与检测、MCP Bridge（开关/端口/确认模式/启停/复制配置）、User Rules |
-| **扩展** | Agent Skills：启用开关、自定义 Skills 根目录（留空为同级 `MayaAgentSkills`）、已发现列表刷新与打开目录 |
+| **设置** | 语言、字体族、整体缩放（75–175%）、临时文件目录、AdvancedSkeleton 路径与检测、MCP Bridge（开关/端口/确认模式/启停/复制配置） |
+| **扩展** | User Rules + Agent Skills：规则注入开关/编辑；Skills 目录（留空为同级 `MayaAgentSkills`）、列表刷新与打开目录 |
 | **工具** | 按类别浏览全部工具；双击工具名插入输入框（「请调用工具 X」）；右侧/下方显示说明与参数 |
 | **帮助** | 快速上手、对话与模型设置说明、扩展/Skills、MCP 接入、内置工具一览、安全约定、菜单与重载 |
 

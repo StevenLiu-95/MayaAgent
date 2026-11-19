@@ -54,6 +54,7 @@ class ConfigDefaults:
                 bridge.get("confirm_mode") or "maya_dialog"
             ),
             "bridge_share_agent": bool(bridge.get("share_panel_agent", True)),
+            "user_rules_enabled": bool(agent.get("user_rules_enabled", True)),
             "skills_enabled": bool(agent.get("skills_enabled", True)),
             "skills_dir": str(agent.get("skills_dir") or ""),
         }
