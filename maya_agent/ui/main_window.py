@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from maya_agent import __app_name__, __version__
+from maya_agent.core import checkpoint as cpmod
 from maya_agent.core.agent import MayaAgent
 from maya_agent.core.session_manager import SessionManager
 from maya_agent.i18n import init_from_config, t
@@ -91,6 +92,12 @@ def show_main_window():
     """Show Agent UI — docked in Maya when possible, otherwise floating."""
     init_from_config()
     if in_maya():
+        try:
+            from maya_agent.plugin.scene_hooks import install_scene_hooks
+
+            install_scene_hooks()
+        except Exception:
+            pass
         try:
             from maya_agent.ui.dock import show_dockable
 
@@ -194,6 +201,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._worker = None
         self._skip_confirm_this_turn = False
         self._stopped_by_user = False
+        self._turn_done_ok = False  # set by a normal "done" event (checkpoint gate)
         self._stream_buf = ""
         self._thinking_buf = ""
         self._pending_images = []
@@ -332,6 +340,13 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self.chat.set_plan_handlers(
             on_approve=self._on_plan_approve,
             on_reject=self._on_plan_reject,
+        )
+        self.chat.set_checkpoint_handlers(
+            on_rollback=self._on_cp_rollback,
+            on_branch=self._on_cp_branch,
+            on_rename=self._on_cp_rename,
+            on_add=self._on_cp_add,
+            can_rollback=self._cp_can_rollback,
         )
         splitter.addWidget(self.chat)
 
@@ -954,8 +969,8 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         if self._save_timer.isActive():
             self._save_timer.stop()
 
-    def _persist_active_session(self, *, refresh_combo=False):
-        if self._session_switching:
+    def _persist_active_session(self, *, refresh_combo=False, force=False):
+        if self._session_switching and not force:
             return
         try:
             active_id = self.sessions.active().id
@@ -967,6 +982,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
                 active_id,
                 self.agent.memory.messages,
                 self.chat.blocks,
+                force=force,
             )
             if refresh_combo:
                 self._refresh_session_combo(select_id=active_id)
@@ -1025,14 +1041,21 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
     def persist_sessions(self):
         self._persist_active_session(refresh_combo=True)
 
-    def on_scene_changed(self, reload_only: bool = True):
+    def on_scene_changed(self, reload_only: bool = True, *, persist_current: bool = True):
         if self._worker and self._worker.isRunning():
+            if not reload_only:
+                from maya_agent.core.session_store import get_maya_scene_path
+
+                self.sessions.rebind_scene_path(get_maya_scene_path())
+                self.scene_hint.setText(self.sessions.scene_label())
+                self.scene_hint.setToolTip(self.sessions.storage_hint())
             return
         self._cancel_pending_save()
-        # Flush UI into the *currently bound* project and save to that
-        # project's sidecar first. Do NOT write into the newly opened
-        # scene path — get_maya_scene_path() already points there.
-        self._persist_active_session(refresh_combo=False)
+        if persist_current:
+            # Flush UI into the *currently bound* project and save to that
+            # project's sidecar first. Do NOT write into the newly opened
+            # scene path — get_maya_scene_path() already points there.
+            self._persist_active_session(refresh_combo=False)
         self.sessions.reload_from_disk()
         self._load_active_session()
         if reload_only:
@@ -1693,6 +1716,201 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         self._persist_active_session(refresh_combo=True)
         self.status_label.set_idle(t("status.cleared"))
 
+    # ------------------------------------------------------------------
+    # Checkpoints
+    # ------------------------------------------------------------------
+
+    def _checkpoint_busy(self) -> bool:
+        """True while the panel worker or a bridge (MCP) turn drives the agent."""
+        if self._worker and self._worker.isRunning():
+            return True
+        try:
+            from maya_agent.bridge.agent_remote import agent_lock
+
+            lock = agent_lock()
+            if lock.acquire(blocking=False):
+                lock.release()
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _cp_can_rollback(self, cp_id: str) -> bool:
+        try:
+            cp = self.sessions.get_checkpoint(self.sessions.active().id, cp_id)
+        except Exception:
+            return False
+        return bool(cp is not None and cp.has_snapshot)
+
+    def _after_turn_checkpoint(self) -> None:
+        """Turn finished normally: add a checkpoint (auto) or offer one (manual)."""
+        try:
+            if get_config().get("agent.checkpoint_auto", True):
+                self._create_checkpoint()
+            else:
+                self.chat.add_checkpoint_offer()
+        except Exception as e:
+            self.status_label.set_idle(t("checkpoint.create_failed", error=str(e)))
+
+    def _create_checkpoint(self) -> bool:
+        session_id = self.sessions.active().id
+        session = self.sessions.project.get_session(session_id)
+        count = len(session.checkpoints) if session is not None else 0
+        cp = cpmod.new_checkpoint(
+            name=t("checkpoint.default_name", n=count + 1),
+            memory_seq=self.agent.memory.last_seq(),
+            plan=self.agent.export_pending_plan(),
+            scene_path=self._current_scene_path(),
+        )
+        path, meta, err = cpmod.snapshot_scene(cp.id)
+        cp.snapshot_path = path
+        cp.scene_meta = meta
+        if err and in_maya():
+            self.status_label.set_idle(t("checkpoint.snapshot_failed", error=err))
+        self.chat.add_checkpoint(cp.id, cp.name)
+        self.sessions.add_checkpoint(session_id, cp)
+        self._persist_active_session(force=True)
+        self.chat.refresh_checkpoint_states()
+        return True
+
+    @staticmethod
+    def _current_scene_path() -> str:
+        try:
+            from maya_agent.core.session_store import get_maya_scene_path
+
+            return get_maya_scene_path() or ""
+        except Exception:
+            return ""
+
+    def _on_cp_add(self) -> None:
+        """Manual mode: user clicked '+ add checkpoint'."""
+        if self._checkpoint_busy():
+            self.chat.add_checkpoint_offer()
+            return
+        try:
+            self._create_checkpoint()
+        except Exception as e:
+            self.status_label.set_idle(t("checkpoint.create_failed", error=str(e)))
+            return
+        self._schedule_persist()
+
+    def _on_cp_rename(self, cp_id: str, name: str) -> None:
+        self.sessions.rename_checkpoint(self.sessions.active().id, cp_id, name)
+        self._schedule_persist()
+
+    def _checkpoint_guard(self) -> bool:
+        """Common precondition for rollback/branch. Returns True when allowed."""
+        if self._checkpoint_busy():
+            QtWidgets.QMessageBox.information(
+                self, t("checkpoint.title"), t("checkpoint.busy")
+            )
+            return False
+        return True
+
+    def _confirm_checkpoint_rollback(self, cp: "cpmod.Checkpoint") -> bool:
+        if not get_config().get("agent.checkpoint_confirm_restore", True):
+            return True
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle(t("checkpoint.confirm_title"))
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText(
+            t("checkpoint.confirm_body", name=cp.name or t("checkpoint.unnamed"))
+        )
+        box.setInformativeText(t("checkpoint.confirm_info"))
+        btn_ok = box.addButton(
+            t("checkpoint.confirm_ok"), QtWidgets.QMessageBox.AcceptRole
+        )
+        btn_never = box.addButton(
+            t("checkpoint.confirm_never"), QtWidgets.QMessageBox.ActionRole
+        )
+        btn_cancel = box.addButton(
+            t("checkpoint.confirm_cancel"), QtWidgets.QMessageBox.RejectRole
+        )
+        box.setDefaultButton(btn_cancel)
+        box.setEscapeButton(btn_cancel)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is btn_never:
+            cfg = get_config()
+            cfg.set("agent.checkpoint_confirm_restore", False)
+            cfg.save_user()
+            panel = getattr(self, "ui_panel", None)
+            if panel is not None:
+                try:
+                    panel.reload_from_config()
+                except Exception:
+                    pass
+            return True
+        return clicked is btn_ok
+
+    def _on_cp_rollback(self, cp_id: str) -> None:
+        if not self._checkpoint_guard():
+            return
+        session_id = self.sessions.active().id
+        cp = self.sessions.get_checkpoint(session_id, cp_id)
+        if cp is None:
+            return
+        if not cp.has_snapshot:
+            QtWidgets.QMessageBox.information(
+                self, t("checkpoint.title"), t("checkpoint.no_snapshot")
+            )
+            return
+        if not self._confirm_checkpoint_rollback(cp):
+            return
+
+        self._cancel_pending_save()
+        # The stored session may lag the live UI (auto-save off / debounce).
+        self._persist_active_session(force=True)
+        self.status_label.set_idle(t("checkpoint.restoring"))
+        QtWidgets.QApplication.processEvents()
+        ok, err = cpmod.restore_scene_safe(cp.snapshot_path, cp.scene_meta)
+        if not ok:
+            QtWidgets.QMessageBox.warning(
+                self,
+                t("checkpoint.title"),
+                t("checkpoint.restore_failed", error=err),
+            )
+            self.status_label.set_idle(t("checkpoint.restore_failed_short"))
+            return
+
+        self.agent.undo.reset()
+        self._session_switching = True
+        try:
+            session = self.sessions.rollback_to(session_id, cp_id)
+            if session is not None:
+                self._apply_session(session)
+        finally:
+            self._session_switching = False
+        self._persist_active_session(refresh_combo=True, force=True)
+        self.chat.refresh_checkpoint_states()
+        self.status_label.set_idle(
+            t("checkpoint.rolled_back", name=cp.name or t("checkpoint.unnamed"))
+        )
+
+    def _on_cp_branch(self, cp_id: str) -> None:
+        if not self._checkpoint_guard():
+            return
+        session_id = self.sessions.active().id
+        cp = self.sessions.get_checkpoint(session_id, cp_id)
+        if cp is None:
+            return
+        self._cancel_pending_save()
+        self._persist_active_session(force=True)
+        self._session_switching = True
+        new = None
+        try:
+            new = self.sessions.branch_from(session_id, cp_id)
+            if new is not None:
+                self._apply_session(new)
+                self._refresh_session_combo(select_id=new.id)
+                self._select_session_in_combo(new.id)
+        finally:
+            self._session_switching = False
+        if new is None:
+            return
+        self.chat.refresh_checkpoint_states()
+        self.status_label.set_idle(t("checkpoint.branched", title=new.title))
+
     def _on_send_or_stop(self):
         if getattr(self, "_send_busy", False):
             self._on_stop()
@@ -1783,6 +2001,11 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
         apply_send_stop_style(getattr(self, "send_btn", None), busy)
 
     def _set_busy(self, busy: bool):
+        if busy:
+            self._turn_done_ok = False
+        chat = getattr(self, "chat", None)
+        if chat is not None:
+            chat.set_checkpoint_actions_enabled(not busy)
         self._apply_send_stop_style(busy)
         self.input_edit.setReadOnly(busy)
         if hasattr(self, "image_btn"):
@@ -2101,6 +2324,7 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             llm_calls=int(event.get("llm_calls") or 0),
             stop_notice=event.get("stop_notice") or "",
         )
+        self._turn_done_ok = True
 
     def _evt_undo_ready(self, event: dict) -> None:
         if event.get("can_undo"):
@@ -2130,6 +2354,9 @@ class MayaAgentWindow(QtWidgets.QMainWindow):
             self.status_label.set_idle(t("status.ready_undo"))
         else:
             self.status_label.set_idle(t("status.ready"))
+        if self._turn_done_ok:
+            self._turn_done_ok = False
+            self._after_turn_checkpoint()
         self._schedule_persist()
 
     def _on_failed(self, err: str):

@@ -26,6 +26,7 @@ class ChatSession:
     ui_blocks: List[Dict[str, Any]] = field(default_factory=list)
     mode: str = "agent"
     pending_plan: Optional[Dict[str, Any]] = None
+    checkpoints: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def create(cls, title: str = "") -> "ChatSession":
@@ -54,7 +55,15 @@ class ChatSession:
         }
         if self.pending_plan:
             payload["pending_plan"] = self.pending_plan
+        if self.checkpoints:
+            payload["checkpoints"] = self.checkpoints
         return payload
+
+    def get_checkpoint(self, cp_id: str) -> Optional[Dict[str, Any]]:
+        for cp in self.checkpoints:
+            if cp.get("id") == cp_id:
+                return cp
+        return None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChatSession":
@@ -64,6 +73,7 @@ class ChatSession:
         plan = data.get("pending_plan")
         if plan is not None and not isinstance(plan, dict):
             plan = None
+        cps = [dict(c) for c in (data.get("checkpoints") or []) if isinstance(c, dict)]
         return cls(
             id=str(data.get("id") or new_session_id()),
             title=str(data.get("title") or "对话"),
@@ -73,6 +83,7 @@ class ChatSession:
             ui_blocks=list(data.get("ui_blocks") or []),
             mode=mode,
             pending_plan=plan,
+            checkpoints=cps,
         )
 
 

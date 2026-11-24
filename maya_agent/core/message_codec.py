@@ -17,6 +17,8 @@ def message_to_dict(msg: ChatMessage) -> Dict[str, Any]:
         d["tool_calls"] = msg.tool_calls
     if msg.images:
         d["images"] = [img.to_dict() for img in msg.images if img.data_b64]
+    if getattr(msg, "seq", 0):
+        d["seq"] = int(msg.seq)
     return d
 
 
@@ -25,6 +27,10 @@ def message_from_dict(data: Dict[str, Any]) -> ChatMessage:
     for item in data.get("images") or []:
         if isinstance(item, dict) and item.get("data_b64"):
             images.append(ImageAttachment.from_dict(item))
+    try:
+        seq = int(data.get("seq") or 0)
+    except (TypeError, ValueError):
+        seq = 0
     return ChatMessage(
         role=str(data.get("role") or "user"),
         content=str(data.get("content") or ""),
@@ -32,6 +38,7 @@ def message_from_dict(data: Dict[str, Any]) -> ChatMessage:
         tool_call_id=data.get("tool_call_id"),
         tool_calls=data.get("tool_calls"),
         images=images or None,
+        seq=seq,
     )
 
 

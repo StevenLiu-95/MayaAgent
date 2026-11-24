@@ -167,6 +167,7 @@ def create_help_panel(parent=None):
             t("help.chat.9"),
             t("help.chat.10"),
             t("help.chat.11"),
+            t("help.chat.12"),
         ),
     )
     root.addWidget(chat)

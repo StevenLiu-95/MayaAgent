@@ -77,6 +77,11 @@ class UndoTurnManager:
 
         run_on_main_thread(_do)
 
+    def reset(self) -> None:
+        """Forget undo availability (scene was replaced, e.g. checkpoint restore)."""
+        self._can_undo = False
+        self._open = False
+
     def cancel_open(self) -> None:
         """Close an open chunk without dropping undo availability."""
         if not self._open:

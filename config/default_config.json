@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "Maya Agent",
-    "version": "1.6.2",
+    "version": "1.6.3",
     "language": "zh-CN",
     "theme": "dark"
   },
@@ -230,6 +230,9 @@
     "show_thinking": true,
     "auto_save_sessions": true,
     "max_sessions_per_project": 50,
+    "checkpoint_auto": true,
+    "checkpoint_confirm_restore": true,
+    "checkpoint_max": 30,
     "default_mode": "agent",
     "tool_exposure": "layered",
     "tool_search_top_k": 15,

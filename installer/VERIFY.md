@@ -3,7 +3,7 @@
 ## Build machine
 
 - [ ] `python scripts/build_vendor_cache.py` creates `vendor_cache/cp37|cp39|cp311` + `MANIFEST.txt`
-- [ ] `installer\build.bat` produces `dist\MayaAgent-Setup-1.6.2.exe`
+- [ ] `installer\build.bat` produces `dist\MayaAgent-Setup-1.6.3.exe`
 - [ ] Slim pack: `python scripts/build_vendor_cache.py --tags cp311 --force` then rebuild
 
 ## End-user PC (no system Python)

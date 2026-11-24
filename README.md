@@ -1,6 +1,6 @@
 # Maya Agent
 
-**v1.6.2** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨蒙皮、动画、材质、灯光与导出。内置 **235 个工具 / 18 个类别**，支持 **15 家**主流大模型（含视觉模型）与云端 AI 3D（Meshy / Tripo / 腾讯混元3D），并可通过 MCP 在 Cursor / VS Code / Claude Desktop 中调用同一套能力。
+**v1.6.3** — 面向 **Autodesk Maya 游戏开发管线** 的 AI Agent：用自然语言驱动建模、UV、绑骨蒙皮、动画、材质、灯光与导出。内置 **235 个工具 / 18 个类别**，支持 **15 家**主流大模型（含视觉模型）与云端 AI 3D（Meshy / Tripo / 腾讯混元3D），并可通过 MCP 在 Cursor / VS Code / Claude Desktop 中调用同一套能力。
 
 ## 核心能力
 
@@ -21,6 +21,7 @@
 | **User Rules** | 「扩展」页或项目 `rules/*.md` 写持久规范（命名/轴向/导出等），自动注入 system prompt；`_` 开头为草稿不注入；不覆盖 Ask/危险确认 |
 | **Agent Skills** | 兼容 [agentskills.io](https://agentskills.io/specification) 的 `SKILL.md` 包；内置工作流在 `resources/skills/`（建模/UV/绑骨/云端 3D 等，`read_skill` 会激活对应工具类别）；用户目录（默认同级 `MayaAgentSkills`）可覆盖同名包；与 User Rules 独立 |
 | **会话随场景** | 多会话管理；自动 sidecar 保存为 `场景文件.mayaagent.json`（与场景同目录，随工程拷贝）；未命名场景暂存临时目录，保存后迁移 |
+| **检查点** | 每轮 AI 回答结束时（自动，或在设置中改为手动）在对话轮次之间添加检查点：保存**场景快照 + 对话位置 + AI 记忆位置**，可命名；**回退**＝恢复场景并回退对话与 AI 记忆（可配置回退前确认），**分支**＝保留当前场景，用检查点之前的对话创建新会话；快照存于 `<临时目录>/checkpoints/`，每会话保留最近 `agent.checkpoint_max` 份 |
 | **安全可逆** | 场景类工具在 Maya 主线程执行（网络/文件类工具不阻塞主线程）；整轮 Undo 块（一轮修改一次 Ctrl+Z 回退，MCP 侧 `mayaagent_undo`）；危险操作确认；本地文件读写白名单；默认不擅自新建或保存场景 |
 | **工具开发** | `maya_dev` 18 个元工具：查 Maya API、检索 cmds 帮助、校验/写入/运行脚本、生成工具模板、创建工具架按钮、加载插件 |
 | **MCP** | Cursor / VS Code / Claude Desktop 经 MCP 调用**同一套** Maya 工具，或远程驱动 `mayaagent_chat` 完整 Agent 循环；本地 HTTP 桥仅监听 `127.0.0.1` + Bearer token |
@@ -34,7 +35,7 @@
 
 面向最终用户的商业安装包（Inno Setup）：
 
-1. 运行 **`MayaAgent-Setup-1.6.2.exe`**（由 `installer\build.bat` 生成，见 [`installer/README.md`](installer/README.md)）
+1. 运行 **`MayaAgent-Setup-1.6.3.exe`**（由 `installer\build.bat` 生成，见 [`installer/README.md`](installer/README.md)）
 2. 选择安装目录（默认 `%LOCALAPPDATA%\MayaAgent`）与要挂钩的 **Maya 版本**
 3. **完全退出并重启 Maya** → 菜单 **Maya Agent** / 工具架 **MayaAgent**
 
@@ -136,7 +137,7 @@ maya_agent.reload()   # 改代码后重装菜单并打开面板
 | ---- | ---- |
 | **对话** | 多会话（新建 / 重命名 / 删除 / 切换）、流式回复、思考过程、工具卡片（进度/参数/结果/图片）、可点击选项按钮、快捷指令芯片、图片与文件附件、发送/停止合并按钮 |
 | **模型** | 4 个子页：**LLM**（连接 / 生成 / 行为 / 限制，含测试连接）、**Meshy**、**Tripo**、**混元**（启用开关 + 密钥 + 测试连接/余额） |
-| **设置** | 语言、字体族、整体缩放（75–175%）、临时文件目录、AdvancedSkeleton 路径与检测、MCP Bridge（开关/端口/确认模式/启停/复制配置） |
+| **设置** | 语言、字体族、整体缩放（75–175%）、临时文件目录、检查点（自动/手动添加、回退前确认）、AdvancedSkeleton 路径与检测、MCP Bridge（开关/端口/确认模式/启停/复制配置） |
 | **扩展** | User Rules + Agent Skills：规则注入开关/编辑；Skills 目录（留空为同级 `MayaAgentSkills`）、列表刷新与打开目录 |
 | **工具** | 按类别浏览全部工具；双击工具名插入输入框（「请调用工具 X」）；右侧/下方显示说明与参数 |
 | **帮助** | 快速上手、对话与模型设置说明、扩展/Skills、MCP 接入、内置工具一览、安全约定、菜单与重载 |
@@ -300,7 +301,7 @@ MCP 连接时会把与面板相同的系统提示词（`resources/prompts/system
 | `%APPDATA%/MayaAgent/bridge.json` | MCP 发现文件（Maya 启动 MCP 时写入） |
 | `%APPDATA%/MayaAgent/logs/maya_agent.log` | 运行日志 |
 | `<场景文件>.mayaagent.json` | 会话 sidecar（与场景同目录）；未命名场景暂存临时目录 |
-| `<项目同级>/MayaAgentTempFile/` | 默认临时根目录：对话附图/附件、云 3D 下载、视口截图、未命名会话（设置 `ui.temp_dir` 可改） |
+| `<项目同级>/MayaAgentTempFile/` | 默认临时根目录：对话附图/附件、云 3D 下载、视口截图、未命名会话、检查点场景快照 `checkpoints/*.mb`（设置 `ui.temp_dir` 可改） |
 | `<项目同级>/MayaAgentSkills/` | 用户 Agent Skills 根目录（`*/SKILL.md`）；与内置 `resources/skills/` 合并发现，同名覆盖内置；「扩展」页 `agent.skills_dir` 可改 |
 | `<项目>/.vendor/cp37\|cp39\|cp311/` | 按 ABI 分目录的依赖兜底（安装器从 `vendor_cache` 拷贝；已 gitignore） |
 | `<项目>/vendor_cache/` | 构建机预置的离线依赖树（打进 Setup；已 gitignore） |
@@ -360,6 +361,7 @@ MayaAgent/
 | `python scripts/smoke_test.py` | 冒烟测试 |
 | `python scripts/test_ui_smoke.py` | UI 无头冒烟（需 PySide） |
 | `python scripts/test_risk_fixes_unit.py` | 风险修复回归：主线程跳板 / 确认框线程 / 云端轮询取消 / 撤销边界 / 配置持久化 / 会话原子写盘 |
+| `python scripts/test_checkpoint_unit.py` | 检查点回归：消息 seq / 记忆与对话截断 / 回退与分支一致性 / 旧会话兼容 |
 | `python scripts/test_registry_reload_unit.py` | 工具注册表热重载回归 |
 | `python scripts/test_bridge_protocol.py` | HTTP 桥协议 / 鉴权 |
 | `python scripts/test_mcp_proxy.py` | MCP 代理链路 |
@@ -384,6 +386,7 @@ MayaAgent/
 | 无法附带/截取图片 | 设置中将「图片输入」设为开启/自动，或换用带 vision 的模型 |
 | MCP 连不上 / unauthorized | 先在 Maya 启动 MCP；重启 MCP 会刷新 token；确认 `pip install -r requirements-mcp.txt` 用的是 mcp.json 里的同一个 Python |
 | 云 3D 任务失败 | 检查密钥、余额与网络；Tripo/混元导入优先 FBX（非 FBX 会自动转换）；混元不支持本地网格直传 |
+| 检查点「回退」按钮灰色 | 该检查点没有场景快照（快照保存失败，或超出 `agent.checkpoint_max` 被清理）；仍可「分支」。回退会替换整个场景并清空 Maya Undo 历史 |
 | 会话没随场景恢复 | 确认场景已保存（sidecar 写在场景同目录），或检查 `agent.auto_save_sessions` 是否开启 |
 
 ## 版本管理

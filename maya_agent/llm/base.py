@@ -60,6 +60,9 @@ class ChatMessage:
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     images: Optional[List[ImageAttachment]] = None
+    # Stable per-session sequence number (0 = unassigned). Used by checkpoints
+    # so memory can be cut at an exact point even after window trimming.
+    seq: int = 0
 
     def to_openai(self, include_images: bool = True) -> Dict[str, Any]:
         msg: Dict[str, Any] = {"role": self.role}

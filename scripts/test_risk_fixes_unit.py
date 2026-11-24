@@ -394,6 +394,246 @@ def test_http_get_limited_caps_page_bytes() -> None:
     assert text.startswith("<html><body>AAAA")
 
 
+def test_scene_hooks_after_new_isolates_previous_sidecar() -> None:
+    """P0: File -> New Scene must register kAfterNew and never overwrite A.ma sidecar."""
+    from maya_agent.core import session_manager as sm_mod
+    from maya_agent.core import session_store
+    from maya_agent.llm.base import ChatMessage
+    from maya_agent.plugin import scene_hooks
+
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="mayaagent_hooks_new_"))
+    scene_a = (tmpdir / "A.ma").as_posix()
+    sidecar_a = session_store.sidecar_path_for_scene(scene_a)
+    untitled_fb = tmpdir / "untitled" / "current.json"
+    assert sidecar_a is not None
+
+    live = {"scene": scene_a}
+    registered: list = []
+    removed: list = []
+
+    class FakeMSceneMessage:
+        kBeforeNew = 101
+        kAfterNew = 102
+        kBeforeOpen = 103
+        kAfterOpen = 104
+        kAfterSave = 105
+
+        @staticmethod
+        def addCallback(msg_id, fn):
+            cid = len(registered) + 1
+            registered.append((cid, msg_id, fn))
+            return cid
+
+    class FakeMMessage:
+        @staticmethod
+        def removeCallback(cid):
+            removed.append(cid)
+
+    fake_maya = types.ModuleType("maya")
+    fake_api = types.ModuleType("maya.api")
+    fake_om2 = types.ModuleType("maya.api.OpenMaya")
+    fake_om2.MSceneMessage = FakeMSceneMessage
+    fake_om2.MMessage = FakeMMessage
+    fake_api.OpenMaya = fake_om2
+    fake_maya.api = fake_api
+
+    class FakeWindow:
+        def __init__(self):
+            self.sessions = sm_mod.SessionManager()
+            self.messages = [ChatMessage(role="user", content="rig hero A")]
+            self.blocks = [{"type": "user", "text": "rig hero A"}]
+
+        def persist_sessions(self):
+            self.sessions.sync_active(self.messages, self.blocks)
+
+        def on_scene_changed(self, reload_only: bool = True, *, persist_current: bool = True):
+            if persist_current:
+                self.persist_sessions()
+            self.sessions.reload_from_disk()
+            self.messages = self.sessions.memory_for_active()
+            self.blocks = self.sessions.blocks_for_active()
+
+    saved_mods = {
+        k: sys.modules.get(k)
+        for k in ("maya", "maya.api", "maya.api.OpenMaya")
+    }
+    old_in_maya = scene_hooks.in_maya
+    old_get_win = scene_hooks._get_window
+    old_get_scene_ss = session_store.get_maya_scene_path
+    old_get_scene_sm = sm_mod.get_maya_scene_path
+    old_fb = session_store.fallback_path_for_untitled
+
+    sys.modules["maya"] = fake_maya
+    sys.modules["maya.api"] = fake_api
+    sys.modules["maya.api.OpenMaya"] = fake_om2
+    scene_hooks.uninstall_scene_hooks()
+    scene_hooks.in_maya = lambda: True
+    session_store.get_maya_scene_path = lambda: live["scene"]
+    sm_mod.get_maya_scene_path = lambda: live["scene"]
+    session_store.fallback_path_for_untitled = lambda: untitled_fb
+
+    try:
+        win = FakeWindow()
+        win.persist_sessions()
+        scene_hooks._get_window = lambda: win
+
+        scene_hooks.install_scene_hooks()
+        hook_map = {msg_id: fn for _cid, msg_id, fn in registered}
+        assert FakeMSceneMessage.kBeforeNew in hook_map
+        assert FakeMSceneMessage.kAfterNew in hook_map, "missing MSceneMessage.kAfterNew"
+        assert FakeMSceneMessage.kAfterOpen in hook_map
+        assert FakeMSceneMessage.kAfterSave in hook_map
+
+        # Simulate File -> New Scene from A.ma
+        hook_map[FakeMSceneMessage.kBeforeNew]()
+        live["scene"] = ""
+        hook_map[FakeMSceneMessage.kAfterNew]()
+
+        assert win.sessions.project.scene_path == "", (
+            f"expected untitled bound path '', got {win.sessions.project.scene_path!r}"
+        )
+
+        # Chatting in the new untitled scene must NOT overwrite A.ma's sidecar
+        win.messages = [ChatMessage(role="user", content="untitled blockout")]
+        win.blocks = [{"type": "user", "text": "untitled blockout"}]
+        win.persist_sessions()
+
+        a_text = sidecar_a.read_text(encoding="utf-8")
+        assert "rig hero A" in a_text
+        assert "untitled blockout" not in a_text, "A.ma sidecar was polluted after New Scene!"
+        assert untitled_fb.is_file()
+        assert "untitled blockout" in untitled_fb.read_text(encoding="utf-8")
+
+        # Teardown removes all OpenMaya callbacks cleanly
+        expected_ids = [cid for cid, _, _ in registered]
+        scene_hooks.uninstall_scene_hooks()
+        assert removed == expected_ids
+        assert scene_hooks._INSTALLED is False
+    finally:
+        scene_hooks.uninstall_scene_hooks()
+        scene_hooks.in_maya = old_in_maya
+        scene_hooks._get_window = old_get_win
+        session_store.get_maya_scene_path = old_get_scene_ss
+        sm_mod.get_maya_scene_path = old_get_scene_sm
+        session_store.fallback_path_for_untitled = old_fb
+        for k, mod in saved_mods.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+
+
+def test_untitled_open_and_save_transitions() -> None:
+    """P0: Opening B.ma from untitled must not clobber B.ma; Save/SaveAs must migrate cleanly."""
+    from maya_agent.core import session_manager as sm_mod
+    from maya_agent.core import session_store
+    from maya_agent.core.chat_session import ChatSession, ProjectChatData
+    from maya_agent.llm.base import ChatMessage
+    from maya_agent.plugin import scene_hooks
+
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="mayaagent_hooks_open_"))
+    scene_b = (tmpdir / "B.ma").as_posix()
+    scene_c = (tmpdir / "C.ma").as_posix()
+    scene_d = (tmpdir / "D.ma").as_posix()
+    sidecar_b = session_store.sidecar_path_for_scene(scene_b)
+    sidecar_c = session_store.sidecar_path_for_scene(scene_c)
+    sidecar_d = session_store.sidecar_path_for_scene(scene_d)
+    untitled_fb = tmpdir / "untitled" / "current.json"
+    assert sidecar_b and sidecar_c and sidecar_d
+
+    # Pre-seed B.ma with an existing project conversation
+    b_sess = ChatSession.create("B rig session")
+    b_sess.ui_blocks = [{"type": "user", "text": "existing B history"}]
+    session_store.save_project(
+        ProjectChatData(
+            scene_path=scene_b,
+            active_session_id=b_sess.id,
+            sessions=[b_sess],
+        ),
+        scene_b,
+    )
+
+    live = {"scene": ""}
+
+    class FakeWindow:
+        def __init__(self):
+            self.sessions = sm_mod.SessionManager()
+            self.messages = [ChatMessage(role="user", content="scratch in untitled")]
+            self.blocks = [{"type": "user", "text": "scratch in untitled"}]
+
+        def persist_sessions(self):
+            self.sessions.sync_active(self.messages, self.blocks)
+
+        def on_scene_changed(self, reload_only: bool = True, *, persist_current: bool = True):
+            if persist_current:
+                self.persist_sessions()
+            self.sessions.reload_from_disk()
+            self.messages = self.sessions.memory_for_active()
+            self.blocks = self.sessions.blocks_for_active()
+
+    old_get_win = scene_hooks._get_window
+    old_get_scene_ss = session_store.get_maya_scene_path
+    old_get_scene_sm = sm_mod.get_maya_scene_path
+    old_fb = session_store.fallback_path_for_untitled
+
+    session_store.get_maya_scene_path = lambda: live["scene"]
+    sm_mod.get_maya_scene_path = lambda: live["scene"]
+    session_store.fallback_path_for_untitled = lambda: untitled_fb
+
+    try:
+        # 1) Start in untitled, then File -> Open -> B.ma (Maya updates sceneName BEFORE kAfterOpen)
+        win = FakeWindow()
+        scene_hooks._get_window = lambda: win
+        scene_hooks._LAST_SCENE_PATH = ""
+
+        live["scene"] = scene_b
+        scene_hooks._on_scene_opened()
+
+        assert "existing B history" in sidecar_b.read_text(encoding="utf-8"), (
+            "B.ma sidecar was clobbered by untitled session on AfterOpen!"
+        )
+        assert "scratch in untitled" not in sidecar_b.read_text(encoding="utf-8")
+        assert untitled_fb.is_file()
+        assert "scratch in untitled" in untitled_fb.read_text(encoding="utf-8")
+        assert win.sessions.project.scene_path == scene_b
+        assert win.blocks == [{"type": "user", "text": "existing B history"}]
+
+        # 2) Saving already-named B.ma (Ctrl+S) must NOT consume unrelated untitled fallback
+        scene_hooks._on_scene_saved()
+        assert untitled_fb.is_file(), "Ctrl+S on named scene stole unrelated untitled fallback"
+
+        # 3) Switch to New Scene, chat in untitled, then Save Scene -> C.ma
+        live["scene"] = ""
+        scene_hooks._on_new_scene()
+        win.messages = [ChatMessage(role="user", content="brand new C asset")]
+        win.blocks = [{"type": "user", "text": "brand new C asset"}]
+
+        live["scene"] = scene_c
+        scene_hooks._on_scene_saved()
+
+        assert sidecar_c.is_file()
+        assert "brand new C asset" in sidecar_c.read_text(encoding="utf-8")
+        assert win.sessions.project.scene_path == scene_c
+        assert not untitled_fb.exists(), (
+            "untitled fallback was resurrected after migrating to C.ma"
+        )
+
+        # 4) Save Scene As C.ma -> D.ma clones conversation to D.ma while keeping C.ma intact
+        live["scene"] = scene_d
+        scene_hooks._on_scene_saved()
+
+        assert sidecar_d.is_file()
+        assert "brand new C asset" in sidecar_d.read_text(encoding="utf-8")
+        assert "brand new C asset" in sidecar_c.read_text(encoding="utf-8")
+        assert win.sessions.project.scene_path == scene_d
+    finally:
+        scene_hooks._get_window = old_get_win
+        scene_hooks._LAST_SCENE_PATH = ""
+        session_store.get_maya_scene_path = old_get_scene_ss
+        sm_mod.get_maya_scene_path = old_get_scene_sm
+        session_store.fallback_path_for_untitled = old_fb
+
+
 TESTS = (
     test_run_on_main_thread_never_reexecutes_on_error,
     test_executor_confirms_on_main_thread,
@@ -405,6 +645,8 @@ TESTS = (
     test_cloud_wait_aborts_on_cancel,
     test_tools_panel_import_has_color_token,
     test_http_get_limited_caps_page_bytes,
+    test_scene_hooks_after_new_isolates_previous_sidecar,
+    test_untitled_open_and_save_transitions,
 )
 
 

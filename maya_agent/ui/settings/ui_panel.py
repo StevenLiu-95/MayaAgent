@@ -92,6 +92,26 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         tform.addRow(self._field_label(t("settings.temp_dir")), temp_row)
         root.addWidget(temp)
 
+        cp, cp_lay = self._section(
+            t("settings.section.checkpoint"),
+            t("settings.section.checkpoint_hint"),
+        )
+        self.checkpoint_auto = QtWidgets.QCheckBox(t("settings.checkpoint_auto"))
+        self.checkpoint_confirm = QtWidgets.QCheckBox(
+            t("settings.checkpoint_confirm")
+        )
+        cp_lay.addWidget(
+            self._option_row(
+                self.checkpoint_auto, t("settings.checkpoint_auto_hint")
+            )
+        )
+        cp_lay.addWidget(
+            self._option_row(
+                self.checkpoint_confirm, t("settings.checkpoint_confirm_hint")
+            )
+        )
+        root.addWidget(cp)
+
         adv, adv_lay = self._section(
             t("settings.section.adv"),
             t("settings.section.adv_hint"),
@@ -313,6 +333,8 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             self._font_family_value(),
             int(self.ui_scale.value()),
             self.temp_dir_edit.text().strip(),
+            bool(self.checkpoint_auto.isChecked()),
+            bool(self.checkpoint_confirm.isChecked()),
             self.adv_path_edit.text().strip(),
             bool(self.bridge_enabled.isChecked()),
             bool(self.bridge_auto_start.isChecked()),
@@ -500,6 +522,8 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         self.font_family.editTextChanged.connect(self._schedule_autosave)
         self.ui_scale.valueChanged.connect(self._schedule_autosave)
         self.temp_dir_edit.textChanged.connect(self._schedule_autosave)
+        self.checkpoint_auto.toggled.connect(self._schedule_autosave)
+        self.checkpoint_confirm.toggled.connect(self._schedule_autosave)
         self.adv_path_edit.textChanged.connect(self._schedule_autosave)
         self.adv_path_edit.textChanged.connect(self._clear_adv_status)
         self.bridge_enabled.toggled.connect(self._schedule_autosave)
@@ -526,6 +550,12 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             )
             self.temp_dir_edit.setPlaceholderText(
                 str(default_agent_temp_root()).replace("\\", "/")
+            )
+            self.checkpoint_auto.setChecked(
+                bool(self.cfg.get("agent.checkpoint_auto", True))
+            )
+            self.checkpoint_confirm.setChecked(
+                bool(self.cfg.get("agent.checkpoint_confirm_restore", True))
             )
             self.adv_path_edit.setText(
                 str(self.cfg.get("maya.advanced_skeleton_path") or "").strip()
@@ -572,6 +602,10 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
             "maya.advanced_skeleton_path",
             self.adv_path_edit.text().strip().replace("\\", "/"),
         )
+        self.cfg.set("agent.checkpoint_auto", self.checkpoint_auto.isChecked())
+        self.cfg.set(
+            "agent.checkpoint_confirm_restore", self.checkpoint_confirm.isChecked()
+        )
         self.cfg.set("bridge.enabled", self.bridge_enabled.isChecked())
         self.cfg.set("bridge.auto_start", self.bridge_auto_start.isChecked())
         self.cfg.set("bridge.port", int(self.bridge_port.value()))
@@ -614,6 +648,13 @@ class UiPanel(SettingsFormMixin, QtWidgets.QWidget):
         self.cfg.set(
             "maya.advanced_skeleton_path",
             defaults.get("advanced_skeleton_path", ""),
+        )
+        self.cfg.set(
+            "agent.checkpoint_auto", defaults.get("checkpoint_auto", True)
+        )
+        self.cfg.set(
+            "agent.checkpoint_confirm_restore",
+            defaults.get("checkpoint_confirm_restore", True),
         )
         self.cfg.set("bridge.enabled", defaults.get("bridge_enabled", True))
         self.cfg.set("bridge.auto_start", defaults.get("bridge_auto_start", False))

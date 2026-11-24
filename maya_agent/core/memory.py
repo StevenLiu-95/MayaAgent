@@ -13,12 +13,34 @@ class ConversationMemory:
         self.limit = limit
         self.messages: List[ChatMessage] = []
 
+    def _next_seq(self) -> int:
+        top = 0
+        for m in self.messages:
+            s = int(getattr(m, "seq", 0) or 0)
+            if s > top:
+                top = s
+        return top + 1
+
+    def _assign_seq(self, message: ChatMessage) -> None:
+        """Give non-system messages a stable sequence number (kept if present)."""
+        if message.role == "system":
+            return
+        if int(getattr(message, "seq", 0) or 0) <= 0:
+            message.seq = self._next_seq()
+
+    def last_seq(self) -> int:
+        """Highest sequence number currently in memory (0 if none)."""
+        return self._next_seq() - 1
+
     def add(self, message: ChatMessage) -> None:
+        self._assign_seq(message)
         self.messages.append(message)
         self._trim()
 
     def extend(self, messages: List[ChatMessage]) -> None:
-        self.messages.extend(messages)
+        for m in messages:
+            self._assign_seq(m)
+            self.messages.append(m)
         self._trim()
 
     def clear(self) -> None:
@@ -30,7 +52,10 @@ class ConversationMemory:
     def load_from_serializable(self, data: List[Dict[str, Any]]) -> None:
         self.clear()
         for item in data or []:
-            self.messages.append(message_from_dict(item))
+            msg = message_from_dict(item)
+            # Legacy sessions have no seq: number them in order.
+            self._assign_seq(msg)
+            self.messages.append(msg)
 
     def replace_conversation(self, messages: List[ChatMessage]) -> None:
         """Replace non-system messages, keeping a single fresh system prompt slot."""
@@ -96,7 +121,13 @@ class ConversationMemory:
         # Incomplete trailing round — keep text only
         new_rest = rest[:idx]
         if msg.content:
-            new_rest.append(ChatMessage(role="assistant", content=msg.content))
+            new_rest.append(
+                ChatMessage(
+                    role="assistant",
+                    content=msg.content,
+                    seq=int(getattr(msg, "seq", 0) or 0),
+                )
+            )
         self.messages = system + new_rest
 
     @staticmethod

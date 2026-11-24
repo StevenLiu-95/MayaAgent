@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from maya_agent.ui import chat_format
+from maya_agent.ui.chat.checkpoint_bar import CheckpointBar, CheckpointOffer
 from maya_agent.ui.chat.image_utils import image_dicts as _image_dicts
 from maya_agent.ui.chat.message_block import MessageBlock
 from maya_agent.ui.qt_bind import QtCore, QtGui, QtWidgets
@@ -115,6 +116,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._on_plan_approve = None
         self._on_plan_reject = None
         self._active_plan_card = None  # type: ignore[assignment]
+        self._cp_on_rollback = None
+        self._cp_on_branch = None
+        self._cp_on_rename = None
+        self._cp_on_add = None
+        self._cp_can_rollback = None
+        self._cp_actions_enabled = True
+        self._cp_offer: Optional[CheckpointOffer] = None
         self._stick_to_bottom = True
         self._scrolling_programmatic = False
         self._layout_timer = QtCore.QTimer(self)
@@ -497,6 +505,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._thinking_text = ""
         self._turn_charts = []
         self._pending_separator = False
+        self._cp_offer = None
         self._active_choice_block = None
         self._active_plan_card = None
         self._stick_to_bottom = True
@@ -517,6 +526,114 @@ class ChatPanel(QtWidgets.QWidget):
     ) -> None:
         self._on_plan_approve = on_approve
         self._on_plan_reject = on_reject
+
+    # ------------------------------------------------------------------
+    # Checkpoints
+    # ------------------------------------------------------------------
+
+    def set_checkpoint_handlers(
+        self,
+        *,
+        on_rollback: Optional[Any] = None,
+        on_branch: Optional[Any] = None,
+        on_rename: Optional[Any] = None,
+        on_add: Optional[Any] = None,
+        can_rollback: Optional[Any] = None,
+    ) -> None:
+        """Handlers take a checkpoint id (rename: id, name; add: nothing)."""
+        self._cp_on_rollback = on_rollback
+        self._cp_on_branch = on_branch
+        self._cp_on_rename = on_rename
+        self._cp_on_add = on_add
+        self._cp_can_rollback = can_rollback
+
+    def _checkpoint_bars(self) -> List[CheckpointBar]:
+        return [w for w in self._widgets if isinstance(w, CheckpointBar)]
+
+    def _cp_rollback_possible(self, cp_id: str) -> bool:
+        fn = self._cp_can_rollback
+        if fn is None:
+            return True
+        try:
+            return bool(fn(cp_id))
+        except Exception:
+            return False
+
+    def _handle_cp_rollback(self, cp_id: str) -> None:
+        if self._cp_on_rollback:
+            self._cp_on_rollback(cp_id)
+
+    def _handle_cp_branch(self, cp_id: str) -> None:
+        if self._cp_on_branch:
+            self._cp_on_branch(cp_id)
+
+    def _handle_cp_rename(self, cp_id: str, name: str) -> None:
+        for b in self._blocks:
+            if b.get("type") == "checkpoint" and b.get("id") == cp_id:
+                b["name"] = name
+                break
+        if self._cp_on_rename:
+            self._cp_on_rename(cp_id, name)
+
+    def _make_checkpoint_bar(self, cp_id: str, name: str) -> CheckpointBar:
+        return CheckpointBar(
+            cp_id,
+            name,
+            can_rollback=self._cp_rollback_possible(cp_id),
+            actions_enabled=self._cp_actions_enabled,
+            on_rollback=self._handle_cp_rollback,
+            on_branch=self._handle_cp_branch,
+            on_rename=self._handle_cp_rename,
+        )
+
+    def add_checkpoint(self, cp_id: str, name: str = "") -> None:
+        """Append a checkpoint bar (replacing any pending manual-mode offer)."""
+        self.clear_checkpoint_offer()
+        bar = self._make_checkpoint_bar(cp_id, name)
+        self._insert_before_stretch(bar)
+        self._blocks.append({"type": "checkpoint", "id": cp_id, "name": name})
+        self._scroll_to_bottom()
+
+    def add_checkpoint_offer(self) -> None:
+        """Manual mode: show a subtle '+ add checkpoint' row after an answer."""
+        self.clear_checkpoint_offer()
+        offer = CheckpointOffer(on_add=self._handle_cp_add)
+        offer.set_enabled_actions(self._cp_actions_enabled)
+        self._cp_offer = offer
+        self._insert_before_stretch(offer)
+        self._scroll_to_bottom()
+
+    def _handle_cp_add(self) -> None:
+        if self._cp_on_add:
+            self._cp_on_add()
+
+    def clear_checkpoint_offer(self) -> None:
+        offer = self._cp_offer
+        if offer is None:
+            return
+        self._cp_offer = None
+        try:
+            self.v.removeWidget(offer)
+            if offer in self._widgets:
+                self._widgets.remove(offer)
+            offer.hide()
+            offer.deleteLater()
+        except Exception:
+            pass
+        self._schedule_relayout()
+
+    def refresh_checkpoint_states(self) -> None:
+        """Re-query whether each bar can still roll back (snapshot may be gone)."""
+        for bar in self._checkpoint_bars():
+            bar.set_can_rollback(self._cp_rollback_possible(bar.cp_id))
+
+    def set_checkpoint_actions_enabled(self, enabled: bool) -> None:
+        """Disable rollback/branch/add while the agent is running."""
+        self._cp_actions_enabled = bool(enabled)
+        for bar in self._checkpoint_bars():
+            bar.set_actions_enabled(self._cp_actions_enabled)
+        if self._cp_offer is not None:
+            self._cp_offer.set_enabled_actions(self._cp_actions_enabled)
 
     def disable_active_choices(self) -> None:
         if self._active_choice_block is not None:
@@ -635,7 +752,10 @@ class ChatPanel(QtWidgets.QWidget):
 
     def add_user(self, text: str, images: Optional[List[Any]] = None):
         self.disable_active_choices()
-        if self._pending_separator:
+        self.clear_checkpoint_offer()
+        # A checkpoint bar already draws the divider between turns.
+        tail = self._widgets[-1] if self._widgets else None
+        if self._pending_separator and not isinstance(tail, CheckpointBar):
             self._insert_before_stretch(TurnSeparator())
         self._pending_separator = True
         block = MessageBlock("user")
@@ -1034,6 +1154,12 @@ class ChatPanel(QtWidgets.QWidget):
                         self._active_plan_card = card
                 elif btype == "assistant":
                     self._restore_assistant(block)
+                elif btype == "checkpoint":
+                    self._insert_before_stretch(
+                        self._make_checkpoint_bar(
+                            str(block.get("id") or ""), str(block.get("name") or "")
+                        )
+                    )
 
             self._blocks = [dict(b) for b in blocks]
             self._current = None

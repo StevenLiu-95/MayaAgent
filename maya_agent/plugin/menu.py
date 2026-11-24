@@ -472,10 +472,16 @@ def _reset_bootstrap_state() -> None:
 
 
 def uninstall_ui() -> None:
-    """Remove menu + shelf from a live Maya session."""
+    """Remove menu + shelf + scene hooks from a live Maya session."""
     if not in_maya():
         return
     _reset_bootstrap_state()
+    try:
+        from maya_agent.plugin.scene_hooks import uninstall_scene_hooks
+
+        uninstall_scene_hooks()
+    except Exception as e:
+        log.debug("uninstall scene hooks failed: %s", e)
     for name in (MENU_NAME, "MayaAgentMainMenu", "MayaAgent"):
         _delete_menu_if_exists(name)
     remove_shelf()
@@ -496,6 +502,28 @@ def reload_plugin(*_args) -> None:
         from maya_agent.bridge import stop as _bridge_stop
 
         _bridge_stop()
+    except Exception:
+        pass
+
+    # Detach OpenMaya scene callbacks registered by the outgoing module objects
+    try:
+        from maya_agent.plugin.scene_hooks import uninstall_scene_hooks as _uninstall_hooks
+
+        _uninstall_hooks()
+    except Exception:
+        pass
+
+    # Flush active sessions *before* deleting workspaceControl (which destroys
+    # the reparented centralWidget C++ tree in docked mode).
+    try:
+        import maya_agent.ui.main_window as _old_main_window
+
+        _old_win = getattr(_old_main_window, "_WINDOW_INSTANCE", None)
+        if _old_win is not None:
+            try:
+                _old_win.persist_sessions()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -543,6 +571,12 @@ def reload_plugin(*_args) -> None:
     menu_mod._reset_bootstrap_state()
     menu_mod.install_menu()
     menu_mod.install_shelf()
+    try:
+        from maya_agent.plugin.scene_hooks import install_scene_hooks as _install_hooks
+
+        _install_hooks()
+    except Exception as e:
+        log.warning("scene hooks reinstall on reload failed: %s", e)
     menu_mod._BOOTSTRAP_DONE = True
     menu_mod._BOOTSTRAP_IN_FLIGHT = False
     menu_mod.open_ui()
